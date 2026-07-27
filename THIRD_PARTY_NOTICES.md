@@ -84,7 +84,8 @@ are ignored and never enter the application releases.
 | TextMesh Pro resources / Liberation Sans | stage text | Unity package terms / SIL Open Font License 1.1 respectively |
 | FFmpeg | decoding, conversion, analysis | LGPL-2.1-or-later or GPL-2.0-or-later depending on the exact build/configuration; Debian container copyright metadata is retained |
 | curl / libcurl | server-container health and worker HTTP | curl license; Debian copyright metadata is retained |
-| linuxdeploy / AppImageKit / appimagetool | AppImage build tooling, not shipped as application dependencies | MIT for the upstream projects; verify the downloaded build-tool revisions and their bundled dependencies |
+| linuxdeploy / appimagetool | AppImage build tooling | MIT for the upstream projects; verify downloaded build-tool revisions before release |
+| AppImage Type-2 runtime | embedded launcher in each AppImage | MIT; its upstream license and bundled-dependency inventory are included as `AppImage-Type2-Runtime-LICENSE.txt` in every AppImage |
 | Sunnify Spotify Downloader | optional, separately installed downloader | GPL-3.0; not vendored or bundled by Neon Stage |
 | Spotify Web API | metadata/search integration | Spotify Developer Terms and branding rules; API access does not license music or lyrics |
 | LRCLIB API | lyrics lookup | service terms and copyright in individual lyrics remain applicable |

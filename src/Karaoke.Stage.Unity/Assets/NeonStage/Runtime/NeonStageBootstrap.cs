@@ -9,7 +9,11 @@ namespace NeonStage.Stage
 
 public sealed class NeonStageBootstrap : MonoBehaviour
 {
+#if UNITY_ANDROID
     private const string DefaultServer = "http://192.168.178.91:5274";
+#else
+    private const string DefaultServer = "http://127.0.0.1:5274";
+#endif
     // Der Server bevorzugt Unity-kompatible Ogg/Vorbis-Stems. Der Client fällt
     // bei älteren Bibliothekseinträgen sicher auf die MP3-Masterspur zurück.
     private const bool PreparedStemsAreUnityCompatible = true;
@@ -71,7 +75,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         ConfigureStageCamera();
         if (FindAnyObjectByType<AudioListener>() == null)
             gameObject.AddComponent<AudioListener>();
-        _server = PlayerPrefs.GetString("NeonStage.Server", DefaultServer).TrimEnd('/');
+        _server = ResolveServer();
         _controllerId = PlayerPrefs.GetString("NeonStage.ControllerId", "");
         if (!Guid.TryParse(_controllerId, out _))
         {
@@ -89,6 +93,38 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         _ = _visuals.LoadQrAsync(_server);
         _ = ClaimControlAsync();
         StartCoroutine(PollQueue());
+    }
+
+    private static string ResolveServer()
+    {
+        var arguments = Environment.GetCommandLineArgs();
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            if (arguments[index].Equals("--server", StringComparison.OrdinalIgnoreCase) &&
+                index + 1 < arguments.Length && TryNormalizeServer(arguments[index + 1], out var argumentServer))
+                return argumentServer;
+            const string prefix = "--server=";
+            if (arguments[index].StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                TryNormalizeServer(arguments[index].Substring(prefix.Length), out argumentServer))
+                return argumentServer;
+        }
+
+        foreach (var variable in new[] { "NEONSTAGE_SERVER_URL", "KARAOKE_SERVER" })
+            if (TryNormalizeServer(Environment.GetEnvironmentVariable(variable), out var environmentServer))
+                return environmentServer;
+
+        return TryNormalizeServer(PlayerPrefs.GetString("NeonStage.Server", DefaultServer), out var storedServer)
+            ? storedServer
+            : DefaultServer;
+    }
+
+    private static bool TryNormalizeServer(string? value, out string server)
+    {
+        server = string.Empty;
+        if (string.IsNullOrWhiteSpace(value) || !Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) ||
+            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)) return false;
+        server = value.Trim().TrimEnd('/');
+        return true;
     }
 
     private void OnDestroy()

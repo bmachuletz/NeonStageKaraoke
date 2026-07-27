@@ -56,6 +56,8 @@ convert "$icon" -resize 256x256! \
 cp "$repo_root/LICENSE" "$repo_root/NOTICE" "$repo_root/THIRD_PARTY_NOTICES.md" \
   "$repo_root/ACKNOWLEDGEMENTS.md" \
   "$appdir/usr/share/doc/neon-stage/"
+cp "$repo_root/packaging/licenses/AppImage-Type2-Runtime-LICENSE.txt" \
+  "$appdir/usr/share/doc/neon-stage/licenses/"
 
 # The editor redistributes libVLC and VLC plugins. Preserve the full copyleft
 # license texts and the distributor's package-level copyright inventories in

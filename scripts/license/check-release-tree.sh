@@ -48,6 +48,17 @@ if ! rg -q 'LGPL-2\.1 LGPL-3 GPL-2 GPL-3' scripts/release/build-editor-appimage.
   printf 'Das AppImage-Buildscript übernimmt die VLC-Lizenztexte nicht vollständig.\n' >&2
   failed=1
 fi
+if [[ ! -s packaging/licenses/AppImage-Type2-Runtime-LICENSE.txt ]]; then
+  printf 'Der eingebettete AppImage-Type-2-Runtime-Lizenzhinweis fehlt in einem AppImage.\n' >&2
+  failed=1
+fi
+for appimage_builder in scripts/release/build-editor-appimage.sh \
+  scripts/release/build-server-appimage.sh scripts/release/build-stage-appimage.sh; do
+  if ! rg -q 'AppImage-Type2-Runtime-LICENSE\.txt' "$appimage_builder"; then
+    printf 'AppImage-Runtime-Lizenz wird nicht gepackt: %s\n' "$appimage_builder" >&2
+    failed=1
+  fi
+done
 
 if (( failed )); then exit 1; fi
 printf 'Release-Tree-Basisprüfung bestanden. Vollständige Artefakt-Lizenzprüfung bleibt erforderlich.\n'

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Neon Stage
+Comment=Open the Neon Stage karaoke screen
+Exec=neon-stage-stage
+Icon=neon-stage-stage
+Categories=AudioVideo;Audio;
+Terminal=false
+StartupWMClass=Neon Stage Karaoke

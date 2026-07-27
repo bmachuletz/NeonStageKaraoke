@@ -56,7 +56,7 @@ public static class NeonStageAndroidBuild
             scenes = new[] { ScenePath },
             locationPathName = "Builds/Linux/NeonStage",
             target = BuildTarget.StandaloneLinux64,
-            options = BuildOptions.Development
+            options = BuildOptions.None
         });
         if (report.summary.result != BuildResult.Succeeded)
             throw new BuildFailedException($"Linux-Build fehlgeschlagen: {report.summary.result}");

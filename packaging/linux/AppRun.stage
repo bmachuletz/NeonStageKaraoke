@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export KARAOKE_SERVER=${KARAOKE_SERVER:-http://127.0.0.1:5274}
+export NEONSTAGE_SERVER_URL=${NEONSTAGE_SERVER_URL:-$KARAOKE_SERVER}
+
+exec "$APPDIR/usr/bin/NeonStage" "$@"

@@ -9,24 +9,24 @@ Neon Stage release artifacts contain application binaries only. They never conta
 1. checks the tracked source tree with the media guard;
 2. builds and tests the .NET projects;
 3. publishes the Linux server and lyrics editor;
-4. creates a self-contained x86_64 AppImage with LibVLC and its plugins;
+4. creates self-contained x86_64 Server and Lyrics Editor AppImages (the editor includes LibVLC and its plugins);
 5. copies license and notice documents into every distributable package;
 6. checks the finished package tree again;
 7. creates SHA-256 checksums;
 8. uploads workflow artifacts and, for tags, attaches them to a GitHub Release.
 
-Unity Linux and Android builds require a licensed Unity CI setup. Configure the repository secrets expected by the selected Unity CI provider before enabling those jobs. Never store a Unity license, keystore, password, Spotify secret, or signing key in the repository.
+The separate manually dispatched `unity-stage-release.yml` workflow builds the Linux Stage AppImage with GameCI. Configure `UNITY_LICENSE`, `UNITY_EMAIL`, and `UNITY_PASSWORD` as encrypted repository secrets first. Its optional `release_tag` input attaches the result to an existing GitHub Release. Never store a Unity license, keystore, password, Spotify secret, or signing key in the repository. See the [official GameCI builder documentation](https://game.ci/docs/github/builder/) for current licensing instructions.
 
 ## Local release preparation
 
 ```bash
 ./scripts/release/verify-no-media.sh
 dotnet test Karaoke.slnx -c Release
-dotnet publish src/Karaoke.Server/Karaoke.Server.csproj -c Release -o artifacts/server-linux
-dotnet publish src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj -c Release -r linux-x64 --self-contained false -o artifacts/editor-linux
-./scripts/release/build-editor-appimage.sh
+./scripts/release/build-linux-appimages.sh
 ./scripts/release/verify-no-media.sh artifacts
 ```
+
+Individual packages can be rebuilt with `build-server-appimage.sh`, `build-editor-appimage.sh`, or `build-stage-appimage.sh`. Set `NEONSTAGE_SKIP_UNITY_BUILD=1` when a current Unity Linux player already exists in `src/Karaoke.Stage.Unity/Builds/Linux`.
 
 Unity builds:
 
@@ -41,17 +41,36 @@ Run the media guard against `src/Karaoke.Stage.Unity/Builds` before packaging it
 
 - `server-linux`: ASP.NET Core server and web portals; no database and no library
 - `editor-linux-x64`: Avalonia editor; no cached audio and no recovery drafts
+- `NeonStage-Server-x86_64.AppImage`: self-contained ASP.NET Core server and web portals; configuration and persistent data remain outside the image
 - `NeonStage-LyricsEditor-x86_64.AppImage`: self-contained editor including LibVLC; server URL is supplied through `KARAOKE_SERVER`
 
 The Docker Compose image is the server/API deployment. GPU alignment, local
 folder ingestion, and wishlist download processing stay in separately managed
 host or worker processes; models, downloader environments, and karaoke media
 are never bundled into the server image.
-- `stage-linux-x64`: Unity player; no songs or server state
+- `NeonStage-Stage-x86_64.AppImage`: Unity Linux player; no songs or server state; server URL is supplied through `KARAOKE_SERVER`, `NEONSTAGE_SERVER_URL`, or `--server`
+- `stage-linux-x64`: unpacked Unity player; no songs or server state
 - `stage-android-armv7`: Android package for 32-bit devices such as the tested Ikarao hardware
 - `stage-android-arm64`: Android package for modern 64-bit devices
 
 Published packages must include `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Android signing happens only in the protected CI/release environment.
+
+## Running the Linux AppImages
+
+The Server listens on all interfaces at port 5274 by default so phones on the local network can reach it. Its defaults are:
+
+- library: `~/Music/NeonStage`
+- database and persistent state: `${XDG_DATA_HOME:-~/.local/share}/neon-stage/server`
+- optional configuration: `~/.local/share/neon-stage/server/server.env`
+
+`packaging/linux/server.env.example` documents the supported path and Spotify settings. Override the file location with `NEONSTAGE_SERVER_ENV`. A complete imported song package does not require the downloader or aligner; only creating or realigning material does.
+
+```bash
+chmod +x artifacts/NeonStage-*.AppImage
+artifacts/NeonStage-Server-x86_64.AppImage
+KARAOKE_SERVER=http://127.0.0.1:5274 artifacts/NeonStage-LyricsEditor-x86_64.AppImage
+KARAOKE_SERVER=http://127.0.0.1:5274 artifacts/NeonStage-Stage-x86_64.AppImage
+```
 
 ## Container deployment
 

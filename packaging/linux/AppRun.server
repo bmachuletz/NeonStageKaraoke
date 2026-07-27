@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+
+APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}/neon-stage/server
+environment_file=${NEONSTAGE_SERVER_ENV:-"$data_root/server.env"}
+
+# The optional file uses normal shell KEY=value syntax and lives outside the
+# immutable AppImage. This is useful for Spotify credentials or a custom URL.
+if [ -f "$environment_file" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$environment_file"
+  set +a
+fi
+
+library_path=${KARAOKE_LIBRARY_PATH:-${Karaoke__LibraryPath:-"$HOME/Music/NeonStage"}}
+database_path=${KARAOKE_DATABASE_PATH:-${Karaoke__DatabasePath:-"$data_root/karaoke.db"}}
+mkdir -p "$data_root" "$library_path" "$(dirname -- "$database_path")"
+
+export Karaoke__LibraryPath="$library_path"
+export Karaoke__DatabasePath="$database_path"
+export ASPNETCORE_URLS=${ASPNETCORE_URLS:-http://0.0.0.0:5274}
+export ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
+
+printf 'Neon Stage Server\n  URL: %s\n  Library: %s\n  Data: %s\n' \
+  "$ASPNETCORE_URLS" "$Karaoke__LibraryPath" "$Karaoke__DatabasePath"
+exec "$APPDIR/usr/bin/Karaoke.Server" "$@"

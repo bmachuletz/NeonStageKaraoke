@@ -10,4 +10,9 @@ if [[ ! -x "$stage" ]]; then
   exit 1
 fi
 
+if [[ ${1:-} == http://* || ${1:-} == https://* ]]; then
+  export NEONSTAGE_SERVER_URL=$1
+  shift
+fi
+
 exec "$stage" "$@"

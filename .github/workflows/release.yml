@@ -39,6 +39,7 @@ jobs:
           for package in artifacts/server-linux artifacts/editor-linux-x64; do
             cp LICENSE NOTICE THIRD_PARTY_NOTICES.md ACKNOWLEDGEMENTS.md "$package/"
           done
+          bash scripts/release/build-server-appimage.sh "$PWD/NeonStage-Server-x86_64.AppImage"
           bash scripts/release/build-editor-appimage.sh "$PWD/NeonStage-LyricsEditor-x86_64.AppImage"
       - name: Verify and package
         run: |

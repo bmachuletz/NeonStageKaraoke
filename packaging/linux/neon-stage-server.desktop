@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Neon Stage Server
+Comment=Run the Neon Stage web service and party portals
+Exec=neon-stage-server
+Icon=neon-stage-server
+Categories=Network;
+Terminal=true

@@ -42,6 +42,28 @@ Server auf einem anderen Gerät:
 
 Server und Desktop-App laufen jeweils im Vordergrund. Zum Beenden `Strg+C` drücken.
 
+## Linux-AppImages
+
+Server, Lyrics-Editor und Unity-Stage gemeinsam bauen:
+
+```bash
+./scripts/release/build-linux-appimages.sh
+```
+
+Die Ergebnisse liegen unter `artifacts/`. Der Server speichert Daten und
+Bibliothek ausdrücklich nicht im AppImage. Ohne Konfiguration verwendet er
+`~/.local/share/neon-stage/server` und `~/Music/NeonStage`:
+
+```bash
+./artifacts/NeonStage-Server-x86_64.AppImage
+KARAOKE_SERVER=http://127.0.0.1:5274 ./artifacts/NeonStage-LyricsEditor-x86_64.AppImage
+KARAOKE_SERVER=http://127.0.0.1:5274 ./artifacts/NeonStage-Stage-x86_64.AppImage
+```
+
+Eine fertige Bibliothek und vollständige Songpakete funktionieren ohne
+Aligner. Downloader, Ordnerimport und neues Alignment benötigen weiterhin den
+separaten Worker-/GPU-Stack.
+
 ## MP3-Ordner importieren
 
 Der Server muss bereits laufen. Der Pfad muss auf dem Serverrechner erreichbar

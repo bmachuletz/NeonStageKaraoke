@@ -1,0 +1,51 @@
+name: Unity Linux stage AppImage
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Optional existing GitHub Release tag to attach the AppImage to
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  unity-linux-stage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject media and local runtime data
+        run: bash scripts/release/verify-no-media.sh
+      - name: Build Unity Linux player
+        uses: game-ci/unity-builder@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: src/Karaoke.Stage.Unity
+          unityVersion: auto
+          targetPlatform: StandaloneLinux64
+          buildMethod: NeonStage.Stage.Editor.NeonStageAndroidBuild.BuildLinux
+      - name: Package Stage AppImage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick
+          NEONSTAGE_SKIP_UNITY_BUILD=1 scripts/release/build-stage-appimage.sh "$PWD/NeonStage-Stage-x86_64.AppImage"
+          sha256sum NeonStage-Stage-x86_64.AppImage > SHA256SUMS-Stage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-stage-unity-linux
+          path: |
+            NeonStage-Stage-x86_64.AppImage
+            SHA256SUMS-Stage
+      - name: Attach to existing GitHub Release
+        if: inputs.release_tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            NeonStage-Stage-x86_64.AppImage
+            SHA256SUMS-Stage

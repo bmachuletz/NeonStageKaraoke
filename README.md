@@ -228,12 +228,16 @@ More examples: [`scripts/linux/README.md`](scripts/linux/README.md), [`docs/wish
 
 Release artifacts, supported platforms, checksums, signing expectations, and the GitHub workflow are documented in [`docs/RELEASES.md`](docs/RELEASES.md). Every release job runs the media guard before packaging and again against produced artifacts.
 
-Build the self-contained Linux editor AppImage locally:
+Build all three self-contained Linux AppImages locally:
 
 ```bash
-./scripts/release/build-editor-appimage.sh
+./scripts/release/build-linux-appimages.sh
+./artifacts/NeonStage-Server-x86_64.AppImage
 KARAOKE_SERVER=http://SERVER:5274 ./artifacts/NeonStage-LyricsEditor-x86_64.AppImage
+KARAOKE_SERVER=http://SERVER:5274 ./artifacts/NeonStage-Stage-x86_64.AppImage
 ```
+
+The Server AppImage contains the API and both web portals, but no private library, database, credentials, downloader, models, or GPU aligner. It can serve an existing library and import complete `.neonstage.zip` song packages without the alignment stack. New downloads, folder ingestion, and realignment still require the separately managed worker/alignment environment.
 
 ## Media safety and review rules
 
