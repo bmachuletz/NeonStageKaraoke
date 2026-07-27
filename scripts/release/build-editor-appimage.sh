@@ -2,36 +2,22 @@
 set -Eeuo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=scripts/release/lib/appimage-common.sh
+source "$repo_root/scripts/release/lib/appimage-common.sh"
 output=${1:-"$repo_root/artifacts/NeonStage-LyricsEditor-x86_64.AppImage"}
-tool_dir="$repo_root/.tools/appimage"
 project="$repo_root/src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj"
 icon="$repo_root/src/Karaoke.App/Assets/neon-stage-icon.png"
 
-[[ $(uname -m) == x86_64 ]] || { echo "The AppImage build currently supports x86_64 only." >&2; exit 2; }
-for command in curl dotnet find ldd convert; do
-  command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }
-done
-libvlc=$(ldconfig -p | awk '/libvlc\.so\.5 / && !found { value=$NF; found=1 } END { print value }')
-libvlccore=$(ldconfig -p | awk '/libvlccore\.so\.[0-9]+ / && !found { value=$NF; found=1 } END { print value }')
-plugin_dir=$(find /usr/lib -type d -path '*/vlc/plugins' -print -quit 2>/dev/null)
-[[ -n "$libvlc" && -n "$libvlccore" && -n "$plugin_dir" ]] || {
-  echo "LibVLC including its plugin directory is required (install the vlc package)." >&2
-  exit 1
-}
-
-mkdir -p "$tool_dir" "$(dirname "$output")"
-linuxdeploy="$tool_dir/linuxdeploy-x86_64.AppImage"
-appimagetool="$tool_dir/appimagetool-x86_64.AppImage"
-if [[ ! -x "$linuxdeploy" ]]; then
-  curl -fL --retry 3 -o "$linuxdeploy" \
-    https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-  chmod +x "$linuxdeploy"
-fi
-if [[ ! -x "$appimagetool" ]]; then
-  curl -fL --retry 3 -o "$appimagetool" \
-    https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-  chmod +x "$appimagetool"
-fi
+ns_prepare_system_dependencies editor
+ns_ensure_dotnet_10 "$repo_root"
+ns_find_libvlc
+libvlc=$NS_LIBVLC
+libvlccore=$NS_LIBVLCCORE
+plugin_dir=$NS_VLC_PLUGIN_DIR
+ffmpeg=$(command -v ffmpeg)
+linuxdeploy=$(ns_ensure_linuxdeploy "$repo_root")
+appimagetool=$(ns_ensure_appimage_tool "$repo_root")
+mkdir -p "$(dirname "$output")"
 
 work=$(mktemp -d -t neon-stage-appimage.XXXXXXXX)
 trap 'rm -rf -- "$work"' EXIT
@@ -43,6 +29,7 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/lib/vlc" "$appdir/usr/share/applications
 dotnet publish "$project" -c Release -r linux-x64 --self-contained true \
   -p:DebugType=None -p:DebugSymbols=false -o "$publish"
 cp -a "$publish/." "$appdir/usr/bin/"
+cp -L "$ffmpeg" "$appdir/usr/bin/ffmpeg"
 # These self-contained runtime files are debugger/tracing helpers, not editor
 # runtime dependencies. Keeping them makes linuxdeploy require optional LTTng.
 rm -f "$appdir/usr/bin/libcoreclrtraceptprovider.so" \
@@ -51,8 +38,7 @@ ln -sfn Karaoke.App.Desktop "$appdir/usr/bin/neon-stage-editor"
 cp -L "$libvlc" "$libvlccore" "$appdir/usr/lib/"
 cp "$repo_root/packaging/linux/neon-stage-editor.desktop" \
   "$appdir/usr/share/applications/neon-stage-editor.desktop"
-convert "$icon" -resize 256x256! \
-  "$appdir/usr/share/icons/hicolor/256x256/apps/neon-stage-editor.png"
+ns_convert_icon "$icon" "$appdir/usr/share/icons/hicolor/256x256/apps/neon-stage-editor.png"
 cp "$repo_root/LICENSE" "$repo_root/NOTICE" "$repo_root/THIRD_PARTY_NOTICES.md" \
   "$repo_root/ACKNOWLEDGEMENTS.md" \
   "$appdir/usr/share/doc/neon-stage/"
@@ -64,23 +50,37 @@ cp "$repo_root/packaging/licenses/AppImage-Type2-Runtime-LICENSE.txt" \
 # the artifact, not merely links in the project notice.
 for license_file in LGPL-2.1 LGPL-3 GPL-2 GPL-3; do
   source_file="/usr/share/common-licenses/$license_file"
-  [[ -f "$source_file" ]] || { echo "Missing system license text: $source_file" >&2; exit 1; }
+  if [[ ! -f "$source_file" ]]; then
+    source_file=$(find /usr/share/licenses -type f \( -iname "*$license_file*" -o -iname "*${license_file/./}*" \) \
+      -print -quit 2>/dev/null || true)
+  fi
+  [[ -f "$source_file" ]] || { echo "Missing system license text: $license_file" >&2; exit 1; }
   cp "$source_file" "$appdir/usr/share/doc/neon-stage/licenses/$license_file.txt"
 done
 for package_name in libvlc5 vlc vlc-plugin-base; do
   copyright_file="/usr/share/doc/$package_name/copyright"
-  [[ -f "$copyright_file" ]] || { echo "Missing VLC copyright inventory: $copyright_file" >&2; exit 1; }
-  cp "$copyright_file" "$appdir/usr/share/doc/neon-stage/licenses/$package_name-copyright.txt"
+  [[ -f "$copyright_file" ]] && cp "$copyright_file" \
+    "$appdir/usr/share/doc/neon-stage/licenses/$package_name-copyright.txt"
 done
+if ! find "$appdir/usr/share/doc/neon-stage/licenses" -name '*vlc*-copyright.txt' -print -quit | grep -q .; then
+  while IFS= read -r -d '' license_file; do
+    cp "$license_file" "$appdir/usr/share/doc/neon-stage/licenses/vlc-$(basename "$license_file")"
+  done < <(find /usr/share/licenses -maxdepth 3 -type f -ipath '*vlc*' -print0 2>/dev/null || true)
+fi
+find "$appdir/usr/share/doc/neon-stage/licenses" -iname '*vlc*' -print -quit | grep -q . || {
+  echo "Missing VLC copyright/license inventory." >&2; exit 1;
+}
+ns_copy_ffmpeg_licenses "$appdir"
 
 # Analyze the editor and LibVLC. VLC plugins are copied afterwards: asking
 # linuxdeploy to inspect every optional video/output plugin pulls an entire
 # desktop multimedia distribution into an audio-editor AppImage.
 deploy_args=(--appdir "$appdir" --executable "$appdir/usr/bin/Karaoke.App.Desktop" \
+  --executable "$appdir/usr/bin/ffmpeg" \
   --desktop-file "$appdir/usr/share/applications/neon-stage-editor.desktop" \
   --icon-file "$appdir/usr/share/icons/hicolor/256x256/apps/neon-stage-editor.png" \
   --library "$libvlc" --library "$libvlccore")
-APPIMAGE_EXTRACT_AND_RUN=1 "$linuxdeploy" "${deploy_args[@]}"
+NO_STRIP=1 APPIMAGE_EXTRACT_AND_RUN=1 "$linuxdeploy" "${deploy_args[@]}"
 mkdir -p "$appdir/usr/lib/vlc"
 cp -aL "$plugin_dir" "$appdir/usr/lib/vlc/plugins"
 
@@ -91,5 +91,6 @@ ln -sfn usr/share/icons/hicolor/256x256/apps/neon-stage-editor.png "$appdir/.Dir
 rm -f "$output"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" "$appdir" "$output"
 chmod +x "$output"
+ns_verify_appimage "$output"
 "$repo_root/scripts/release/verify-no-media.sh" "$(dirname "$output")"
 echo "AppImage created: $output"

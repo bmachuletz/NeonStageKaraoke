@@ -2,6 +2,7 @@
 set -eu
 
 APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}/neon-stage/server
 environment_file=${NEONSTAGE_SERVER_ENV:-"$data_root/server.env"}
 

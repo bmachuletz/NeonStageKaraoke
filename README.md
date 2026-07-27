@@ -231,11 +231,21 @@ Release artifacts, supported platforms, checksums, signing expectations, and the
 Build all three self-contained Linux AppImages locally:
 
 ```bash
-./scripts/release/build-linux-appimages.sh
+./scripts/build-appimages.sh
 ./artifacts/NeonStage-Server-x86_64.AppImage
 KARAOKE_SERVER=http://SERVER:5274 ./artifacts/NeonStage-LyricsEditor-x86_64.AppImage
 KARAOKE_SERVER=http://SERVER:5274 ./artifacts/NeonStage-Stage-x86_64.AppImage
 ```
+
+The build entry point detects `apt`, `dnf`, `pacman`, or `zypper`, installs
+missing open-source build dependencies by default, installs .NET 10 locally
+under the ignored `.tools/` directory when necessary, and downloads
+`linuxdeploy`/`appimagetool` into the same cache. The Server and Editor images
+include FFmpeg; the Editor also includes LibVLC and its plugins. Unity itself is
+the one intentional external prerequisite because its installation and license
+must be managed through Unity Hub. Build the .NET images without it via
+`./scripts/build-appimages.sh --skip-stage`. Pass `--no-auto-install` for a
+read-only dependency check.
 
 The Server AppImage contains the API and both web portals, but no private library, database, credentials, downloader, models, or GPU aligner. It can serve an existing library and import complete `.neonstage.zip` song packages without the alignment stack. New downloads, folder ingestion, and realignment still require the separately managed worker/alignment environment.
 

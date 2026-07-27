@@ -22,11 +22,19 @@ The separate manually dispatched `unity-stage-release.yml` workflow builds the L
 ```bash
 ./scripts/release/verify-no-media.sh
 dotnet test Karaoke.slnx -c Release
-./scripts/release/build-linux-appimages.sh
+./scripts/build-appimages.sh
 ./scripts/release/verify-no-media.sh artifacts
 ```
 
 Individual packages can be rebuilt with `build-server-appimage.sh`, `build-editor-appimage.sh`, or `build-stage-appimage.sh`. Set `NEONSTAGE_SKIP_UNITY_BUILD=1` when a current Unity Linux player already exists in `src/Karaoke.Stage.Unity/Builds/Linux`.
+
+`scripts/build-appimages.sh` is the supported local entry point. It resolves
+open-source build dependencies through `apt`, `dnf`, `pacman`, or `zypper`, can
+install .NET 10 into the ignored `.tools/dotnet` directory, and caches downloaded
+AppImage tooling under `.tools/appimage`. Use `--skip-stage` on machines without
+Unity and `--no-auto-install` to turn all automatic installation into a strict
+dependency check. Optional `APPIMAGETOOL_SHA256` and `LINUXDEPLOY_SHA256` values
+pin and verify downloaded build tools in controlled release environments.
 
 Unity builds:
 
@@ -41,8 +49,8 @@ Run the media guard against `src/Karaoke.Stage.Unity/Builds` before packaging it
 
 - `server-linux`: ASP.NET Core server and web portals; no database and no library
 - `editor-linux-x64`: Avalonia editor; no cached audio and no recovery drafts
-- `NeonStage-Server-x86_64.AppImage`: self-contained ASP.NET Core server and web portals; configuration and persistent data remain outside the image
-- `NeonStage-LyricsEditor-x86_64.AppImage`: self-contained editor including LibVLC; server URL is supplied through `KARAOKE_SERVER`
+- `NeonStage-Server-x86_64.AppImage`: self-contained ASP.NET Core server, web portals, and FFmpeg; configuration and persistent data remain outside the image
+- `NeonStage-LyricsEditor-x86_64.AppImage`: self-contained editor including FFmpeg, LibVLC, and VLC plugins; server URL is supplied through `KARAOKE_SERVER`
 
 The Docker Compose image is the server/API deployment. GPU alignment, local
 folder ingestion, and wishlist download processing stay in separately managed

@@ -2,15 +2,13 @@
 set -Eeuo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+# shellcheck source=scripts/release/lib/appimage-common.sh
+source "$repo_root/scripts/release/lib/appimage-common.sh"
 output=${1:-"$repo_root/artifacts/NeonStage-Stage-x86_64.AppImage"}
-tool_dir="$repo_root/.tools/appimage"
 build_dir="$repo_root/src/Karaoke.Stage.Unity/Builds/Linux"
 icon="$repo_root/src/Karaoke.App/Assets/neon-stage-icon.png"
 
-[[ $(uname -m) == x86_64 ]] || { echo "The AppImage build currently supports x86_64 only." >&2; exit 2; }
-for command in curl convert find; do
-  command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }
-done
+ns_prepare_system_dependencies stage
 
 if [[ ${NEONSTAGE_SKIP_UNITY_BUILD:-0} != 1 ]]; then
   "$repo_root/scripts/linux/build-unity-stage-linux.sh"
@@ -21,13 +19,8 @@ fi
 }
 
 "$repo_root/scripts/release/verify-no-media.sh" "$repo_root"
-mkdir -p "$tool_dir" "$(dirname "$output")"
-appimagetool="$tool_dir/appimagetool-x86_64.AppImage"
-if [[ ! -x "$appimagetool" ]]; then
-  curl -fL --retry 3 -o "$appimagetool" \
-    https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-  chmod +x "$appimagetool"
-fi
+appimagetool=$(ns_ensure_appimage_tool "$repo_root")
+mkdir -p "$(dirname "$output")"
 
 work=$(mktemp -d -t neon-stage-stage-appimage.XXXXXXXX)
 trap 'rm -rf -- "$work"' EXIT
@@ -46,7 +39,7 @@ chmod +x "$appdir/AppRun"
 cp "$repo_root/packaging/linux/neon-stage-stage.desktop" "$appdir/neon-stage-stage.desktop"
 cp "$repo_root/packaging/linux/neon-stage-stage.desktop" \
   "$appdir/usr/share/applications/neon-stage-stage.desktop"
-convert "$icon" -resize 256x256! "$appdir/neon-stage-stage.png"
+ns_convert_icon "$icon" "$appdir/neon-stage-stage.png"
 cp "$appdir/neon-stage-stage.png" \
   "$appdir/usr/share/icons/hicolor/256x256/apps/neon-stage-stage.png"
 ln -sfn neon-stage-stage.png "$appdir/.DirIcon"
@@ -58,5 +51,6 @@ cp "$repo_root/packaging/licenses/AppImage-Type2-Runtime-LICENSE.txt" \
 rm -f "$output"
 ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" "$appdir" "$output"
 chmod +x "$output"
+ns_verify_appimage "$output"
 "$repo_root/scripts/release/verify-no-media.sh" "$(dirname "$output")"
 echo "Stage AppImage created: $output"

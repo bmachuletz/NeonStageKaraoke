@@ -6,12 +6,20 @@ unity_project="$project_root/src/Karaoke.Stage.Unity"
 unity_editor=${UNITY_EDITOR:-}
 
 if [[ -z "$unity_editor" ]]; then
-  unity_editor=$(find "$HOME/Unity/Hub/Editor" -mindepth 3 -maxdepth 3 -type f -path '*/Editor/Unity' -perm -111 \
-    -print -quit 2>/dev/null || true)
+  for candidate in \
+    "$HOME"/Unity/Hub/Editor/*/Editor/Unity \
+    "$HOME"/.local/share/unity3d/Hub/Editor/*/Editor/Unity \
+    /opt/unityhub/Editor/*/Editor/Unity \
+    /opt/Unity/Hub/Editor/*/Editor/Unity \
+    /opt/unity/Editor/Unity; do
+    if [[ -x "$candidate" ]]; then unity_editor=$candidate; break; fi
+  done
 fi
 
 if [[ -z "$unity_editor" || ! -x "$unity_editor" ]]; then
-  echo "Unity 6 Editor nicht gefunden. Setze UNITY_EDITOR=/pfad/zu/Unity." >&2
+  echo "Unity 6 Editor nicht gefunden." >&2
+  echo "Installiere in Unity Hub das Modul 'Linux Build Support' oder setze UNITY_EDITOR=/pfad/zu/Editor/Unity." >&2
+  echo "Server und Editor können unabhängig mit ./scripts/build-appimages.sh --skip-stage gebaut werden." >&2
   exit 1
 fi
 

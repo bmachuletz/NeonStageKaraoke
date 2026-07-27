@@ -31,7 +31,7 @@ jobs:
       - name: Install AppImage runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick vlc
+          sudo apt-get install -y file ffmpeg imagemagick vlc
       - name: Publish server and editor
         run: |
           dotnet publish src/Karaoke.Server/Karaoke.Server.csproj -c Release --no-restore -o artifacts/server-linux

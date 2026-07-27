@@ -47,7 +47,33 @@ Server und Desktop-App laufen jeweils im Vordergrund. Zum Beenden `Strg+C` drüc
 Server, Lyrics-Editor und Unity-Stage gemeinsam bauen:
 
 ```bash
-./scripts/release/build-linux-appimages.sh
+./scripts/build-appimages.sh
+```
+
+Das Skript erkennt `apt`, `dnf`, `pacman` oder `zypper` und installiert fehlende
+freie Build-Abhängigkeiten standardmäßig automatisch. Ein fehlendes .NET-10-SDK
+wird lokal und ohne Root-Rechte unter `.tools/dotnet` installiert;
+`linuxdeploy` und `appimagetool` landen ebenfalls im ignorierten `.tools`-Cache.
+FFmpeg wird in Server und Editor eingebettet, LibVLC samt Plugins zusätzlich in
+den Editor. Unity selbst muss wegen Installation und Lizenz über Unity Hub
+bereitgestellt werden.
+
+Nur Server und Editor bauen:
+
+```bash
+./scripts/build-appimages.sh --skip-stage
+```
+
+Abhängigkeiten lediglich prüfen, ohne Systempakete oder Tools zu installieren:
+
+```bash
+./scripts/build-appimages.sh --skip-stage --no-auto-install
+```
+
+Die Vorbereitung kann auch getrennt ausgeführt werden:
+
+```bash
+./scripts/setup-appimage-build-deps.sh all
 ```
 
 Die Ergebnisse liegen unter `artifacts/`. Der Server speichert Daten und

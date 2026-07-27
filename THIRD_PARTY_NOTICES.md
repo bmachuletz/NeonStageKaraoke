@@ -82,7 +82,7 @@ are ignored and never enter the application releases.
 |---|---|---|
 | Unity Engine and Unity packages | stage runtime/editor | Unity Software Terms and package-specific licenses (commonly Unity Companion License); not covered by Neon Stage's Apache-2.0 license |
 | TextMesh Pro resources / Liberation Sans | stage text | Unity package terms / SIL Open Font License 1.1 respectively |
-| FFmpeg | decoding, conversion, analysis | LGPL-2.1-or-later or GPL-2.0-or-later depending on the exact build/configuration; Debian container copyright metadata is retained |
+| FFmpeg | decoding, conversion, analysis | LGPL-2.1-or-later or GPL-2.0-or-later depending on the exact build/configuration; container and AppImage artifacts retain the distributor build/version and copyright metadata |
 | curl / libcurl | server-container health and worker HTTP | curl license; Debian copyright metadata is retained |
 | linuxdeploy / appimagetool | AppImage build tooling | MIT for the upstream projects; verify downloaded build-tool revisions before release |
 | AppImage Type-2 runtime | embedded launcher in each AppImage | MIT; its upstream license and bundled-dependency inventory are included as `AppImage-Type2-Runtime-LICENSE.txt` in every AppImage |
