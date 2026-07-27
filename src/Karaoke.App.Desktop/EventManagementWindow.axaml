@@ -1,0 +1,91 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.EventManagementWindow"
+        Title="Neon Stage · Eventverwaltung"
+        Icon="avares://Karaoke.App/Assets/neon-stage-icon.png"
+        Width="1060" Height="730" MinWidth="860" MinHeight="600"
+        WindowStartupLocation="CenterOwner" Background="#0D1016">
+  <Grid RowDefinitions="74,*,42">
+    <Border Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,0,0,1" Padding="20,12">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel>
+          <TextBlock Text="EVENTVERWALTUNG" Foreground="#DFFF28" FontSize="21" FontWeight="Bold" />
+          <TextBlock Text="Sessions planen, teilen und auf die Bühne schalten" Foreground="#8993A6" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <Button Content="↻ Aktualisieren" Click="RefreshClick" />
+          <Button Content="⚡ Sofort-Session" Click="QuickSessionClick" />
+          <Button Content="＋ Event planen" Click="NewEventClick" Background="#FF3CBD" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" ColumnDefinitions="340,*">
+      <Border Background="#121720" BorderBrush="#2A303B" BorderThickness="0,0,1,0" Padding="14">
+        <Grid RowDefinitions="Auto,*">
+          <TextBlock Text="EVENTS" Foreground="#8993A6" FontSize="11" FontWeight="Bold" Margin="4,2,0,10" />
+          <ListBox Grid.Row="1" ItemsSource="{Binding Events}" SelectedItem="{Binding SelectedEvent}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid Margin="7,8" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+                  <TextBlock Text="{Binding Name}" FontSize="15" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                  <TextBlock Grid.Column="1" Text="{Binding StatusLabel}" Foreground="{Binding StatusColor}"
+                             FontSize="9" FontWeight="Bold" Margin="8,2,0,0" />
+                  <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding ScheduleLabel}" Foreground="#AAB2C1" FontSize="11" />
+                  <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding Description}" Foreground="#677185"
+                             FontSize="10" TextTrimming="CharacterEllipsis" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+
+      <ScrollViewer Grid.Column="1">
+        <Grid Margin="28" RowDefinitions="Auto,Auto,Auto,Auto,*" IsEnabled="{Binding HasSelection}">
+          <StackPanel>
+            <TextBlock Text="{Binding SelectedEvent.Name, FallbackValue='Noch keine Session ausgewählt'}"
+                       FontSize="28" FontWeight="Bold" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding SelectedEvent.ScheduleLabel}" Foreground="#DFFF28" FontSize="14" />
+            <TextBlock Text="{Binding SelectedEvent.Description}" Foreground="#AAB2C1" TextWrapping="Wrap" Margin="0,8,0,0" />
+          </StackPanel>
+
+          <Grid Grid.Row="1" ColumnDefinitions="220,*" Margin="0,24,0,0">
+            <Border Width="210" Height="210" Padding="7" CornerRadius="14" Background="White">
+              <Image Source="{Binding QrCode}" Stretch="Uniform" />
+            </Border>
+            <StackPanel Grid.Column="1" Margin="22,0,0,0" Spacing="9">
+              <TextBlock Text="Einladungslink" Foreground="#8993A6" FontSize="10" FontWeight="Bold" />
+              <TextBox Text="{Binding InvitationUrl}" IsReadOnly="True" TextWrapping="Wrap" />
+              <WrapPanel Orientation="Horizontal">
+                <Button Content="Link kopieren" Click="CopyLinkClick" Margin="0,0,7,7" />
+                <Button Content="WhatsApp" Click="WhatsAppClick" Margin="0,0,7,7" />
+                <Button Content="E-Mail" Click="EmailClick" Margin="0,0,7,7" />
+                <Button Content="QR speichern" Click="SaveQrClick" Margin="0,0,7,7" />
+              </WrapPanel>
+              <TextBlock Text="{Binding WishCountLabel}" Foreground="#FF3CBD" FontWeight="SemiBold" Margin="0,8,0,0" />
+            </StackPanel>
+          </Grid>
+
+          <Separator Grid.Row="2" Margin="0,24,0,18" />
+          <WrapPanel Grid.Row="3" Orientation="Horizontal">
+            <Button Content="Auf Bühne aktivieren" Click="ActivateClick" IsEnabled="{Binding CanActivate}"
+                    Background="#DFFF28" Foreground="#11151C" Margin="0,0,8,8" />
+            <Button Content="Aktive Bühne beenden" Click="DeactivateClick" IsEnabled="{Binding CanDeactivate}"
+                    Margin="0,0,8,8" />
+            <Button Content="Wünsche abarbeiten" Click="ProcessWishesClick" Margin="0,0,8,8" />
+            <Button Content="Session löschen" Click="DeleteClick" IsEnabled="{Binding CanDelete}"
+                    Background="#D94762" Foreground="White" Margin="0,0,8,8" />
+          </WrapPanel>
+        </Grid>
+      </ScrollViewer>
+    </Grid>
+
+    <Border Grid.Row="2" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0" Padding="14,0">
+      <Grid ColumnDefinitions="*,Auto">
+        <TextBlock Text="{Binding Status}" VerticalAlignment="Center" Foreground="#AAB2C1" />
+        <Button Grid.Column="1" Content="Schließen" Click="CloseClick" Padding="18,5" />
+      </Grid>
+    </Border>
+  </Grid>
+</Window>

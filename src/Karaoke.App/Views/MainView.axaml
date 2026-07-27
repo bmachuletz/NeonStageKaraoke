@@ -1,0 +1,220 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:controls="using:Karaoke.App.Controls"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:Karaoke.App.ViewModels"
+             x:Class="Karaoke.App.Views.MainView"
+             x:DataType="vm:MainViewModel">
+  <UserControl.Styles>
+    <Style Selector="Button.transport">
+      <Setter Property="Width" Value="58"/>
+      <Setter Property="Height" Value="48"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="FontSize" Value="25"/>
+      <Setter Property="HorizontalContentAlignment" Value="Center"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+    </Style>
+    <Style Selector="UserControl.compact Border.stageCover">
+      <Setter Property="Width" Value="82"/>
+      <Setter Property="Height" Value="82"/>
+    </Style>
+    <Style Selector="UserControl.compact TextBlock.stageSinger">
+      <Setter Property="FontSize" Value="15"/>
+    </Style>
+    <Style Selector="UserControl.compact TextBlock.stageTitle">
+      <Setter Property="FontSize" Value="21"/>
+    </Style>
+    <Style Selector="UserControl.compact TextBlock.stageStatus">
+      <Setter Property="FontSize" Value="13"/>
+    </Style>
+  </UserControl.Styles>
+  <Grid Background="#090713" RowDefinitions="Auto,*">
+    <Border Background="#161126" Padding="20,14">
+      <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="10">
+        <StackPanel>
+          <TextBlock Text="NEON STAGE" FontSize="28" FontWeight="Black" Foreground="#E8FF32"/>
+          <TextBlock Text="{Binding ActiveEventName}" Foreground="#FF4FD8" FontWeight="Bold"/>
+          <TextBlock Text="{Binding Status}" Foreground="#9C94B8"/>
+        </StackPanel>
+        <Button Grid.Column="1" Command="{Binding OpenSettingsCommand}" Classes="transport" ToolTip.Tip="Einstellungen">
+          <PathIcon Width="24" Height="24" Foreground="White" Data="M12,15.5A3.5,3.5 0 1,0 12,8.5A3.5,3.5 0 0,0 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.42,11L21.54,9.37L19.54,5.9L17.05,6.9C16.54,6.5 16,6.17 15.38,5.92L15,3.27H11L10.62,5.92C10,6.17 9.46,6.5 8.95,6.9L6.46,5.9L4.46,9.37L6.58,11C6.53,11.34 6.5,11.67 6.5,12C6.5,12.33 6.53,12.65 6.57,12.97L4.45,14.63L6.45,18.1L8.97,17.09C9.47,17.48 10.01,17.81 10.62,18.06L11,20.73H15L15.38,18.07C15.99,17.82 16.53,17.49 17.03,17.1L19.55,18.1L21.55,14.63L19.43,12.97Z"/>
+        </Button>
+        <Button Grid.Column="2" Command="{Binding ToggleQrCodeCommand}" Classes="transport" ToolTip.Tip="QR-Code für Gäste">
+          <PathIcon Width="24" Height="24" Foreground="#E8FF32" Data="M3,3H10V10H3V3M5,5V8H8V5H5M14,3H21V10H14V3M16,5V8H19V5H16M3,14H10V21H3V14M5,16V19H8V16H5M14,14H16V16H14V14M17,14H21V18H19V16H17V14M14,17H17V21H14V17M18,19H21V21H18V19Z"/>
+        </Button>
+        <Button Grid.Column="3" Command="{Binding ToggleStageCommand}" Classes="accent transport" ToolTip.Tip="Bühne – jetzt geht die Party ab">
+          <PathIcon Width="25" Height="25" Foreground="#090713" Data="M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14M18.5,11A6.5,6.5 0 0,1 5.5,11H7A5,5 0 0,0 17,11H18.5M11,18.43V21H13V18.43A7.52,7.52 0 0,0 19.5,11H18A6,6 0 0,1 6,11H4.5A7.52,7.52 0 0,0 11,18.43Z"/>
+        </Button>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="1" Margin="18" ColumnDefinitions="1.25*,0.75*" ColumnSpacing="18" IsVisible="{Binding !StageMode}">
+      <Border Background="#12101D" CornerRadius="20" Padding="18">
+        <Grid RowDefinitions="Auto,*">
+          <Grid ColumnDefinitions="*,180,Auto" ColumnSpacing="10">
+            <TextBox Watermark="Titel, Interpret oder Album" Text="{Binding SearchText}"/>
+            <TextBox Grid.Column="1" Watermark="Dein Name" Text="{Binding GuestName}"/>
+            <Button Grid.Column="2" Content="SUCHEN" Command="{Binding RefreshCommand}"/>
+          </Grid>
+          <ListBox Grid.Row="1" Margin="0,14,0,0" ItemsSource="{Binding Songs}" SelectedItem="{Binding SelectedSong}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid ColumnDefinitions="64,*,Auto" Margin="8" ColumnSpacing="12">
+                  <Border Width="56" Height="56" CornerRadius="8" Background="#2C2540" ClipToBounds="True">
+                    <Image Source="{Binding Cover}" Stretch="UniformToFill"/>
+                  </Border>
+                  <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Title}" FontSize="18" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding Artist}" Foreground="#A79FBF"/>
+                  </StackPanel>
+                  <TextBlock Grid.Column="2" Text="LRC" Foreground="#E8FF32" IsVisible="{Binding HasLyrics}"/>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+      <Border Grid.Column="1" Background="#221436" CornerRadius="20" Padding="18">
+        <Grid RowDefinitions="Auto,Auto,*,Auto">
+          <TextBlock Text="WARTELISTE" FontSize="24" FontWeight="Black" Foreground="#FF4FD8"/>
+          <Button Grid.Row="1" Margin="0,12" Content="AUSGEWÄHLTEN SONG HINZUFÜGEN" Command="{Binding AddCommand}"/>
+          <ListBox Grid.Row="2" ItemsSource="{Binding Queue}">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid Margin="6" ColumnDefinitions="48,*" ColumnSpacing="10">
+                  <Border Width="42" Height="42" CornerRadius="7" Background="#3A2850" ClipToBounds="True">
+                    <Image Source="{Binding Cover}" Stretch="UniformToFill"/>
+                  </Border>
+                  <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding Song.Title}" FontWeight="Bold"/>
+                    <TextBlock Text="{Binding RequestedBy}" Foreground="#BDA9D9"/>
+                  </StackPanel>
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+          <Grid Grid.Row="3" ColumnDefinitions="*,*,*,*" ColumnSpacing="8" Margin="0,10" HorizontalAlignment="Center">
+            <Button Classes="transport" Command="{Binding PreviousCommand}" ToolTip.Tip="Vorheriger Titel"><PathIcon Width="24" Height="24" Foreground="White" Data="M6,6H8V18H6V6M9.5,12L18,18V6L9.5,12Z"/></Button>
+            <Button Grid.Column="1" Classes="transport" Command="{Binding PauseCommand}" ToolTip.Tip="Pause"><PathIcon Width="24" Height="24" Foreground="White" Data="M6,5H10V19H6V5M14,5H18V19H14V5Z"/></Button>
+            <Button Grid.Column="2" Classes="transport" Command="{Binding StartCommand}" ToolTip.Tip="Starten oder fortsetzen"><PathIcon Width="24" Height="24" Foreground="#E8FF32" Data="M8,5V19L19,12L8,5Z"/></Button>
+            <Button Grid.Column="3" Classes="transport" Command="{Binding NextCommand}" ToolTip.Tip="Nächster Titel"><PathIcon Width="24" Height="24" Foreground="White" Data="M6,18L14.5,12L6,6V18M16,6V18H18V6H16Z"/></Button>
+          </Grid>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Grid Grid.Row="1" IsVisible="{Binding StageMode}">
+      <controls:MusicReactiveBackground Frames="{Binding VisualizationFrames}" Position="{Binding LyricsPosition}" IsRunning="{Binding LyricsRunning}" IsHitTestVisible="False"/>
+      <Grid Margin="24" RowDefinitions="Auto,*,Auto" ColumnDefinitions="190,*,190" ColumnSpacing="18">
+      <StackPanel Grid.ColumnSpan="3" HorizontalAlignment="Center">
+        <Border Classes="stageCover" Width="120" Height="120" CornerRadius="16" Background="#221B31" ClipToBounds="True" Margin="0,0,0,8">
+          <Image Source="{Binding CurrentCover}" Stretch="UniformToFill"/>
+        </Border>
+        <TextBlock Classes="stageSinger" Text="{Binding CurrentSinger, StringFormat='AUF DER BÜHNE: {0}'}" Foreground="#FF4FD8" FontSize="20" HorizontalAlignment="Center"/>
+        <TextBlock Classes="stageTitle" Text="{Binding CurrentTitle}" Foreground="White" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center"/>
+        <TextBlock Classes="stageStatus" Text="{Binding AudioStatus}" Foreground="#9C94B8" FontSize="16" HorizontalAlignment="Center"/>
+      </StackPanel>
+      <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="*,1.5*,*" Margin="4,8" ClipToBounds="True">
+        <controls:FittedLyricsControl Text="{Binding LyricMinusOne}" MaximumFontSize="46" MinimumFontSize="24" Foreground="#81798E"/>
+        <Grid Grid.Row="1" Margin="0,4">
+          <controls:KaraokeLyricsControl HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Text="{Binding CurrentLyric}" Words="{Binding CurrentLyricWords}" Position="{Binding LyricsPosition}" IsRunning="{Binding LyricsRunning}"/>
+          <TextBlock Text="{Binding LyricCue}" Foreground="#FF4FD8" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,2"/>
+        </Grid>
+        <controls:FittedLyricsControl Grid.Row="2" Text="{Binding LyricPlusOne}" MaximumFontSize="46" MinimumFontSize="24" Foreground="#BDB5C8"/>
+      </Grid>
+      <Border Grid.Row="1" Grid.RowSpan="2" Grid.Column="0" Padding="10" Background="#E6191122" BorderBrush="#6A477C" BorderThickness="1" CornerRadius="16" HorizontalAlignment="Left" VerticalAlignment="Bottom">
+        <StackPanel Spacing="7" HorizontalAlignment="Center">
+          <Border Background="White" Padding="7" CornerRadius="10">
+            <Image Source="{Binding QrCode}" Width="160" Height="160"/>
+          </Border>
+          <TextBlock Text="SONG WÜNSCHEN" Foreground="#E8FF32" FontSize="14" FontWeight="Black" HorizontalAlignment="Center"/>
+          <TextBlock Text="Scannen &amp; direkt mitsingen" Foreground="#D0C6DC" FontSize="11" HorizontalAlignment="Center"/>
+        </StackPanel>
+      </Border>
+      <Border Grid.Row="1" Grid.RowSpan="2" Grid.Column="2" Width="190" Padding="12" Background="#E6191122" BorderBrush="#6A477C" BorderThickness="1" CornerRadius="16" HorizontalAlignment="Right" VerticalAlignment="Bottom">
+        <StackPanel Spacing="7">
+          <TextBlock Text="ALS NÄCHSTES" Foreground="#FF4FD8" FontSize="13" FontWeight="Black" HorizontalAlignment="Center"/>
+          <Border Width="112" Height="112" CornerRadius="10" Background="#352745" ClipToBounds="True" HorizontalAlignment="Center">
+            <Image Source="{Binding NextCover}" Stretch="UniformToFill"/>
+          </Border>
+          <TextBlock Text="{Binding NextTitle}" FontWeight="Bold" FontSize="14" TextAlignment="Center" TextWrapping="Wrap" MaxHeight="40"/>
+          <TextBlock Text="{Binding NextSinger}" Foreground="#D0C6DC" FontSize="11" TextAlignment="Center" TextWrapping="Wrap"/>
+        </StackPanel>
+      </Border>
+      <Grid Grid.Row="2" Grid.Column="1" ColumnDefinitions="Auto,105,Auto,105,Auto,Auto,Auto,Auto" ColumnSpacing="8" HorizontalAlignment="Center">
+        <TextBlock Text="MUSIK" VerticalAlignment="Center"/>
+        <Slider Grid.Column="1" Minimum="0" Maximum="100" Value="{Binding Volume}"/>
+        <TextBlock Grid.Column="2" Text="VOCALS" VerticalAlignment="Center" Foreground="#FF4FD8"/>
+        <Slider Grid.Column="3" Minimum="0" Maximum="100" Value="{Binding VocalVolume}"/>
+        <Button Grid.Column="4" Classes="transport" Command="{Binding PreviousCommand}" ToolTip.Tip="Vorheriger Titel"><PathIcon Width="24" Height="24" Foreground="White" Data="M6,6H8V18H6V6M9.5,12L18,18V6L9.5,12Z"/></Button>
+        <Button Grid.Column="5" Classes="transport" Command="{Binding PauseCommand}" ToolTip.Tip="Pause"><PathIcon Width="24" Height="24" Foreground="White" Data="M6,5H10V19H6V5M14,5H18V19H14V5Z"/></Button>
+        <Button Grid.Column="6" Classes="transport" Command="{Binding StartCommand}" ToolTip.Tip="Starten oder fortsetzen"><PathIcon Width="24" Height="24" Foreground="#E8FF32" Data="M8,5V19L19,12L8,5Z"/></Button>
+        <Button Grid.Column="7" Classes="transport" Command="{Binding NextCommand}" ToolTip.Tip="Nächster Titel"><PathIcon Width="24" Height="24" Foreground="White" Data="M6,18L14.5,12L6,6V18M16,6V18H18V6H16Z"/></Button>
+      </Grid>
+      </Grid>
+    </Grid>
+
+    <Border Grid.RowSpan="2" ZIndex="20" IsVisible="{Binding QrCodeVisible}" Background="#E6050310">
+      <Border MaxWidth="390" Margin="18" Padding="28" CornerRadius="24" Background="#191122" BorderBrush="#684080" BorderThickness="1" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+        <StackPanel Spacing="12">
+          <TextBlock Text="GÄSTE EINLADEN" Foreground="#FF4FD8" FontWeight="Black" HorizontalAlignment="Center"/>
+          <TextBlock Text="{Binding ActiveEventName}" Foreground="#E8FF32" FontSize="16" FontWeight="Bold" HorizontalAlignment="Center"/>
+          <TextBlock Text="Scannen &amp; Song wünschen" FontSize="25" FontWeight="Black" HorizontalAlignment="Center"/>
+          <Border Background="White" Padding="12" CornerRadius="15" HorizontalAlignment="Center"><Image Source="{Binding QrCode}" Width="250" Height="250"/></Border>
+          <TextBlock Text="{Binding WebAddress}" Foreground="#E8FF32" TextWrapping="Wrap" TextAlignment="Center"/>
+          <TextBlock Text="Smartphone und Webservice müssen im selben Netzwerk sein." Foreground="#A79FBF" TextWrapping="Wrap" TextAlignment="Center"/>
+          <Button Content="SCHLIESSEN" Command="{Binding ToggleQrCodeCommand}" HorizontalAlignment="Stretch"/>
+        </StackPanel>
+      </Border>
+    </Border>
+
+    <Border Grid.RowSpan="2" ZIndex="30" IsVisible="{Binding SettingsVisible}" Background="#E6050310">
+      <Border MaxWidth="560" Margin="18" Padding="28" CornerRadius="24" Background="#191122" BorderBrush="#684080" BorderThickness="1" HorizontalAlignment="Stretch" VerticalAlignment="Center">
+        <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="10">
+          <TextBlock Text="EINSTELLUNGEN" Foreground="#FF4FD8" FontWeight="Black"/>
+          <TextBlock Grid.Row="1" Text="Neon Stage konfigurieren" FontSize="26" FontWeight="Black"/>
+          <StackPanel Grid.Row="2" Spacing="5">
+            <TextBlock Text="WEBSERVICE-ADRESSE" Foreground="#B9AEC8" FontSize="12" FontWeight="Bold"/>
+            <TextBox Text="{Binding SettingsServerAddress}" Watermark="http://192.168.1.10:5274"/>
+          </StackPanel>
+          <StackPanel Grid.Row="3" Spacing="5">
+            <TextBlock Text="MUSIKBIBLIOTHEK AUF DEM SERVER" Foreground="#B9AEC8" FontSize="12" FontWeight="Bold"/>
+            <TextBox Text="{Binding SettingsLibraryPath}" Watermark="/pfad/zur/musik"/>
+          </StackPanel>
+          <Grid Grid.Row="4" ColumnDefinitions="*,*,Auto" ColumnSpacing="14">
+            <StackPanel Spacing="5">
+              <TextBlock Text="STANDARD-LAUTSTÄRKE" Foreground="#B9AEC8" FontSize="12" FontWeight="Bold"/>
+              <Slider Minimum="0" Maximum="100" Value="{Binding Volume}"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="5">
+              <TextBlock Text="VOCALS-BEGLEITUNG" Foreground="#B9AEC8" FontSize="12" FontWeight="Bold"/>
+              <Slider Minimum="0" Maximum="100" Value="{Binding VocalVolume}"/>
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="5">
+              <TextBlock Text="AUDIOAUSGABE" Foreground="#B9AEC8" FontSize="12" FontWeight="Bold"/>
+              <TextBlock Text="Systemstandard (VLC)" Foreground="#E8FF32" Margin="0,8"/>
+            </StackPanel>
+          </Grid>
+          <StackPanel Grid.Row="5" Spacing="6">
+            <TextBlock Text="EVENTS &amp; EINLADUNGEN" Foreground="#FF4FD8" FontSize="12" FontWeight="Bold"/>
+            <Grid ColumnDefinitions="*,170,Auto" ColumnSpacing="7">
+              <TextBox Text="{Binding NewEventName}" Watermark="Partyname"/>
+              <TextBox Grid.Column="1" Text="{Binding NewEventStartsAt}" Watermark="2026-08-01 19:00"/>
+              <Button Grid.Column="2" Content="ANLEGEN" Command="{Binding CreateEventCommand}"/>
+            </Grid>
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="7">
+              <ComboBox ItemsSource="{Binding Events}" SelectedItem="{Binding SelectedEvent}">
+                <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate></ComboBox.ItemTemplate>
+              </ComboBox>
+              <Button Grid.Column="1" Content="BÜHNE AKTIVIEREN" Command="{Binding ActivateEventCommand}" Classes="accent"/>
+            </Grid>
+          </StackPanel>
+          <TextBlock Grid.Row="6" Text="{Binding SettingsMessage}" Foreground="#E8FF32" TextWrapping="Wrap" MinHeight="20"/>
+          <Grid Grid.Row="7" ColumnDefinitions="*,*" ColumnSpacing="10">
+            <Button Content="ABBRECHEN" Command="{Binding CloseSettingsCommand}"/>
+            <Button Grid.Column="1" Content="SPEICHERN" Command="{Binding SaveSettingsCommand}" Classes="accent"/>
+          </Grid>
+        </Grid>
+      </Border>
+    </Border>
+  </Grid>
+</UserControl>

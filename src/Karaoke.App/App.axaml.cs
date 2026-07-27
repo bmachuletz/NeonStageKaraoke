@@ -1,0 +1,3 @@
+using Avalonia; using Avalonia.Controls.ApplicationLifetimes; using Avalonia.Markup.Xaml; using Karaoke.App.ViewModels; using Karaoke.App.Views;
+namespace Karaoke.App;
+public partial class App:Application { public override void Initialize()=>AvaloniaXamlLoader.Load(this); public override void OnFrameworkInitializationCompleted(){ var viewModel=new MainViewModel(); if(ApplicationLifetime is IClassicDesktopStyleApplicationLifetime d){d.MainWindow=new MainWindow{DataContext=viewModel};d.Exit+=(_,_)=>viewModel.Dispose();} else if(ApplicationLifetime is ISingleViewApplicationLifetime s)s.MainView=new MainView{DataContext=viewModel}; base.OnFrameworkInitializationCompleted(); } }

@@ -1,0 +1,76 @@
+# .NET
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# Unity: only source assets and project/package settings belong in Git
+src/Karaoke.Stage.Unity/[Ll]ibrary/
+src/Karaoke.Stage.Unity/[Tt]emp/
+src/Karaoke.Stage.Unity/[Oo]bj/
+src/Karaoke.Stage.Unity/[Ll]ogs/
+src/Karaoke.Stage.Unity/[Uu]ser[Ss]ettings/
+src/Karaoke.Stage.Unity/Builds/
+src/Karaoke.Stage.Unity/build/
+src/Karaoke.Stage.Unity/.utmp/
+src/Karaoke.Stage.Unity/*.csproj
+src/Karaoke.Stage.Unity/*.sln*
+
+# Runtime data, media, generated stems and large model weights
+data/
+**/data/
+lyrics-word-aligner/data/
+lyrics-word-aligner/models/
+*.mp3
+*.wav
+*.flac
+*.ogg
+*.m4a
+*.ckpt
+*.pt
+*.onnx
+*.safetensors
+*.sqlite
+*.db
+
+# Local tools, secrets and caches
+.tools/
+**/.git/
+.env
+.env.*
+!.env.example
+src/variables
+**/__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Build artefacts
+artifacts/
+publish/
+*.apk
+*.aab
+
+# Karaoke source and generated sidecars (never source-controlled or released)
+*.lrc
+*.elrc
+*.lyrics.json
+*.alignment.json
+*.stems.json
+*.pre-align.lrc
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.bmp
+*.gif
+music/
+library/
+
+# Explicitly allowed application branding/resources (never song artwork)
+!src/Karaoke.App/Assets/neon-stage-icon.png
+!src/Karaoke.App.Android/Resources/drawable/app_icon.png
+!src/Karaoke.Stage.Unity/Assets/Resources/NeonStageIcon.png
+!lyrics-word-aligner/third_party/SOFA/example.png

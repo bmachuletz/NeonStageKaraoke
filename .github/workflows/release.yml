@@ -1,0 +1,64 @@
+name: Release builds
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  dotnet-linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject media and local runtime data
+        run: bash scripts/release/verify-no-media.sh
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore release projects
+        run: |
+          dotnet restore src/Karaoke.Server/Karaoke.Server.csproj
+          dotnet restore src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj
+          dotnet restore tests/Karaoke.Editor.Core.Tests/Karaoke.Editor.Core.Tests.csproj
+          dotnet restore tests/Karaoke.Server.PlaybackTests/Karaoke.Server.PlaybackTests.csproj
+      - name: Test
+        run: |
+          dotnet test tests/Karaoke.Editor.Core.Tests/Karaoke.Editor.Core.Tests.csproj -c Release --no-restore
+          dotnet test tests/Karaoke.Server.PlaybackTests/Karaoke.Server.PlaybackTests.csproj -c Release --no-restore
+      - name: Install AppImage runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y imagemagick vlc
+      - name: Publish server and editor
+        run: |
+          dotnet publish src/Karaoke.Server/Karaoke.Server.csproj -c Release --no-restore -o artifacts/server-linux
+          dotnet publish src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj -c Release -r linux-x64 --self-contained false -o artifacts/editor-linux-x64
+          for package in artifacts/server-linux artifacts/editor-linux-x64; do
+            cp LICENSE NOTICE THIRD_PARTY_NOTICES.md ACKNOWLEDGEMENTS.md "$package/"
+          done
+          bash scripts/release/build-editor-appimage.sh "$PWD/NeonStage-LyricsEditor-x86_64.AppImage"
+      - name: Verify and package
+        run: |
+          bash scripts/release/verify-no-media.sh artifacts
+          tar -C artifacts -czf neon-stage-server-linux.tar.gz server-linux
+          tar -C artifacts -czf neon-stage-editor-linux-x64.tar.gz editor-linux-x64
+          sha256sum neon-stage-*.tar.gz NeonStage-*.AppImage > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-stage-linux
+          path: |
+            neon-stage-*.tar.gz
+            NeonStage-*.AppImage
+            SHA256SUMS
+      - name: Attach tagged artifacts to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            neon-stage-*.tar.gz
+            NeonStage-*.AppImage
+            SHA256SUMS

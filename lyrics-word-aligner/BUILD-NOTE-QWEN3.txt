@@ -1,0 +1,12 @@
+Qwen3-ASR / ForcedAligner support
+=================================
+
+The Qwen/Qwen3-ForcedAligner-0.6B-hf checkpoint currently requires a
+Transformers source build. The Docker image installs Transformers directly
+from the official Hugging Face GitHub repository and verifies at build time
+that Qwen3ASRForTokenClassification is available.
+
+Rebuild without cache:
+  docker compose down
+  docker compose build --no-cache --pull
+  docker compose up -d

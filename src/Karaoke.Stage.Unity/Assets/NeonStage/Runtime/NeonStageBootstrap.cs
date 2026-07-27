@@ -1,0 +1,686 @@
+using System;
+using System.Collections;
+using System.Threading.Tasks;
+using UnityEngine;
+using UnityEngine.Networking;
+
+namespace NeonStage.Stage
+{
+
+public sealed class NeonStageBootstrap : MonoBehaviour
+{
+    private const string DefaultServer = "http://192.168.178.91:5274";
+    // Der Server bevorzugt Unity-kompatible Ogg/Vorbis-Stems. Der Client fällt
+    // bei älteren Bibliothekseinträgen sicher auf die MP3-Masterspur zurück.
+    private const bool PreparedStemsAreUnityCompatible = true;
+    private StageAudioEngine _audio = null!;
+    private string _server = DefaultServer;
+    private string _status = "Verbinde mit NeonStage …";
+    private string? _loadedSongId;
+    private string _title = "NEON STAGE – UNITY AUDIO LAB";
+    private string _songTitle = "NEON STAGE";
+    private string _songArtist = "UNITY AUDIO LAB";
+    private bool _refreshing;
+    private string _controllerId = "";
+    private bool _ownsControl;
+    private bool _commandRunning;
+    private float _nextQrRefresh;
+    private float _nextTimingReport;
+    private bool _timingReportRunning;
+    private bool _hasActiveSession;
+    private bool _creatingQuickSession;
+    private string? _activeEventId;
+    private bool _initialSessionChecked;
+    private bool _exiting;
+    private float _musicVolume = 0.85f;
+    private float _vocalVolume = 0.35f;
+    private readonly StageLyricsEngine _lyrics = new();
+    // The audio engine now follows the decoder's actual sample clock. The old
+    // +80 ms compensation would therefore make correctly aligned words early.
+    private const double LyricsVisualLeadSeconds = 0.0;
+    private StageVisualView _visuals = null!;
+    private StageLoadingView _loading = null!;
+    private StageReactionView _reactions = null!;
+    private float _nextReactionPoll;
+    private bool _reactionPolling;
+    private long _lastReactionId;
+    private Texture2D? _controlButton;
+    private Texture2D? _controlButtonHover;
+    private Texture2D? _controlButtonActive;
+    private Texture2D? _sliderTrack;
+    private Texture2D? _sliderThumb;
+    private Texture2D? _transparent;
+    private Texture2D? _pill;
+    private Texture2D? _softGlow;
+    private Texture2D? _iconBadge;
+
+    [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+    private static void StartWithoutSceneSetup()
+    {
+        if (FindAnyObjectByType<NeonStageBootstrap>() != null) return;
+        DontDestroyOnLoad(new GameObject("NeonStage Stage Runtime", typeof(NeonStageBootstrap)));
+    }
+
+    private void Awake()
+    {
+        Application.runInBackground = true;
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
+        ConfigureStageCamera();
+        if (FindAnyObjectByType<AudioListener>() == null)
+            gameObject.AddComponent<AudioListener>();
+        _server = PlayerPrefs.GetString("NeonStage.Server", DefaultServer).TrimEnd('/');
+        _controllerId = PlayerPrefs.GetString("NeonStage.ControllerId", "");
+        if (!Guid.TryParse(_controllerId, out _))
+        {
+            _controllerId = Guid.NewGuid().ToString();
+            PlayerPrefs.SetString("NeonStage.ControllerId", _controllerId);
+            PlayerPrefs.Save();
+        }
+        _audio = gameObject.AddComponent<StageAudioEngine>();
+        _loading = new StageLoadingView(gameObject);
+        _lyrics.Initialize(gameObject);
+        _visuals = new StageVisualView(gameObject);
+        _reactions = new StageReactionView(gameObject);
+        _visuals.SetSessionActive(false);
+        _ = _visuals.LoadQrAsync(_server);
+        _ = ClaimControlAsync();
+        StartCoroutine(PollQueue());
+    }
+
+    private static void ConfigureStageCamera()
+    {
+        var camera = Camera.main;
+        if (camera == null)
+        {
+            var cameraObject = new GameObject("Neon Stage Camera", typeof(Camera));
+            cameraObject.tag = "MainCamera";
+            camera = cameraObject.GetComponent<Camera>();
+        }
+        camera.clearFlags = CameraClearFlags.SolidColor;
+        camera.backgroundColor = new Color(0.035f, 0.008f, 0.055f);
+        camera.cullingMask = 0;
+    }
+
+    private IEnumerator PollQueue()
+    {
+        while (true)
+        {
+            _ = RefreshQueueAsync();
+            yield return new WaitForSecondsRealtime(1f);
+        }
+    }
+
+    private void Update()
+    {
+        if (Input.GetKeyDown(KeyCode.Escape))
+        {
+            _ = ExitStageAsync();
+            return;
+        }
+        if (Time.unscaledTime >= _nextQrRefresh)
+        {
+            _nextQrRefresh = Time.unscaledTime + 15f;
+            _ = _visuals.LoadQrAsync(_server, true);
+        }
+        _visuals.Update(_audio);
+        _loading.Update();
+        _reactions.Update();
+        if (_hasActiveSession && Time.unscaledTime >= _nextReactionPoll)
+        {
+            _nextReactionPoll = Time.unscaledTime + .35f;
+            _ = PollReactionsAsync();
+        }
+        _lyrics.Update(_audio.PositionSeconds + LyricsVisualLeadSeconds, _visuals.AudioImpact);
+        if (_audio.HasClip && Time.unscaledTime >= _nextTimingReport)
+        {
+            _nextTimingReport = Time.unscaledTime + 1f;
+            _ = ReportTimingAsync();
+        }
+    }
+
+    private async Task ReportTimingAsync()
+    {
+        if (_timingReportRunning || string.IsNullOrWhiteSpace(_loadedSongId)) return;
+        _timingReportRunning = true;
+        try
+        {
+            var sample = _audio.CaptureTiming(SystemInfo.deviceUniqueIdentifier, _loadedSongId);
+            using var request = CreateJsonPost(
+                $"{_server}/api/diagnostics/stage-timing", JsonUtility.ToJson(sample), false);
+            await request.SendWebRequest();
+        }
+        catch { /* Telemetrie darf die Bühnenwiedergabe niemals beeinflussen. */ }
+        finally { _timingReportRunning = false; }
+    }
+
+    private async Task RefreshQueueAsync()
+    {
+        if (_refreshing) return;
+        _refreshing = true;
+        try
+        {
+            using (var eventRequest = UnityWebRequest.Get($"{_server}/api/events/active"))
+            {
+                await eventRequest.SendWebRequest();
+                if (eventRequest.result != UnityWebRequest.Result.Success)
+                {
+                    _initialSessionChecked = true;
+                    _hasActiveSession = false;
+                    _visuals.SetSessionActive(false);
+                    _activeEventId = null;
+                    _loadedSongId = null;
+                    if (_audio.IsPlaying) _audio.Pause();
+                    _songTitle = "NEON STAGE";
+                    _songArtist = StageLocale.Text("BEREIT FÜR DEINE PARTY", "READY FOR YOUR PARTY");
+                    _status = StageLocale.Text("Keine Session aktiv", "No active session");
+                    return;
+                }
+                var activeEvent = JsonUtility.FromJson<KaraokeEventDto>(eventRequest.downloadHandler.text);
+                if (!_initialSessionChecked)
+                {
+                    _initialSessionChecked = true;
+                    var isStageQuickSession = activeEvent != null &&
+                        (activeEvent.description == "Spontane Karaoke-Session" ||
+                         activeEvent.description == "Spontane Karaoke-Session (Bühne)");
+                    if (isStageQuickSession)
+                    {
+                        await DeactivateEventAsync(activeEvent!.id);
+                        _hasActiveSession = false;
+                        _visuals.SetSessionActive(false);
+                        _activeEventId = null;
+                        return;
+                    }
+                }
+                _hasActiveSession = activeEvent != null;
+                _visuals.SetSessionActive(_hasActiveSession);
+                if (activeEvent != null && _activeEventId != activeEvent.id)
+                {
+                    _activeEventId = activeEvent.id;
+                    _lastReactionId = 0;
+                    _loadedSongId = null;
+                    _songTitle = activeEvent.name;
+                    _songArtist = StageLocale.Text("SESSION BEREIT", "SESSION READY");
+                    _ = _visuals.LoadQrAsync(_server, true);
+                }
+            }
+            using var request = UnityWebRequest.Get($"{_server}/api/queue");
+            await request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                _status = $"Serverfehler {request.responseCode}: {request.error}";
+                return;
+            }
+
+            var state = JsonUtility.FromJson<PlaybackStateDto>(request.downloadHandler.text);
+            if (state?.current?.song != null && _loadedSongId != state.current.song.id)
+                _visuals.BeginSongTransition(state.current.song, _songTitle, _songArtist);
+            await _visuals.SetNextAsync(_server, state?.queue is { Length: > 0 } ? state.queue[0] : null);
+            if (state?.current?.song == null)
+            {
+                _status = "Warteliste bereit – noch kein aktiver Song";
+                return;
+            }
+
+            _title = $"{state.current.song.title} · {state.current.song.artist}";
+            _songTitle = state.current.song.title;
+            _songArtist = state.current.song.artist;
+            if (!state.isRunning || state.isPaused)
+            {
+                if (_audio.IsPlaying) _audio.Pause();
+                _status = state.isPaused ? StageLocale.Text("Server pausiert", "Server paused") : StageLocale.Text("Bühne wartet", "Stage waiting");
+                return;
+            }
+
+            if (_loadedSongId == state.current.song.id)
+            {
+                if (!_audio.IsPlaying) _audio.Resume();
+                _status = _audio.Status;
+                return;
+            }
+
+            _loadedSongId = state.current.song.id;
+            _status = StageLocale.Text("Prüfe vorbereitete Karaoke-Spuren …", "Checking prepared karaoke stems …");
+            await _lyrics.LoadAsync(_server, _loadedSongId);
+            await _visuals.LoadCoverAsync(_server, _loadedSongId);
+            var stems = await GetStemsAsync(_loadedSongId);
+            var useStems = PreparedStemsAreUnityCompatible && stems.hasInstrumental;
+            var master = useStems
+                ? $"{_server}/api/songs/{_loadedSongId}/stems/instrumental?format=ogg"
+                : $"{_server}/api/songs/{_loadedSongId}/audio";
+            var vocals = useStems && stems.hasVocals
+                ? $"{_server}/api/songs/{_loadedSongId}/stems/vocals?format=ogg"
+                : null;
+            try
+            {
+                await _audio.PlayAsync(master, vocals);
+            }
+            catch when (stems.hasInstrumental)
+            {
+                // Unitys Decoder-Unterstützung für FLAC ist geräteabhängig. Der
+                // ARM32-Prototyp muss trotzdem beweisen können, dass Unity-Audio läuft.
+                _status = StageLocale.Text("Stem-Decoder nicht verfügbar – MP3-Fallback wird gestartet …", "Stem decoder unavailable – starting MP3 fallback …");
+                await _audio.PlayAsync($"{_server}/api/songs/{_loadedSongId}/audio", null);
+            }
+            _status = _audio.Status;
+        }
+        catch (Exception exception)
+        {
+            _status = $"Audiofehler: {exception.Message}";
+            _loadedSongId = null;
+        }
+        finally
+        {
+            _refreshing = false;
+        }
+    }
+
+    private async Task PollReactionsAsync()
+    {
+        if (_reactionPolling || string.IsNullOrWhiteSpace(_activeEventId)) return;
+        _reactionPolling = true;
+        try
+        {
+            using var request = UnityWebRequest.Get($"{_server}/api/events/{_activeEventId}/reactions?after={_lastReactionId}");
+            await request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success) return;
+            var result = JsonUtility.FromJson<StageReactionListDto>(request.downloadHandler.text);
+            foreach (var reaction in result?.items ?? Array.Empty<StageReactionDto>())
+            {
+                _lastReactionId = Math.Max(_lastReactionId, reaction.id);
+                _reactions.Spawn(reaction.type);
+            }
+        }
+        finally { _reactionPolling = false; }
+    }
+
+    private async Task<StemAvailabilityDto> GetStemsAsync(string songId)
+    {
+        using var request = UnityWebRequest.Get($"{_server}/api/songs/{songId}/stems");
+        await request.SendWebRequest();
+        return request.result == UnityWebRequest.Result.Success
+            ? JsonUtility.FromJson<StemAvailabilityDto>(request.downloadHandler.text) ?? new StemAvailabilityDto()
+            : new StemAvailabilityDto();
+    }
+
+    private async Task ClaimControlAsync()
+    {
+        var payload = JsonUtility.ToJson(new PlaybackControllerRequestDto
+        {
+            clientId = _controllerId,
+            clientName = $"Neon Stage Unity ({SystemInfo.deviceName})"
+        });
+        using var request = CreateJsonPost($"{_server}/api/playback/controller/claim", payload, false);
+        await request.SendWebRequest();
+        if (request.result != UnityWebRequest.Result.Success) return;
+        var result = JsonUtility.FromJson<PlaybackControllerDto>(request.downloadHandler.text);
+        _ownsControl = result?.ownsControl == true;
+    }
+
+    private async Task SendPlaybackCommandAsync(string command)
+    {
+        if (_commandRunning) return;
+        _commandRunning = true;
+        try
+        {
+            // Erneuert die kurze Server-Lease unmittelbar vor jedem Bedienbefehl.
+            await ClaimControlAsync();
+            using var request = CreateJsonPost($"{_server}/api/playback/{command}", "{}", true);
+            await request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                _ownsControl = false;
+                _status = request.responseCode == 409
+                    ? StageLocale.Text("Eine andere App steuert gerade die Bühne", "Another app is controlling the stage")
+                    : $"{StageLocale.Text("Steuerfehler", "Control error")} {request.responseCode}: {request.error}";
+            }
+        }
+        finally { _commandRunning = false; }
+    }
+
+    private async Task SeekAsync(double seconds)
+    {
+        if (_commandRunning || string.IsNullOrWhiteSpace(_loadedSongId)) return;
+        _audio.Seek(seconds);
+        _commandRunning = true;
+        try
+        {
+            await ClaimControlAsync();
+            var entryId = await GetCurrentEntryIdAsync();
+            if (string.IsNullOrWhiteSpace(entryId)) return;
+            var time = TimeSpan.FromSeconds(seconds);
+            var payload = $"{{\"queueEntryId\":\"{entryId}\",\"position\":\"{time:c}\"}}";
+            using var request = CreateJsonPost($"{_server}/api/playback/position", payload, true);
+            await request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success) _status = $"Seek fehlgeschlagen ({request.responseCode})";
+        }
+        finally { _commandRunning = false; }
+    }
+
+    private async Task<string?> GetCurrentEntryIdAsync()
+    {
+        using var request = UnityWebRequest.Get($"{_server}/api/queue");
+        await request.SendWebRequest();
+        if (request.result != UnityWebRequest.Result.Success) return null;
+        return JsonUtility.FromJson<PlaybackStateDto>(request.downloadHandler.text)?.current?.id;
+    }
+
+    private UnityWebRequest CreateJsonPost(string url, string json, bool authenticated)
+    {
+        var request = new UnityWebRequest(url, UnityWebRequest.kHttpVerbPOST);
+        request.uploadHandler = new UploadHandlerRaw(System.Text.Encoding.UTF8.GetBytes(json));
+        request.downloadHandler = new DownloadHandlerBuffer();
+        request.SetRequestHeader("Content-Type", "application/json");
+        if (authenticated) request.SetRequestHeader("X-Karaoke-Controller", _controllerId);
+        return request;
+    }
+
+    private async Task CreateQuickSessionAsync()
+    {
+        if (_creatingQuickSession) return;
+        _creatingQuickSession = true;
+        try
+        {
+            var now = DateTimeOffset.Now;
+            var name = $"{StageLocale.Text("Sofort-Session", "Instant session")} · {now:g}";
+            var payload = JsonUtility.ToJson(new CreateKaraokeEventDto
+            {
+                name = name,
+                startsAt = now.ToString("O"),
+                description = "Spontane Karaoke-Session (Bühne)"
+            });
+            using var create = CreateJsonPost($"{_server}/api/events", payload, false);
+            await create.SendWebRequest();
+            if (create.result != UnityWebRequest.Result.Success)
+            {
+                _status = $"{StageLocale.Text("Session konnte nicht erstellt werden", "Could not create session")} ({create.responseCode})";
+                return;
+            }
+            var created = JsonUtility.FromJson<KaraokeEventDto>(create.downloadHandler.text);
+            if (created == null || string.IsNullOrWhiteSpace(created.id)) return;
+            using var activate = CreateJsonPost($"{_server}/api/events/{created.id}/activate", "{}", false);
+            await activate.SendWebRequest();
+            if (activate.result != UnityWebRequest.Result.Success)
+            {
+                _status = $"{StageLocale.Text("Session konnte nicht aktiviert werden", "Could not activate session")} ({activate.responseCode})";
+                return;
+            }
+            _activeEventId = created.id;
+            _hasActiveSession = true;
+            _visuals.SetSessionActive(true);
+            _songTitle = created.name;
+            _songArtist = StageLocale.Text("SESSION BEREIT", "SESSION READY");
+            _status = StageLocale.Text("Sofort-Session gestartet", "Instant session started");
+            _ = _visuals.LoadQrAsync(_server, true);
+        }
+        catch (Exception exception) { _status = $"{StageLocale.Text("Sessionfehler", "Session error")}: {exception.Message}"; }
+        finally { _creatingQuickSession = false; }
+    }
+
+    private async Task DeactivateEventAsync(string eventId)
+    {
+        if (string.IsNullOrWhiteSpace(eventId)) return;
+        using var request = CreateJsonPost($"{_server}/api/events/{eventId}/deactivate", "{}", false);
+        await request.SendWebRequest();
+    }
+
+    private async Task ExitStageAsync()
+    {
+        if (_exiting) return;
+        _exiting = true;
+        var eventId = _activeEventId;
+        if (!string.IsNullOrWhiteSpace(eventId))
+        {
+            using var active = UnityWebRequest.Get($"{_server}/api/events/active");
+            await active.SendWebRequest();
+            if (active.result == UnityWebRequest.Result.Success)
+            {
+                var item = JsonUtility.FromJson<KaraokeEventDto>(active.downloadHandler.text);
+                if (item != null && item.id == eventId && item.description == "Spontane Karaoke-Session (Bühne)")
+                    await DeactivateEventAsync(eventId);
+            }
+        }
+        _audio.Stop();
+        Application.Quit();
+    }
+
+    private void OnGUI()
+    {
+        EnsureControlTextures();
+        var scale = Math.Max(1f, Screen.width / 1280f);
+        GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1));
+        var width = Screen.width / scale;
+        var height = Screen.height / scale;
+        if (!_hasActiveSession)
+        {
+            DrawSessionLauncher(width, height);
+            return;
+        }
+        GUI.color = Color.white;
+        var titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 28, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+        titleStyle.normal.textColor = new Color(0.87f, 1f, 0.05f);
+        if (!_visuals.IsSongTransitioning)
+        {
+            GUI.Label(new Rect(40, 21, width - 80, 42), _songTitle, titleStyle);
+            var artistStyle = new GUIStyle(titleStyle) { fontSize = 19 };
+            artistStyle.normal.textColor = new Color(.92f, .86f, .97f);
+            GUI.Label(new Rect(40, 57, width - 80, 28), _songArtist, artistStyle);
+        }
+        var controlsY = height - 158;
+
+        GUI.color = new Color(0.055f, 0.018f, 0.085f, 0.94f);
+        GUI.Box(new Rect(0, controlsY, width, 158), GUIContent.none);
+        DrawSolid(new Rect(0, controlsY, width, 2), new Color(1f, .2f, .72f, .55f));
+        GUI.color = Color.white;
+        var buttonStyle = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = 28,
+            fontStyle = FontStyle.Bold,
+            alignment = TextAnchor.MiddleCenter,
+            border = new RectOffset(10, 10, 10, 10)
+        };
+        buttonStyle.normal.background = _controlButton;
+        buttonStyle.hover.background = _controlButtonHover;
+        buttonStyle.active.background = _controlButtonActive;
+        buttonStyle.normal.textColor = new Color(.96f, .92f, 1f);
+        buttonStyle.hover.textColor = new Color(.87f, 1f, .05f);
+        buttonStyle.active.textColor = new Color(1f, .25f, .75f);
+        const float buttonSize = 58;
+        const float buttonGap = 10;
+        var buttonsX = width * .5f - (buttonSize * 4 + buttonGap * 3) * .5f;
+        var buttonsY = controlsY + 62;
+        GUI.enabled = !_commandRunning;
+        if (GUI.Button(new Rect(buttonsX, buttonsY, buttonSize, buttonSize), "|◀", buttonStyle)) _ = SendPlaybackCommandAsync("previous");
+        if (GUI.Button(new Rect(buttonsX + buttonSize + buttonGap, buttonsY, buttonSize, buttonSize), "Ⅱ", buttonStyle)) _ = SendPlaybackCommandAsync("pause");
+        if (GUI.Button(new Rect(buttonsX + (buttonSize + buttonGap) * 2, buttonsY, buttonSize, buttonSize), "▶", buttonStyle)) _ = SendPlaybackCommandAsync("resume");
+        if (GUI.Button(new Rect(buttonsX + (buttonSize + buttonGap) * 3, buttonsY, buttonSize, buttonSize), "▶|", buttonStyle)) _ = SendPlaybackCommandAsync("next");
+        GUI.enabled = true;
+
+        DrawIconBadge(new Rect(48, buttonsY + 5, 44, 44), new Color(.87f, 1f, .05f));
+        DrawMusicIcon(new Rect(55, buttonsY + 10, 32, 32), new Color(0.87f, 1f, 0.05f));
+        _musicVolume = DrawNeonSlider(new Rect(100, buttonsY + 17, 220, 30), _musicVolume, new Color(.87f, 1f, .05f));
+        _audio.MusicVolume = _musicVolume;
+        DrawIconBadge(new Rect(width - 94, buttonsY + 5, 44, 44), new Color(1f, .25f, .75f));
+        DrawMicrophoneIcon(new Rect(width - 87, buttonsY + 9, 30, 34), new Color(1f, 0.25f, 0.75f));
+        _vocalVolume = DrawNeonSlider(new Rect(width - 320, buttonsY + 17, 220, 30), _vocalVolume, new Color(1f, .25f, .75f));
+        _audio.VocalVolume = _vocalVolume;
+
+        if (_audio.HasClip)
+        {
+            var oldPosition = (float)_audio.PositionSeconds;
+            var normalized = _audio.DurationSeconds > 0 ? oldPosition / (float)_audio.DurationSeconds : 0;
+            var newNormalized = DrawProgressTimeline(new Rect(64, controlsY + 14, width - 128, 34), normalized);
+            var newPosition = newNormalized * (float)_audio.DurationSeconds;
+            if (Event.current.type == EventType.MouseUp && Math.Abs(newPosition - oldPosition) > 0.5f) _ = SeekAsync(newPosition);
+        }
+        var infoStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, alignment = TextAnchor.MiddleCenter };
+        infoStyle.normal.textColor = new Color(0.64f, 0.55f, 0.7f);
+        GUI.Label(new Rect(40, height - 29, width - 80, 22), $"{_audio.PositionSeconds:0.0}s  ·  {(_ownsControl ? "Steuerung aktiv" : "nur Anzeige")}  ·  {_server}", infoStyle);
+    }
+
+    private void DrawSessionLauncher(float width, float height)
+    {
+        var heading = new GUIStyle(GUI.skin.label) { fontSize = 42, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+        heading.normal.textColor = new Color(.87f, 1f, .05f);
+        GUI.Label(new Rect(40, height * .18f, width - 80, 60), "NEON STAGE", heading);
+        var sub = new GUIStyle(heading) { fontSize = 18, fontStyle = FontStyle.Normal };
+        sub.normal.textColor = new Color(1f, .3f, .78f);
+        GUI.Label(new Rect(40, height * .18f + 58, width - 80, 35), StageLocale.Text("Keine Karaoke-Session aktiv", "No active karaoke session"), sub);
+        var buttonRect = new Rect(width * .5f - 220, height * .5f - 70, 440, 140);
+        GUI.color = new Color(.87f, 1f, .05f, .18f);
+        GUI.DrawTexture(new Rect(buttonRect.x - 24, buttonRect.y - 24, buttonRect.width + 48, buttonRect.height + 48), _softGlow!, ScaleMode.StretchToFill, true);
+        GUI.color = Color.white;
+        var button = new GUIStyle(GUI.skin.button) { fontSize = 28, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter, wordWrap = true };
+        button.normal.background = _controlButtonHover;
+        button.hover.background = _controlButtonActive;
+        button.active.background = _controlButtonActive;
+        button.normal.textColor = new Color(.94f, 1f, .72f);
+        GUI.enabled = !_creatingQuickSession;
+        if (GUI.Button(buttonRect, _creatingQuickSession ? StageLocale.Text("SESSION WIRD GESTARTET …", "STARTING SESSION …") : StageLocale.Text("SOFORT-SESSION\nSTARTEN", "START INSTANT\nSESSION"), button))
+            _ = CreateQuickSessionAsync();
+        GUI.enabled = true;
+        var hint = new GUIStyle(sub) { fontSize = 14 };
+        hint.normal.textColor = new Color(.68f, .6f, .74f);
+        GUI.Label(new Rect(40, buttonRect.yMax + 30, width - 80, 32), StageLocale.Text("Oder ein vorbereitetes Event im Admin-Portal auf die Bühne schalten", "Or activate a prepared event from the admin portal"), hint);
+    }
+
+    private float DrawNeonSlider(Rect rect, float value, Color accent)
+    {
+        value = Mathf.Clamp01(value);
+        var track = new Rect(rect.x, rect.y + rect.height * .5f - 4, rect.width, 8);
+        GUI.DrawTexture(track, _sliderTrack!, ScaleMode.StretchToFill, true);
+        var fill = new Rect(track.x, track.y, Mathf.Max(8, track.width * value), track.height);
+        var previous = GUI.color; GUI.color = accent; GUI.DrawTexture(fill, _pill!, ScaleMode.StretchToFill, true); GUI.color = previous;
+        var style = new GUIStyle(GUI.skin.horizontalSlider)
+        {
+            normal = { background = _transparent },
+            fixedHeight = rect.height
+        };
+        var thumb = new GUIStyle(GUI.skin.horizontalSliderThumb)
+        {
+            normal = { background = _sliderThumb },
+            hover = { background = _controlButtonHover },
+            active = { background = _controlButtonActive },
+            fixedWidth = 20,
+            fixedHeight = 20
+        };
+        return GUI.HorizontalSlider(rect, value, 0f, 1f, style, thumb);
+    }
+
+    private float DrawProgressTimeline(Rect rect, float value)
+    {
+        value = Mathf.Clamp01(value);
+        var line = new Rect(rect.x, rect.y + 13, rect.width, 8);
+        GUI.DrawTexture(line, _sliderTrack!, ScaleMode.StretchToFill, true);
+        var filledWidth = Mathf.Max(8, line.width * value);
+        var cyan = new Color(.15f, .82f, 1f, 1f);
+        var old = GUI.color;
+        GUI.color = new Color(cyan.r, cyan.g, cyan.b, .16f);
+        GUI.DrawTexture(new Rect(line.x - 8, line.y - 8, filledWidth + 16, 24), _softGlow!, ScaleMode.StretchToFill, true);
+        GUI.color = new Color(cyan.r, cyan.g, cyan.b, .4f);
+        GUI.DrawTexture(new Rect(line.x - 3, line.y - 3, filledWidth + 6, 14), _pill!, ScaleMode.StretchToFill, true);
+        GUI.color = cyan;
+        GUI.DrawTexture(new Rect(line.x, line.y, filledWidth, 8), _pill!, ScaleMode.StretchToFill, true);
+        var pulse = 22 + Mathf.Sin(Time.unscaledTime * 6f) * 3f;
+        GUI.color = new Color(.72f, .96f, 1f, .75f);
+        GUI.DrawTexture(new Rect(line.x + filledWidth - pulse * .5f, line.center.y - pulse * .5f, pulse, pulse), _softGlow!, ScaleMode.StretchToFill, true);
+        GUI.color = old;
+        return DrawInvisibleSlider(rect, value);
+    }
+
+    private float DrawInvisibleSlider(Rect rect, float value)
+    {
+        var style = new GUIStyle(GUI.skin.horizontalSlider) { normal = { background = _transparent }, fixedHeight = rect.height };
+        var thumb = new GUIStyle(GUI.skin.horizontalSliderThumb)
+        {
+            normal = { background = _transparent }, hover = { background = _transparent }, active = { background = _transparent },
+            fixedWidth = 22, fixedHeight = 22
+        };
+        return GUI.HorizontalSlider(rect, value, 0, 1, style, thumb);
+    }
+
+    private void EnsureControlTextures()
+    {
+        if (_controlButton != null) return;
+        _controlButton = MakeRoundedTexture(64, 13, new Color(.18f, .11f, .24f, 1f), new Color(.52f, .3f, .65f, 1f), 2);
+        _controlButtonHover = MakeRoundedTexture(64, 13, new Color(.34f, .18f, .43f, 1f), new Color(.87f, 1f, .05f, 1f), 3);
+        _controlButtonActive = MakeRoundedTexture(64, 13, new Color(.58f, .12f, .42f, 1f), new Color(1f, .35f, .8f, 1f), 3);
+        _sliderTrack = MakeRoundedTexture(32, 16, new Color(.17f, .11f, .22f, 1f), new Color(.42f, .28f, .5f, 1f), 2);
+        _sliderThumb = MakeRoundedTexture(32, 16, new Color(.92f, .88f, 1f, 1f), new Color(1f, 1f, 1f, 1f), 2);
+        _transparent = MakeTexture(Color.clear);
+        _pill = MakeRoundedTexture(32, 16, Color.white, Color.white, 0);
+        _softGlow = MakeRadialTexture(64);
+        _iconBadge = MakeRoundedTexture(64, 32, new Color(.09f, .035f, .13f, .96f), Color.white, 3);
+    }
+
+    private static Texture2D MakeRoundedTexture(int size, float radius, Color fill, Color border, float borderWidth)
+    {
+        var texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        for (var y = 0; y < size; y++) for (var x = 0; x < size; x++)
+        {
+            var dx = Mathf.Max(Mathf.Abs(x - (size - 1) * .5f) - (size * .5f - radius), 0);
+            var dy = Mathf.Max(Mathf.Abs(y - (size - 1) * .5f) - (size * .5f - radius), 0);
+            var distance = Mathf.Sqrt(dx * dx + dy * dy);
+            var edge = Mathf.Clamp01(radius - distance);
+            var inside = distance <= radius;
+            var isBorder = inside && distance > radius - borderWidth;
+            var color = isBorder ? border : fill; color.a *= edge;
+            texture.SetPixel(x, y, inside ? color : Color.clear);
+        }
+        texture.Apply(); return texture;
+    }
+
+    private static Texture2D MakeRadialTexture(int size)
+    {
+        var texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        for (var y = 0; y < size; y++) for (var x = 0; x < size; x++)
+        {
+            var distance = Vector2.Distance(new Vector2(x, y), new Vector2((size - 1) * .5f, (size - 1) * .5f)) / (size * .5f);
+            texture.SetPixel(x, y, new Color(1, 1, 1, Mathf.Pow(Mathf.Clamp01(1 - distance), 2)));
+        }
+        texture.Apply(); return texture;
+    }
+
+    private void DrawIconBadge(Rect rect, Color accent)
+    {
+        var old = GUI.color;
+        GUI.color = new Color(accent.r, accent.g, accent.b, .22f);
+        GUI.DrawTexture(new Rect(rect.x - 5, rect.y - 5, rect.width + 10, rect.height + 10), _softGlow!);
+        GUI.color = accent; GUI.DrawTexture(rect, _iconBadge!); GUI.color = old;
+    }
+
+    private static Texture2D MakeTexture(Color color)
+    {
+        var texture = new Texture2D(1, 1, TextureFormat.RGBA32, false);
+        texture.SetPixel(0, 0, color);
+        texture.Apply();
+        return texture;
+    }
+
+    private static void DrawMusicIcon(Rect rect, Color color)
+    {
+        DrawSolid(new Rect(rect.x + 21, rect.y + 2, 4, 23), color);
+        DrawSolid(new Rect(rect.x + 9, rect.y + 7, 15, 4), color);
+        DrawSolid(new Rect(rect.x + 9, rect.y + 8, 4, 20), color);
+        DrawSolid(new Rect(rect.x + 2, rect.y + 24, 11, 8), color);
+        DrawSolid(new Rect(rect.x + 17, rect.y + 21, 11, 8), color);
+    }
+
+    private static void DrawMicrophoneIcon(Rect rect, Color color)
+    {
+        DrawSolid(new Rect(rect.x + 11, rect.y + 1, 13, 22), color);
+        DrawSolid(new Rect(rect.x + 6, rect.y + 13, 4, 11), color);
+        DrawSolid(new Rect(rect.x + 25, rect.y + 13, 4, 11), color);
+        DrawSolid(new Rect(rect.x + 9, rect.y + 24, 17, 4), color);
+        DrawSolid(new Rect(rect.x + 16, rect.y + 27, 4, 7), color);
+        DrawSolid(new Rect(rect.x + 10, rect.y + 33, 16, 4), color);
+    }
+
+    private static void DrawSolid(Rect rect, Color color)
+    {
+        var previous = GUI.color;
+        GUI.color = color;
+        GUI.DrawTexture(rect, Texture2D.whiteTexture);
+        GUI.color = previous;
+    }
+}
+}

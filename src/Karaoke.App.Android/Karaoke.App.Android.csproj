@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-android36.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <SupportedOSPlatformVersion>23</SupportedOSPlatformVersion>
+    <!-- ARM32 wird für Karaoke-Boxen mit 32-Bit-Android benötigt; ARM64 für
+         aktuelle Geräte und x64 weiterhin für unseren Entwicklungs-Emulator. -->
+    <RuntimeIdentifiers Condition="'$(AndroidAbiPackage)' == 'arm32'">android-arm</RuntimeIdentifiers>
+    <RuntimeIdentifiers Condition="'$(AndroidAbiPackage)' == 'arm64'">android-arm64</RuntimeIdentifiers>
+    <RuntimeIdentifiers Condition="'$(AndroidAbiPackage)' == ''">android-arm;android-arm64;android-x64</RuntimeIdentifiers>
+    <ApplicationId>de.neonstage.karaoke</ApplicationId>
+    <ApplicationTitle>Neon Stage Karaoke</ApplicationTitle>
+    <!-- Das APK muss ohne IDE/Fast-Deployment auf Karaoke-Geräten startbar sein. -->
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <AndroidStoreUncompressedFileExtensions>.so;.blob;$(AndroidStoreUncompressedFileExtensions)</AndroidStoreUncompressedFileExtensions>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Karaoke.App/Karaoke.App.csproj"/>
+    <PackageReference Include="Avalonia.Android" Version="11.3.18"/>
+    <PackageReference Include="LibVLCSharp" Version="3.10.0"/>
+    <PackageReference Include="VideoLAN.LibVLC.Android" Version="3.6.5"/>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Dieselbe Quelldatei wird auf Desktop und Android kompiliert. -->
+    <Compile Include="../Karaoke.App.Desktop/LibVlcAudioPlaybackService.cs" Link="Audio/LibVlcAudioPlaybackService.cs"/>
+  </ItemGroup>
+</Project>

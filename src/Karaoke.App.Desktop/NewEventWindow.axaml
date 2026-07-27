@@ -1,0 +1,33 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.NewEventWindow" Title="Neon Stage · Event planen"
+        Width="590" Height="520" MinWidth="520" MinHeight="470" Background="#0D1016"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel>
+      <TextBlock Text="NEUES EVENT" Foreground="#DFFF28" FontSize="22" FontWeight="Bold" />
+      <TextBlock Text="Event planen" Foreground="#8993A6" />
+    </StackPanel>
+    <StackPanel Grid.Row="1" Margin="0,22,0,16" Spacing="10">
+      <TextBlock Text="NAME" Foreground="#8993A6" FontSize="10" FontWeight="Bold" />
+      <TextBox x:Name="NameBox" MaxLength="80" Watermark="z. B. Benjamins Geburtstag" />
+      <Grid ColumnDefinitions="*,*" ColumnSpacing="12">
+        <StackPanel>
+          <TextBlock Text="START" Foreground="#8993A6" FontSize="10" FontWeight="Bold" />
+          <TextBox x:Name="StartBox" />
+        </StackPanel>
+        <StackPanel Grid.Column="1">
+          <TextBlock Text="ENDE (OPTIONAL)" Foreground="#8993A6" FontSize="10" FontWeight="Bold" />
+          <TextBox x:Name="EndBox" />
+        </StackPanel>
+      </Grid>
+      <TextBlock Text="Format: JJJJ-MM-TT HH:mm" Foreground="#677185" FontSize="10" />
+      <TextBlock Text="BESCHREIBUNG (OPTIONAL)" Foreground="#8993A6" FontSize="10" FontWeight="Bold" Margin="0,8,0,0" />
+      <TextBox x:Name="DescriptionBox" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="500" Height="105" />
+      <TextBlock x:Name="ErrorText" Foreground="#FF6D88" TextWrapping="Wrap" />
+    </StackPanel>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="Abbrechen" Click="CancelClick" />
+      <Button Content="Event erstellen" Click="CreateClick" Background="#DFFF28" Foreground="#11151C" />
+    </StackPanel>
+  </Grid>
+</Window>

@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup Condition="'$(MSBuildProjectName)' != 'Assembly-CSharp' and '$(MSBuildProjectName)' != 'Assembly-CSharp-Editor'">
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Authors>Neon Stage contributors</Authors>
+    <Company>Neon Stage contributors</Company>
+    <Copyright>Copyright © 2026 Neon Stage contributors</Copyright>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+  <!-- Unity generates these projects with C# 9/netstandard2.1. Inheriting the
+       solution-wide SDK defaults creates C# 10 global-usings source files and
+       makes an otherwise valid Stage fail during command-line verification. -->
+  <PropertyGroup Condition="'$(MSBuildProjectName)' == 'Assembly-CSharp' or '$(MSBuildProjectName)' == 'Assembly-CSharp-Editor'">
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+  </PropertyGroup>
+</Project>

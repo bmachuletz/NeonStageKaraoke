@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Neon Stage is local-first karaoke with a Unity stage, mobile queue, events, and GPU-assisted lyrics alignment.">
+  <meta name="theme-color" content="#09020f">
+  <title>Neon Stage — Karaoke. Reignited.</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"></div>
+  <header class="nav"><a class="brand" href="#top"><i>NS</i> NEON STAGE</a><nav><a href="#experience">Experience</a><a href="#showcase">Screens</a><a href="#stack">System</a><a href="#deploy">Deploy</a><a href="#thanks">Thanks</a><a href="releases.html">Releases</a><a href="legal.html">Legal</a><a class="pill" href="#github">Documentation</a></nav></header>
+  <main id="top">
+    <section class="hero">
+      <p class="eyebrow">LOCAL-FIRST · BUILT FOR THE BIG SCREEN</p>
+      <h1>Your voice.<br><span>Your stage.</span></h1>
+      <p class="lead">A karaoke platform designed like a game, not a media player. Guests scan, songs enter the queue, and the stage takes over.</p>
+      <div class="actions"><a class="primary" href="#experience">Start the show</a><a class="secondary" href="#github">Explore the project</a></div>
+      <div class="stage" aria-label="Stylized preview of the karaoke stage">
+        <div class="stage-top"><span>NEON STAGE / LIVE</span><span class="live">● SESSION ACTIVE</span></div>
+        <div class="lyrics"><small>GET READY</small><div class="line ghost">We are reaching for the stars</div><div class="line active"><span>and tonight</span> belongs to us</div><div class="progress"><b></b></div></div>
+        <div class="grid"></div>
+      </div>
+    </section>
+    <section id="experience" class="section"><p class="eyebrow">ONE PARTY · ONE FLOW</p><h2>From invitation to the final chorus.</h2><div class="cards"><article><b>01</b><h3>Scan & join</h3><p>Scan the QR code, choose a name, and participate without installing an app.</p></article><article><b>02</b><h3>Queue the night</h3><p>Search the library, request missing tracks, and shape the running order together.</p></article><article><b>03</b><h3>Own the stage</h3><p>Word-timed lyrics, separate stems, live reactions, and reactive visuals create the game feeling.</p></article></div></section>
+    <section id="showcase" class="section showcase">
+      <p class="eyebrow">SEE IT IN ACTION</p><h2>Every screen has a role.</h2><p class="showcase-note">Product-oriented mockups using entirely fictional demo tracks and artwork.</p>
+      <figure class="shot shot-editor"><div class="window-bar"><i></i><i></i><i></i><span>Neon Stage · Lyrics Editor</span></div><div class="editor-ui">
+        <aside><strong>LIBRARY</strong><label>⌕ Search songs</label><a class="chosen"><b>Glass Hearts</b><small>Nova Arcade</small></a><a><b>After Midnight</b><small>Electric Avenue</small></a><a><b>Run Into The Light</b><small>Static Bloom</small></a></aside>
+        <div class="editor-main"><div class="editor-head"><span><b>Glass Hearts</b> · Nova Arcade</span><em>● Live preview</em></div><div class="preview-line"><small>NEXT LINE</small><p><mark>We light the city</mark> up tonight</p></div><div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="timeline"><div class="ticks">0:18.0　　　　　0:20.0　　　　　0:22.0　　　　　0:24.0</div><div class="track"><span style="--x:4%;--w:31%">We light the city</span><span style="--x:36%;--w:20%">up tonight</span><span style="--x:59%;--w:35%">and never look back</span></div><div class="track syllables"><span style="--x:4%;--w:11%">We</span><span style="--x:16%;--w:9%">light</span><span style="--x:26%;--w:9%">the</span><span style="--x:36%;--w:12%">ci-ty</span><span style="--x:49%;--w:7%">up</span></div><b class="playhead"></b></div></div>
+        <aside class="inspector"><strong>INSPECTOR</strong><h4>Word · city</h4><code>00:21.240 → 00:21.880</code><p>Manually adjusted</p><div><button>Start −</button><button>Start +</button><button>End −</button><button>End +</button></div></aside>
+      </div><figcaption><b>Lyrics Editor</b><span>Waveform, live stage preview, review workflow, and word/syllable timing on one timeline.</span></figcaption></figure>
+      <div class="shot-grid"><figure class="shot mini-stage"><div class="fake-stage-head"><div class="fake-cover cover-one">NA</div><span><b>Glass Hearts</b><small>Nova Arcade</small></span><em>NEXT · AFTER MIDNIGHT</em></div><div class="fake-lyric faint">Chasing colors through the rain</div><div class="fake-lyric"><mark>We light the city</mark> up tonight</div><div class="fake-beam"></div><figcaption><b>Unity Stage</b><span>Reactive visuals and smooth word progress.</span></figcaption></figure>
+      <figure class="shot phone-shot"><div class="phone"><div class="phone-top">NEON STAGE <b>● LIVE</b></div><h4>What will you sing?</h4><label>⌕ Title or artist</label><div class="song"><i class="cover-two">EA</i><span><b>After Midnight</b><small>Electric Avenue</small></span><button>＋</button></div><div class="song"><i class="cover-three">SB</i><span><b>Run Into The Light</b><small>Static Bloom</small></span><button>＋</button></div><p class="queue-title">UP NEXT</p><div class="queued"><b>01</b><span>Glass Hearts<small>Maya sings</small></span></div></div><figcaption><b>Mobile Queue</b><span>Scan, find a song, and shape the night together.</span></figcaption></figure></div>
+    </section>
+    <section id="stack" class="section split"><div><p class="eyebrow">UNDER THE LIGHTS</p><h2>Local by design.<br>Powerful by choice.</h2><p>Your server stays under your control. Phones connect over the local network, Unity renders the stage, and the optional CUDA pipeline turns lyrics into precise, reviewable timelines.</p></div><ul><li><span>Stage</span>Unity 6 · Linux · Android</li><li><span>Control</span>Mobile Web · Events · Ad-hoc</li><li><span>Audio</span>Instrumental + Vocals · DSP Sync</li><li><span>Lyrics</span>Word/Syllable Timing · Editor</li></ul></section>
+    <section id="deploy" class="section deploy"><p class="eyebrow">DEPLOY IN MINUTES</p><h2>One server.<br>Every screen.</h2><div class="deploy-grid"><article><h3>Docker Compose server</h3><p>Keep the media library and SQLite state on the host while the ASP.NET Core server runs in a reproducible container.</p><pre><code>cp .env.example .env
+# set library path and Spotify credentials
+docker compose up -d --build server
+curl http://127.0.0.1:5274/api/health</code></pre><p class="deploy-note"><code>KARAOKE_LIBRARY_PATH</code>, <code>SPOTIFY_CLIENT_ID</code>, <code>SPOTIFY_CLIENT_SECRET</code>, and <code>SPOTIFY_REDIRECT_URI</code> are configured in the ignored <code>.env</code> file.</p></article><article><h3>Linux editor AppImage</h3><p>The self-contained x86_64 AppImage includes the editor runtime and LibVLC. Point it at any reachable Neon Stage server.</p><pre><code>chmod +x NeonStage-LyricsEditor-x86_64.AppImage
+KARAOKE_SERVER=http://SERVER:5274 \
+  ./NeonStage-LyricsEditor-x86_64.AppImage</code></pre><p class="deploy-note">GPU alignment and request downloading remain separate worker workloads, so credentials, models, and karaoke media never enter application releases.</p></article></div></section>
+    <section id="thanks" class="section thanks"><div><p class="eyebrow">BUILT ON OPEN SOURCE</p><h2>Standing on generous shoulders.</h2><p>Our heartfelt thanks go to the maintainers and contributors behind Avalonia, .NET, VideoLAN and LibVLCSharp, FFmpeg, QRCoder, TagLib#, SQLite, PyTorch, Hugging Face, Qwen, Whisper, stable-ts, Silero VAD, EasyAligner, SOFA, python-audio-separator, Ultimate Vocal Remover, LRCLIB, and every transitive project that keeps this stage alive.</p><p class="vibe-note"><strong>Development disclosure:</strong> A large part of Neon Stage has been created through AI-assisted “vibe coding.” Product direction, requirements, testing, and acceptance remain human-led, while substantial implementation and documentation were developed collaboratively with AI coding tools.</p><p><a class="text-link" href="ACKNOWLEDGEMENTS.md">Read all acknowledgements</a> · <a class="text-link" href="THIRD_PARTY_NOTICES.md">Review licenses and third-party notices</a></p></div><aside class="support-card"><p class="eyebrow">KEEP THE LIGHTS ON</p><h3>Enjoying Neon Stage?</h3><p>If you would like to support continued development, you can buy the project a coffee.</p><div class="kofi-widget"><script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Support me on Ko-fi', '#72a4f2', 'Z6Q023YEX5');kofiwidget2.draw();</script><noscript><a class="kofi-fallback" href="https://ko-fi.com/Z6Q023YEX5" target="_blank" rel="noopener noreferrer">Support me on Ko-fi</a></noscript></div><small>The widget is loaded from Ko-fi. See our <a href="legal.html#privacy">privacy note</a>.</small></aside></section>
+    <section id="github" class="cta"><p class="eyebrow">THE NIGHT IS YOURS</p><h2>Turn the room into a stage.</h2><p>Setup, containers, CLI workflows, client/server architecture, alignment internals, releases, and licensing are documented in the repository.</p><a class="primary" href="../README.md">Read the documentation</a></section>
+  </main>
+  <footer><span>© <span id="year"></span> Neon Stage contributors · Apache-2.0</span><span>Not affiliated with Spotify, LRCLIB, artists, or labels.</span><nav><a href="ACKNOWLEDGEMENTS.md">Thanks</a><a href="legal.html">Licensing &amp; legal</a><a href="THIRD_PARTY_NOTICES.md">Third-party notices</a></nav></footer>
+  <script src="site.js"></script>
+</body>
+</html>

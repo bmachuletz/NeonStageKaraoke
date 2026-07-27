@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>WinExe</OutputType><ApplicationIcon>Assets/neon-stage.ico</ApplicationIcon></PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Karaoke.App/Karaoke.App.csproj" />
+    <ProjectReference Include="../Karaoke.Contracts/Karaoke.Contracts.csproj" />
+    <ProjectReference Include="../Karaoke.Editor.Core/Karaoke.Editor.Core.csproj" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.3.18" Condition="'$(Configuration)'=='Debug'" />
+    <PackageReference Include="LibVLCSharp" Version="3.10.0" />
+    <PackageReference Include="VideoLAN.LibVLC.Windows" Version="3.0.23.1" Condition="$([MSBuild]::IsOSPlatform('Windows'))" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Lyrics Word Aligner</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color-scheme:dark;background:#0d1117;color:#e6edf3}
+    *{box-sizing:border-box} body{margin:0;min-height:100vh;background:radial-gradient(circle at top,#172033,#0d1117 45%);padding:32px 18px}
+    main{max-width:920px;margin:auto}.hero{margin-bottom:24px}h1{margin:0 0 8px;font-size:clamp(30px,5vw,48px)}p{color:#9da7b3}
+    .panel,.job{background:rgba(22,27,34,.92);border:1px solid #30363d;border-radius:16px;padding:20px;box-shadow:0 16px 50px #0006}
+    .drop{display:block;border:2px dashed #3d4b61;border-radius:13px;padding:32px;text-align:center;cursor:pointer;transition:.2s}.drop:hover,.drop.drag{border-color:#58a6ff;background:#58a6ff0d}
+    input[type=file]{display:none}.controls{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0}.field{display:flex;flex-direction:column;gap:6px;font-size:13px;color:#9da7b3}
+    select,label.toggle{background:#0d1117;border:1px solid #30363d;border-radius:9px;padding:10px;color:#e6edf3}.toggle{flex-direction:row;align-items:center;color:#e6edf3!important}
+    button,.download{border:0;border-radius:10px;padding:12px 16px;font-weight:700;background:#238636;color:#fff;cursor:pointer;text-decoration:none;display:inline-block}button:disabled{opacity:.45;cursor:not-allowed}
+    .files{margin:16px 0;display:grid;gap:8px}.pair{display:flex;justify-content:space-between;gap:12px;background:#0d1117;border-radius:9px;padding:10px 12px;font-size:14px}.bad{color:#f85149}.ok{color:#3fb950}
+    #jobs{margin-top:18px;display:grid;gap:12px}.job{padding:16px}.job-head{display:flex;justify-content:space-between;gap:12px}.status{color:#9da7b3;font-size:14px;margin:8px 0}
+    progress{width:100%;height:14px;accent-color:#2f81f7}.actions{margin-top:12px;display:flex;gap:8px;flex-wrap:wrap}.download{background:#1f6feb;padding:9px 13px;font-size:14px}.report{background:#30363d}
+    @media(max-width:650px){.controls{grid-template-columns:1fr}.pair{flex-direction:column}.job-head{flex-direction:column}}
+  </style>
+</head>
+<body><main>
+  <section class="hero"><h1>Lyrics Word Aligner</h1><p>MP3- und passende LRC-Dateien auswählen. Dateien werden über denselben Basisnamen gepaart.</p></section>
+  <section class="panel">
+    <label id="drop" class="drop" for="files"><strong>Dateien auswählen oder hier ablegen</strong><br><span>Mehrere MP3/FLAC/WAV- und LRC-Dateien sind möglich</span></label>
+    <input id="files" type="file" multiple accept="audio/*,.mp3,.flac,.wav,.m4a,.ogg,.lrc">
+    <div class="controls">
+      <label class="field">Sprache<select id="language"><option value="de">Deutsch</option><option value="en">Englisch</option><option value="fr">Französisch</option><option value="es">Spanisch</option><option value="it">Italienisch</option><option value="pt">Portugiesisch</option><option value="ru">Russisch</option><option value="ja">Japanisch</option><option value="ko">Koreanisch</option><option value="zh">Chinesisch</option></select></label>
+      <label class="field">Alignment-Gerät<select id="device"><option value="cpu">CPU</option><option value="cuda">CUDA</option><option value="auto">Automatisch</option></select></label>
+      <label class="field toggle"><input id="separate" type="checkbox" checked> Lead-Vocals isolieren</label>
+    </div>
+    <div id="pairs" class="files"></div>
+    <button id="start" disabled>Verarbeitung starten</button>
+  </section>
+  <section id="jobs"></section>
+</main>
+<script>
+const input=document.querySelector('#files'), drop=document.querySelector('#drop'), pairsEl=document.querySelector('#pairs'), start=document.querySelector('#start'), jobs=document.querySelector('#jobs');
+let pairs=[];
+const base=n=>n.replace(/\.[^.]+$/,'').toLowerCase();
+function collect(fileList){
+  const files=[...fileList], audio=files.filter(f=>!f.name.toLowerCase().endsWith('.lrc')), lrc=files.filter(f=>f.name.toLowerCase().endsWith('.lrc'));
+  const lrcMap=new Map(lrc.map(f=>[base(f.name),f])); pairs=audio.map(a=>({audio:a,lyrics:lrcMap.get(base(a.name))}));
+  const used=new Set(pairs.filter(p=>p.lyrics).map(p=>base(p.lyrics.name))); lrc.filter(f=>!used.has(base(f.name))).forEach(f=>pairs.push({audio:null,lyrics:f})); renderPairs();
+}
+function renderPairs(){pairsEl.innerHTML='';pairs.forEach(p=>{const ok=p.audio&&p.lyrics;const d=document.createElement('div');d.className='pair';d.innerHTML=`<span>${p.audio?.name||'Audio fehlt'}</span><span class="${ok?'ok':'bad'}">${p.lyrics?.name||'LRC fehlt'}</span>`;pairsEl.append(d)});start.disabled=!pairs.some(p=>p.audio&&p.lyrics)}
+input.onchange=()=>collect(input.files);['dragenter','dragover'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.add('drag')}));['dragleave','drop'].forEach(e=>drop.addEventListener(e,x=>{x.preventDefault();drop.classList.remove('drag')}));drop.addEventListener('drop',e=>collect(e.dataTransfer.files));
+function jobCard(name){const el=document.createElement('article');el.className='job';el.innerHTML=`<div class="job-head"><strong>${name}</strong><span class="pct">0 %</span></div><div class="status">Upload wird vorbereitet</div><progress max="100" value="0"></progress><div class="actions"></div>`;jobs.prepend(el);return el}
+async function submitPair(pair){
+  const card=jobCard(pair.audio.name), status=card.querySelector('.status'), bar=card.querySelector('progress'), pct=card.querySelector('.pct'), actions=card.querySelector('.actions');
+  const fd=new FormData();fd.append('audio',pair.audio);fd.append('lyrics',pair.lyrics);fd.append('language',document.querySelector('#language').value);fd.append('alignment_device',document.querySelector('#device').value);fd.append('separate',document.querySelector('#separate').checked?'true':'false');
+  try{status.textContent='Dateien werden hochgeladen';const res=await fetch('/api/jobs',{method:'POST',body:fd});if(!res.ok)throw new Error(await res.text());const job=await res.json();poll(job.job_id,card)}catch(e){status.textContent='Fehler: '+e.message;card.style.borderColor='#f85149'}
+}
+async function poll(id,card){const status=card.querySelector('.status'),bar=card.querySelector('progress'),pct=card.querySelector('.pct'),actions=card.querySelector('.actions');
+  try{const r=await fetch('/api/jobs/'+id,{cache:'no-store'});if(!r.ok)throw new Error(await r.text());const j=await r.json();bar.value=j.percent||0;pct.textContent=(j.percent||0)+' %';status.textContent=j.message||j.state;
+    if(j.state==='completed'){card.style.borderColor='#3fb950';actions.innerHTML=`<a class="download" href="${j.download_lrc}">Neue LRC herunterladen</a><a class="download report" href="${j.download_report}">Bericht</a>`;return}
+    if(j.state==='failed'){card.style.borderColor='#f85149';return}setTimeout(()=>poll(id,card),1200)
+  }catch(e){status.textContent='Statusfehler: '+e.message;setTimeout(()=>poll(id,card),3000)}
+}
+start.onclick=async()=>{start.disabled=true;const valid=pairs.filter(p=>p.audio&&p.lyrics);for(const p of valid)submitPair(p);start.disabled=false};
+</script></body></html>

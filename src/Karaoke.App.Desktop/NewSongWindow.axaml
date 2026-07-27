@@ -1,0 +1,19 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.NewSongWindow" Title="Neues Songprojekt"
+        Width="720" Height="650" MinWidth="580" MinHeight="520" Background="#0D1016"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="22">
+    <StackPanel Spacing="5"><TextBlock Text="NEUES SONGPROJEKT" Foreground="#DFFF28" FontSize="22" FontWeight="Bold"/><TextBlock Text="MP3 importieren · Stems trennen · Lyrics ausrichten" Foreground="#8993A6"/></StackPanel>
+    <ScrollViewer Grid.Row="1" Margin="0,22,0,16"><StackPanel Spacing="12">
+      <TextBlock Text="MP3-DATEI" Foreground="#8993A6" FontSize="10" FontWeight="Bold"/>
+      <Grid ColumnDefinitions="*,Auto"><TextBox x:Name="AudioPathBox" IsReadOnly="True" Watermark="Noch keine MP3 ausgewählt"/><Button Grid.Column="1" Content="MP3 auswählen …" Click="PickAudioClick" Margin="8,0,0,0"/></Grid>
+      <Grid ColumnDefinitions="*,*" ColumnSpacing="10"><StackPanel><TextBlock Text="TITEL" Foreground="#8993A6" FontSize="10"/><TextBox x:Name="TitleBox"/></StackPanel><StackPanel Grid.Column="1"><TextBlock Text="INTERPRET" Foreground="#8993A6" FontSize="10"/><TextBox x:Name="ArtistBox"/></StackPanel></Grid>
+      <Separator Margin="0,8"/>
+      <Grid ColumnDefinitions="*,Auto,Auto"><TextBlock Text="LYRICS (OPTIONAL)" Foreground="#8993A6" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/><Button Grid.Column="1" Content="Aus Datei …" Click="PickLyricsClick"/><Button Grid.Column="2" Content="Zwischenablage" Click="PasteLyricsClick" Margin="8,0,0,0"/></Grid>
+      <TextBox x:Name="LyricsBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="230" ScrollViewer.VerticalScrollBarVisibility="Auto" Watermark="Plain-Text, zeilensynchrone LRC oder Enhanced LRC hier einfügen …"/>
+      <CheckBox x:Name="UseLrclibBox" IsChecked="True" Content="Wenn das Feld leer ist, automatisch passende Lyrics bei LRCLIB suchen"/>
+      <TextBlock Text="Der Auftrag läuft nach dem Import in der Hintergrundkonsole weiter. Der Editor bleibt benutzbar." Foreground="#45E6D0" TextWrapping="Wrap"/>
+    </StackPanel></ScrollViewer>
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8"><Button Content="Abbrechen" Click="CancelClick"/><Button Content="Projekt anlegen" Click="CreateClick" Background="#DFFF28" Foreground="#11151C"/></StackPanel>
+  </Grid>
+</Window>

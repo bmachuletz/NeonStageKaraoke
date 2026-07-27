@@ -1,0 +1,35 @@
+name: Bug report
+description: Report a reproducible Neon Stage defect
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not attach songs, lyrics, covers, credentials, databases or personal data."
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include expected and actual behaviour.
+    validations:
+      required: true
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [Server/Web portal, Unity Stage, Lyrics Editor, Alignment pipeline, LrcMatcher, Build/scripts]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, app/build version, GPU and relevant logs with secrets removed.
+    validations:
+      required: true

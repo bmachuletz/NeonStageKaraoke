@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0a0714">
+  <title>Neon Stage</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/wishlist.css">
+  <style>.event-title{color:#ff48c4;font-size:.78rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}</style>
+</head>
+<body>
+  <div class="aurora"></div>
+  <header><div><span class="eyebrow">KARAOKE NIGHT</span><h1>NEON <i>STAGE</i></h1><div id="event-title" class="event-title">Aktive Bühne</div></div><button id="profile" class="profile" aria-label="Name ändern">?</button></header>
+  <main>
+    <section id="now" class="now hidden"><img id="now-cover"><div class="now-meta"><small>JETZT AUF DER BÜHNE</small><strong id="now-title"></strong><span id="now-singer"></span></div><div class="reactions" aria-label="Live-Reaktion senden">
+      <button data-reaction="heart" title="Herz senden" aria-label="Herz senden"><svg viewBox="0 0 24 24"><path d="M12 21S3 15.4 3 8.7C3 3.9 9 2.4 12 6.3 15 2.4 21 3.9 21 8.7 21 15.4 12 21 12 21Z"/></svg></button>
+      <button data-reaction="smile" title="Lächeln senden" aria-label="Lächeln senden"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="9" cy="10" r="1" class="cut"/><circle cx="15" cy="10" r="1" class="cut"/><path d="M8 14c1.4 2.5 6.6 2.5 8 0" class="stroke"/></svg></button>
+      <button data-reaction="like" title="Daumen hoch senden" aria-label="Daumen hoch senden"><svg viewBox="0 0 24 24"><path d="M8 10 12 3c2 1 2 4 1 6h6c2 0 2 2 1.5 4l-1.5 6H8V10ZM3 10h4v10H3Z"/></svg></button>
+      <button data-reaction="clap" title="Applaus senden" aria-label="Applaus senden"><svg viewBox="0 0 24 24"><path d="m4 13 5 7c2 2 6 1 8-1l3-4c1-2-1-3-2-2l-2 2 3-7c.5-2-2-3-3-1l-2 5 1-7c0-2-2-2-3 0l-1 6V5c0-2-2-2-3 0v7l-2-4c-1-2-3 0-2 2Z"/></svg></button>
+      <button data-reaction="fire" title="Flamme senden" aria-label="Flamme senden"><svg viewBox="0 0 24 24"><path d="M13 2c1 5-3 6-1 10 1-2 3-3 4-5 4 4 5 8 3 12-3 5-12 4-14-1-2-5 2-9 5-12 0 6 3 7 3 10 2-2 4-4 5-6Z"/></svg></button>
+    </div></section>
+    <nav><button class="tab active" data-view="search">Songs</button><button class="tab" data-view="queue">Warteliste <b id="queue-count">0</b></button><button class="tab" data-view="wishlist">Wünsche</button></nav>
+    <section id="search-view">
+      <div id="new-section"><div class="wish-head"><div><span class="eyebrow">FRISCH AUF DER BÜHNE</span><h2>Neu</h2></div></div><div id="new-songs" class="cards"></div></div>
+      <label class="search"><span>⌕</span><input id="query" type="search" autocomplete="off" placeholder="Titel, Interpret oder Album"></label>
+      <p id="search-status" class="muted">Entdecke deinen nächsten Song.</p>
+      <div id="songs" class="cards"></div>
+    </section>
+    <section id="queue-view" class="hidden"><p class="muted">Deine Songs kannst du verschieben oder entfernen.</p><div id="queue" class="queue"></div></section>
+    <section id="wishlist-view" class="hidden">
+      <div class="wish-head"><div><span class="eyebrow">NOCH NICHT DABEI?</span><h2>Wünsch dir einen Song</h2></div><a id="spotify-connect" class="spotify hidden" href="/api/spotify/connect">Spotify verbinden</a></div>
+      <label class="search"><span>⌕</span><input id="wish-query" type="search" autocomplete="off" placeholder="Bei Spotify suchen"></label>
+      <p id="wish-status" class="muted">Titel mit synchronisierten Lyrics können später importiert werden.</p>
+      <div id="wish-results" class="cards"></div>
+      <h3>Aktuelle Wünsche</h3><div id="wishes" class="queue"></div>
+    </section>
+  </main>
+  <div id="toast" role="status"></div>
+  <dialog id="name-dialog"><form method="dialog"><span class="eyebrow">WILLKOMMEN AUF DER BÜHNE</span><h2>Wie heißt du?</h2><p>Unter diesem Namen erscheinen deine Songwünsche.</p><input id="name" maxlength="40" autocomplete="name" placeholder="Dein Name" required><button id="join" value="default">LET'S SING</button></form></dialog>
+  <script src="/i18n.js"></script><script src="/app.js"></script>
+</body>
+</html>

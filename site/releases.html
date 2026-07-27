@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#09020f">
+  <meta name="description" content="Neon Stage release builds and artifact policy.">
+  <title>Release builds — Neon Stage</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .release{max-width:1000px;margin:auto;padding:90px 28px 140px}.release h1{font-size:clamp(52px,8vw,100px);line-height:.9;letter-spacing:-.06em}.release h2{margin-top:60px;font-size:30px}.release p,.release li{color:var(--muted);line-height:1.75}.release code{color:var(--acid)}.release table{width:100%;border-collapse:collapse;margin:30px 0}.release td,.release th{text-align:left;padding:15px;border-bottom:1px solid #ffffff18}.release th{color:var(--pink)}.notice{padding:20px;border:1px solid #dfff0040;background:#dfff0009;border-radius:10px}.release pre{overflow:auto;padding:18px;border:1px solid #ffffff20;background:#050209;line-height:1.6}
+  </style>
+</head>
+<body>
+  <div class="aurora"></div>
+  <header class="nav"><a class="brand" href="index.html"><i>NS</i> NEON STAGE</a><nav><a href="index.html">Home</a><a href="legal.html">Legal</a></nav></header>
+  <main class="release">
+    <p class="eyebrow">VERIFIABLE · MEDIA-FREE · SELF-HOSTED</p>
+    <h1>Release builds</h1>
+    <p class="notice">Neon Stage application releases never contain songs, audio, lyrics, cover art, generated stems, local databases, credentials, downloaded AI models, or alignment output. The CI media guard checks both source and packaged artifacts.</p>
+
+    <h2>Release artifacts</h2>
+    <table><thead><tr><th>Artifact</th><th>Purpose</th></tr></thead><tbody>
+      <tr><td>NeonStage-LyricsEditor-x86_64.AppImage</td><td>Self-contained Avalonia review and timing editor with LibVLC</td></tr>
+      <tr><td>server-linux-x64.tar.gz</td><td>ASP.NET Core server and web portals</td></tr>
+      <tr><td>editor-linux-x64.tar.gz</td><td>Portable framework-dependent editor build</td></tr>
+      <tr><td>stage-linux-x64</td><td>Unity stage player (licensed build environment)</td></tr>
+      <tr><td>stage-android-armv7 / arm64</td><td>Android stage builds for compatible karaoke hardware</td></tr>
+    </tbody></table>
+
+    <h2>Run the editor AppImage</h2>
+    <pre><code>chmod +x NeonStage-LyricsEditor-x86_64.AppImage
+KARAOKE_SERVER=http://SERVER:5274 \
+  ./NeonStage-LyricsEditor-x86_64.AppImage</code></pre>
+
+    <h2>Deploy the server</h2>
+    <pre><code>cp .env.example .env
+# configure the host library path and Spotify values
+docker compose up -d --build server
+curl http://127.0.0.1:5274/api/health</code></pre>
+    <p>The media library and database remain bind-mounted host data. GPU alignment and downloader tooling run as separate worker workloads and are not included in the server image.</p>
+
+    <h2>How releases are produced</h2>
+    <ol>
+      <li>A reviewed version tag starts the GitHub release workflow.</li>
+      <li>.NET tests and the source media guard must pass.</li>
+      <li>The server is published without user data; the AppImage bundles only the editor runtime and required native libraries.</li>
+      <li><code>LICENSE</code>, <code>NOTICE</code>, and third-party notices are included.</li>
+      <li>Packaged output is scanned again and SHA-256 checksums are generated.</li>
+      <li>Tagged artifacts are attached to a GitHub Release.</li>
+    </ol>
+
+    <h2>Unity builds</h2>
+    <p>Unity Linux and Android artifacts require a protected licensed CI environment. Android signing credentials and Unity licenses belong in encrypted repository secrets, never in source control. Operators may also build locally using the scripts documented in the repository.</p>
+    <h2>Before installation</h2>
+    <p>Verify the SHA-256 checksum, read the release notes, and configure your own server URL and empty local library. Media is added only by the operator after installation and remains outside the application directory.</p>
+    <div class="actions"><a class="primary" href="index.html">Back to Neon Stage</a><a class="secondary" href="legal.html">Licensing &amp; legal</a></div>
+  </main>
+  <footer><span>© <span id="year"></span> Neon Stage contributors · Apache-2.0</span><span>Application binaries only · No karaoke media</span><nav><a href="ACKNOWLEDGEMENTS.md">Thanks</a><a href="THIRD_PARTY_NOTICES.md">Third-party notices</a></nav></footer>
+  <script src="site.js"></script>
+</body>
+</html>

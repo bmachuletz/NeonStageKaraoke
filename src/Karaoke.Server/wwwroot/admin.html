@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#090512">
+  <title>Neon Stage · Verwaltung</title>
+  <link rel="stylesheet" href="/admin.css">
+</head>
+<body>
+  <div class="aurora"></div>
+  <header><div><span>SERVER PORTAL</span><h1>NEON <i>STAGE</i></h1></div><a href="/">Gästeportal</a></header>
+  <main>
+    <section class="hero"><div><span class="eyebrow">EVENTS VERWALTEN</span><h2>Deine nächste Karaoke-Nacht beginnt hier.</h2><p>Event anlegen, Link teilen und die Warteliste schon vor der Party füllen lassen.</p></div><div class="hero-actions"><button id="quick-event" class="secondary">⚡ Sofort-Session</button><button id="new-event">＋ Event planen</button></div></section>
+    <p class="security">Lokaler Verwaltungszugang · Vor einer öffentlichen Freigabe wird dieser Bereich mit einer Anmeldung geschützt.</p>
+    <div id="status" class="status">Events werden geladen …</div>
+    <section id="events" class="events"></section>
+  </main>
+  <dialog id="event-dialog">
+    <form id="event-form">
+      <button type="button" class="close" aria-label="Schließen">×</button>
+      <span class="eyebrow">NEUES EVENT</span><h2>Party planen</h2>
+      <label>Name<input id="event-name" maxlength="80" required placeholder="z. B. Benjamins Geburtstag"></label>
+      <label>Start<input id="event-start" type="datetime-local" required></label>
+      <label>Ende (optional)<input id="event-end" type="datetime-local"></label>
+      <label>Beschreibung<textarea id="event-description" maxlength="500" rows="3" placeholder="Dresscode, Motto oder Hinweise"></textarea></label>
+      <button type="submit" class="primary">Event erstellen</button>
+    </form>
+  </dialog>
+  <div id="toast" role="status"></div>
+  <script src="/i18n.js"></script><script src="/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+<Solution>
+  <Folder Name="/Tools/">
+    <Project Path="LrcMatcher/LrcMatcher.csproj" />
+  </Folder>
+  <Folder Name="/Karaoke/">
+    <Project Path="src/Karaoke.Contracts/Karaoke.Contracts.csproj" />
+    <Project Path="src/Karaoke.Server/Karaoke.Server.csproj" />
+    <Project Path="src/Karaoke.App/Karaoke.App.csproj" />
+    <Project Path="src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj" />
+    <Project Path="src/Karaoke.App.Android/Karaoke.App.Android.csproj" />
+    <Project Path="src/Karaoke.Editor.Core/Karaoke.Editor.Core.csproj" />
+  </Folder>
+  <Folder Name="/Tests/">
+    <Project Path="tests/Karaoke.Server.PlaybackTests/Karaoke.Server.PlaybackTests.csproj" />
+    <Project Path="tests/Karaoke.Editor.Core.Tests/Karaoke.Editor.Core.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,1 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:views="using:Karaoke.App.Views" x:Class="Karaoke.App.Views.MainWindow" Title="Neon Stage Karaoke" Icon="/Assets/neon-stage-icon.png" Width="1280" Height="800" MinWidth="760" MinHeight="520"><views:MainView/></Window>

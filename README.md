@@ -1,0 +1,211 @@
+<div align="center">
+
+# NEON STAGE
+
+### Local-first karaoke that feels like a game
+
+Unity stage · Mobile guest portal · Events · GPU lyrics alignment · Millisecond editor
+
+</div>
+
+Neon Stage is a self-hosted karaoke system. Guests join from an event QR code, search the released library, manage the queue, request missing tracks, and send live reactions to the singer. The Unity stage mixes instrumental and vocal stems and renders word- and syllable-timed lyrics. The desktop editor provides sample-stable playback and detailed manual review.
+
+> Status: active development. This is not yet a polished end-user release.
+
+> **Development disclosure:** A large part of Neon Stage has been created
+> through AI-assisted “vibe coding”: the product direction, requirements,
+> testing, and acceptance decisions are human-led, while substantial portions
+> of implementation and documentation were produced collaboratively with AI
+> coding tools. Contributions and careful technical review are very welcome.
+
+If Neon Stage is useful to you and you would like to support its continued
+development: [Support Neon Stage on Ko-fi](https://ko-fi.com/Z6Q023YEX5).
+
+## Features
+
+- Responsive guest and administration portals with planned events and ad-hoc sessions
+- Shareable event links and QR codes
+- Library search, queue management, requests, Spotify metadata, and LRCLIB matching
+- Font-independent heart, smile, thumbs-up, applause, and fire reactions
+- Unity 6 stage for Linux and Android, including ARM32
+- Synchronized instrumental/vocal playback with independent levels
+- Word and optional syllable timing, lyric effects, reactive visuals, and transitions
+- CUDA pipeline with source separation, ASR verification, forced alignment, candidate comparison, and quality gates
+- Avalonia editor with waveform, stage preview, loops, undo/redo, cover import, review states, and per-song or full-library realignment
+- German UI for German locales and English UI for other locales where supported
+
+## Architecture
+
+```text
+Guest phones ── HTTP/SSE ──▶ ASP.NET Core server ── state/audio ──▶ Unity stage
+                                  │                                      │
+                                  ├── SQLite events, queue and reviews    └── DSP audio + lyric FX
+                                  ├── local media library
+                                  └── CUDA alignment service ◀──────── Lyrics editor
+```
+
+| Component | Technology | Location |
+|---|---|---|
+| Server and web portals | ASP.NET Core / .NET 10 | `src/Karaoke.Server` |
+| Stage | Unity 6 | `src/Karaoke.Stage.Unity` |
+| Lyrics editor | Avalonia / .NET 10 | `src/Karaoke.App.Desktop` |
+| Alignment service | Python, FastAPI, PyTorch, CUDA | `lyrics-word-aligner` |
+| Lyrics matcher | .NET CLI | `LrcMatcher` |
+
+## How server and clients work together
+
+The ASP.NET Core server is the single source of truth. It owns event/session state, invitations, queue order, playback state, review metadata, and paths into the operator's local media library. Clients never ship with songs and do not need direct filesystem access.
+
+1. **Create or activate a session.** An administrator prepares an event in the web portal, or the stage creates an ad-hoc session. The server returns an invitation token and QR code.
+2. **Join from a phone.** A guest opens `/e/{invite-token}`. The responsive portal resolves that token through the server, stores only the guest's chosen display name locally, and queries the released song catalog.
+3. **Build the queue.** Search, enqueue, reorder, remove, and request operations are HTTP calls scoped to the resolved event. Server-side validation prevents unreleased or incomplete songs from entering stage playback.
+4. **Drive the stage.** The Unity client polls session/playback state and acquires the stage control lease. It requests metadata, cover art, enhanced lyrics, and audio/stem streams from the server. Instrumental and vocal files are decoded locally by Unity and synchronized against its DSP clock; lyric progress uses that same clock rather than network request timing.
+5. **Send audience reactions.** Guest phones post a small reaction type (`heart`, `smile`, `like`, `clap`, or `fire`). The stage fetches the event's reaction stream and renders font-independent animated graphics. No emoji font is required on Android or Linux.
+6. **Prepare new material.** The request worker downloads authorized source material, matches lyrics, and sends audio plus lyrics to the CUDA alignment container. Generated LRC, alignment diagnostics, and stems remain in the local library, outside application packages.
+7. **Review and release.** The editor reads server metadata and local audio streams, caches temporary editing audio on the workstation, and saves versioned lyric documents back to the server. Re-alignment can target one song or the full library. Only an explicitly released version becomes visible to the Unity stage.
+8. **Propagate changes.** Server-Sent Events notify portals and the editor about library and request changes. Incremental refreshes preserve the current editor selection and timeline work.
+
+```text
+Admin portal ── create/activate event ──┐
+Guest portal ─ search/queue/react ─────┼──▶ Server API + SQLite + local library
+Lyrics editor ─ review/release ────────┘                │
+                                                       ├──▶ Unity stage (state, lyrics, covers, audio streams)
+CUDA aligner ◀── jobs from server/scripts ──────────────┘
+```
+
+Network latency can delay a command reaching the stage, but it does not continuously drive lyric highlighting: after media is prepared, Unity derives audio and lyric position from its local synchronized playback clock.
+
+## Quick start
+
+Requirements: .NET 10, FFmpeg, LibVLC, Unity 6 for stage builds, Docker, and optionally NVIDIA Container Toolkit plus a CUDA GPU.
+
+```bash
+./scripts/linux/build.sh
+./scripts/linux/start-server.sh /path/to/karaoke/library
+./scripts/linux/start-desktop.sh http://127.0.0.1:5274
+./scripts/linux/start-unity-stage.sh http://127.0.0.1:5274
+```
+
+Guest portal: `http://SERVER:5274/`  
+Administration: `http://SERVER:5274/admin.html`
+
+### Docker Compose server
+
+The server image contains only application binaries and web assets. The media
+library and SQLite state stay on the host as bind mounts.
+
+```bash
+cp .env.example .env
+# Edit .env: library path, Spotify client ID/secret and the registered redirect URL
+docker compose up -d --build server
+docker compose ps
+curl http://127.0.0.1:5274/api/health
+```
+
+`KARAOKE_LIBRARY_PATH` is mounted read/write at `/library`, while
+`KARAOKE_DATA_PATH` stores the database and Spotify authorization token. The
+secret `.env` file is ignored by Git. Set `LRC_ALIGNER_URL` to
+`http://host.docker.internal:8081` when using the separately published CUDA
+aligner on the same Linux host. The editor connects by setting
+`KARAOKE_SERVER=http://SERVER:5274`.
+
+This is intentionally the server-only deployment: library editing, events,
+queues, wishes, web portals, playback coordination, and Spotify catalog access
+run in the container. GPU alignment, MP3-folder ingestion, and request download
+processing remain host/worker jobs because their CUDA models and downloader
+toolchains are not release payloads. Run the documented worker scripts against
+the container URL when those operations are needed.
+
+## Alignment container
+
+```bash
+cd lyrics-word-aligner
+docker compose build
+docker compose up -d
+curl http://127.0.0.1:8081/health
+```
+
+The first job downloads model data into the ignored `lyrics-word-aligner/models` directory. Jobs run sequentially to protect consumer GPUs from concurrent model loads.
+
+Align one file through the service:
+
+```bash
+curl -X POST http://127.0.0.1:8081/api/jobs \
+  -F 'audio=@Song.mp3' \
+  -F 'lyrics=@Song.lrc' \
+  -F 'language=auto' \
+  -F 'separate=true' \
+  -F 'alignment_device=cuda'
+```
+
+Align a library or one matching song:
+
+```bash
+./scripts/linux/align-library.sh --library /path/to/library --force
+./scripts/linux/align-library.sh --library /path/to/library --force --match 'Artist - Title.mp3'
+```
+
+The editor exposes both operations under **Alignment**. Automatic results return to review and are never silently released to the stage.
+
+Pipeline output can include enhanced LRC, `*.alignment.json`, vocal and instrumental FLAC stems, stem metadata, transcript verification, and candidate diagnostics. See [`lyrics-word-aligner/README.md`](lyrics-word-aligner/README.md).
+
+## Command-line workflows
+
+| Task | Command |
+|---|---|
+| Build .NET projects | `./scripts/linux/build.sh` |
+| Start server | `./scripts/linux/start-server.sh /library/path` |
+| Start editor | `./scripts/linux/start-desktop.sh [server-url]` |
+| Start Linux stage | `./scripts/linux/start-unity-stage.sh [server-url]` |
+| Build Android stage | `./scripts/linux/build-unity-stage-android.sh` |
+| Match library lyrics | `./scripts/linux/match-library-lrc.sh` |
+| Align library | `./scripts/linux/align-library.sh --force` |
+| Process requests | `./scripts/linux/process-wishlist.sh` |
+| Import a local MP3 folder | `./scripts/linux/process-mp3-folder.sh /path/to/mp3s` |
+| Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |
+| Verify release contents | `./scripts/release/verify-no-media.sh` |
+
+More examples: [`scripts/linux/README.md`](scripts/linux/README.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), and [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md).
+
+## Release builds
+
+Release artifacts, supported platforms, checksums, signing expectations, and the GitHub workflow are documented in [`docs/RELEASES.md`](docs/RELEASES.md). Every release job runs the media guard before packaging and again against produced artifacts.
+
+Build the self-contained Linux editor AppImage locally:
+
+```bash
+./scripts/release/build-editor-appimage.sh
+KARAOKE_SERVER=http://SERVER:5274 ./artifacts/NeonStage-LyricsEditor-x86_64.AppImage
+```
+
+## Media safety and review rules
+
+Songs, lyrics, cover art, generated stems, local databases, service credentials, model weights, and alignment job output must never be committed or included in deployments or release artifacts. `.gitignore`, the release guard, and GitHub Actions enforce this policy.
+
+A stage-ready library entry requires audio, lyrics, instrumental, and vocal stems. Automatically aligned material enters **In review**. Only an explicitly **Released** editor version is available to the stage.
+
+The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. Spotify's public Web API supplies catalog metadata for request imports but does not expose the lyrics text; Neon Stage therefore does not rely on private Spotify endpoints.
+
+## Localization
+
+Web portals use the browser locale: German for `de`, English otherwise. `localStorage.neonStageLocale` can override the browser value. Song metadata, lyrics, event descriptions, and user names are never translated.
+
+## Media, services, and privacy
+
+Operators are responsible for all media rights and third-party terms. Neon Stage is not affiliated with or endorsed by Spotify, LRCLIB, artists, or labels. See [`docs/legal/media-and-services.md`](docs/legal/media-and-services.md).
+
+## License
+
+Original Neon Stage source is licensed under the [Apache License 2.0](LICENSE). Third-party software remains under its own licenses. Distribution requirements are listed in [`NOTICE`](NOTICE), [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), and [`docs/legal/licensing.md`](docs/legal/licensing.md).
+
+## Acknowledgements
+
+Neon Stage is built on years of work by open-source maintainers across UI,
+multimedia, databases, speech recognition, forced alignment, and source
+separation. Thank you. The projects and communities are recognized in
+[`ACKNOWLEDGEMENTS.md`](ACKNOWLEDGEMENTS.md); this gratitude complements, but
+does not replace, the formal third-party notices.
+
+## Contributing and security
+
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`SECURITY.md`](SECURITY.md). Never upload copyrighted media, credentials, local databases, generated stems, or model weights to issues or pull requests.

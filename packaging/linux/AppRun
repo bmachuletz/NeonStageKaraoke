@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+APPDIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export LD_LIBRARY_PATH="$APPDIR/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export VLC_PLUGIN_PATH="$APPDIR/usr/lib/vlc/plugins"
+export KARAOKE_SERVER="${KARAOKE_SERVER:-http://127.0.0.1:5274}"
+export NEONSTAGE_SERVER_URL="${NEONSTAGE_SERVER_URL:-$KARAOKE_SERVER}"
+
+exec "$APPDIR/usr/bin/Karaoke.App.Desktop" "$@"

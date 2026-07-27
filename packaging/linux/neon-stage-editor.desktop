@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Neon Stage Lyrics Editor
+Comment=Review and fine-tune karaoke lyrics
+Exec=neon-stage-editor
+Icon=neon-stage-editor
+Categories=AudioVideo;Audio;Utility;
+Terminal=false
+StartupWMClass=Neon Stage Karaoke
