@@ -31,6 +31,7 @@ builder.Services.AddSingleton<WishlistProcessingService>();
 builder.Services.AddSingleton<SongImportService>();
 builder.Services.AddSingleton<FolderImportService>();
 builder.Services.AddSingleton<SongRealignmentService>();
+builder.Services.AddSingleton<SongPackageService>();
 builder.Services.AddSingleton<StageTimingDiagnosticsService>();
 builder.Services.AddSingleton<LyricsVersionRepository>();
 builder.Services.AddSingleton<LyricsAlignmentVersionService>();
@@ -113,6 +114,36 @@ app.MapPost("/api/admin/songs/realign-all", (SongRealignmentService realignment)
     realignment.TryStartAll()
         ? Results.Accepted(value: realignment.GetStatus())
         : Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung."));
+app.MapPost("/api/admin/song-packages/export", async (SongPackageExportRequest request,
+    HttpContext context, SongPackageService packages, CancellationToken ct) =>
+{
+    try
+    {
+        var export = await packages.ExportAsync(request.SongIds, ct);
+        context.Response.OnCompleted(() =>
+        {
+            try { File.Delete(export.Path); }
+            catch (IOException) { }
+            return Task.CompletedTask;
+        });
+        return Results.File(export.Path, "application/vnd.neonstage.song-package+zip",
+            export.FileName, enableRangeProcessing: false);
+    }
+    catch (Exception exception) when (exception is ArgumentException or InvalidDataException or FileNotFoundException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
+app.MapPost("/api/admin/song-packages/import", async (HttpRequest request,
+    SongPackageService packages, CancellationToken ct) =>
+{
+    if (request.ContentLength == 0) return Results.BadRequest("Das Songpaket ist leer.");
+    try { return Results.Ok(await packages.ImportAsync(request.Body, ct)); }
+    catch (Exception exception) when (exception is ArgumentException or InvalidDataException or IOException or System.Text.Json.JsonException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+}).WithMetadata(new Microsoft.AspNetCore.Mvc.DisableRequestSizeLimitAttribute());
 app.MapPost("/api/admin/songs/{id:guid}/lyrics/snapshot-alignment", async (
     Guid id, LibraryRepository library, SongRealignmentService realignment, CancellationToken ct) =>
 {

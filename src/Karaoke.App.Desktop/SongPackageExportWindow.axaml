@@ -1,0 +1,40 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.SongPackageExportWindow"
+        Title="Mehrere Songs exportieren"
+        Icon="avares://Karaoke.App/Assets/neon-stage-icon.png"
+        Width="660" Height="720" MinWidth="520" MinHeight="480"
+        WindowStartupLocation="CenterOwner" Background="#0D1016">
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="20">
+    <StackPanel Spacing="4">
+      <TextBlock Text="SONGPAKET ZUSAMMENSTELLEN" Foreground="#DFFF28" FontSize="19" FontWeight="Bold" />
+      <TextBlock Text="Alle Projektdateien und Lyrics-Versionen der ausgewählten Songs werden übernommen."
+                 Foreground="#8993A6" TextWrapping="Wrap" />
+    </StackPanel>
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,16,0,10" ColumnSpacing="8">
+      <TextBox x:Name="SearchBox" Watermark="Titel oder Interpret suchen …" TextChanged="SearchTextChanged" />
+      <Button Grid.Column="1" Content="Alle sichtbaren" Click="SelectVisibleClick" />
+      <Button Grid.Column="2" Content="Auswahl löschen" Click="ClearSelectionClick" />
+    </Grid>
+    <Border Grid.Row="2" BorderBrush="#303746" BorderThickness="1" CornerRadius="8" Background="#121720">
+      <ListBox ItemsSource="{Binding VisibleSongs}" Background="Transparent">
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <CheckBox IsChecked="{Binding IsSelected}" Margin="10,7">
+              <StackPanel>
+                <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Artist}" Foreground="#8993A6" FontSize="11" />
+              </StackPanel>
+            </CheckBox>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Border>
+    <Grid Grid.Row="3" ColumnDefinitions="*,Auto,Auto" Margin="0,14,0,0" ColumnSpacing="8">
+      <TextBlock Text="{Binding SelectionLabel}" Foreground="#8993A6" VerticalAlignment="Center" />
+      <Button Grid.Column="1" Content="Abbrechen" Click="CancelClick" />
+      <Button Grid.Column="2" Content="Ausgewählte exportieren" Click="ExportClick"
+              Background="#DFFF28" Foreground="#11151C" />
+    </Grid>
+  </Grid>
+</Window>

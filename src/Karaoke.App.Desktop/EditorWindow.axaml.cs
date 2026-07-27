@@ -195,6 +195,65 @@ public partial class EditorWindow : Window
     {
         if (DataContext is EditorViewModel viewModel) await viewModel.StartFolderImportAsync();
     }
+    private async void ExportCurrentSongPackageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel) return;
+        await ExportSongPackageAsync(viewModel, [song.Id], song.Title);
+    }
+    private async void ExportMultipleSongPackagesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        var selected = await new SongPackageExportWindow(viewModel.Songs).ShowDialog<Guid[]?>(this);
+        if (selected is not { Length: > 0 }) return;
+        await ExportSongPackageAsync(viewModel, selected, $"neon-stage-{selected.Length}-songs");
+    }
+    private async void ImportSingleSongPackageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        await ImportSongPackagesAsync(allowMultiple: false);
+    private async void ImportMultipleSongPackagesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        await ImportSongPackagesAsync(allowMultiple: true);
+
+    private async Task ExportSongPackageAsync(EditorViewModel viewModel, IReadOnlyCollection<Guid> songIds,
+        string suggestedName)
+    {
+        var target = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = EditorLocale.Text(songIds.Count == 1 ? "Songpaket exportieren" : "Mehrere Songs exportieren"),
+            SuggestedFileName = SafePackageName(suggestedName) + ".neonstage.zip",
+            FileTypeChoices = [SongPackageFileType()]
+        });
+        var path = target?.TryGetLocalPath();
+        if (!string.IsNullOrWhiteSpace(path)) await viewModel.ExportSongPackageAsync(songIds, path);
+    }
+
+    private async Task ImportSongPackagesAsync(bool allowMultiple)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        var selected = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = EditorLocale.Text(allowMultiple
+                ? "Mehrere Neon-Stage-Songpakete importieren"
+                : "Neon-Stage-Songpaket importieren"),
+            AllowMultiple = allowMultiple,
+            FileTypeFilter = [SongPackageFileType()]
+        });
+        var paths = selected.Select(file => file.TryGetLocalPath()).Where(path => !string.IsNullOrWhiteSpace(path))
+            .Cast<string>().ToArray();
+        if (paths.Length > 0) await viewModel.ImportSongPackagesAsync(paths);
+    }
+
+    private static FilePickerFileType SongPackageFileType() => new("Neon Stage song package")
+    {
+        Patterns = ["*.neonstage.zip", "*.zip"],
+        MimeTypes = ["application/vnd.neonstage.song-package+zip", "application/zip"]
+    };
+
+    private static string SafePackageName(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var safe = new string(value.Select(character => invalid.Contains(character) ? '_' : character).ToArray())
+            .Trim(' ', '.');
+        return string.IsNullOrWhiteSpace(safe) ? "neon-stage-song" : safe;
+    }
     private async void StartWishProcessingClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is EditorViewModel viewModel) await viewModel.StartWishProcessingAsync();

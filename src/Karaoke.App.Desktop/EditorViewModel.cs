@@ -301,6 +301,117 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         finally { Busy = false; }
     }
 
+    public async Task<bool> ExportSongPackageAsync(IReadOnlyCollection<Guid> songIds, string destinationPath,
+        CancellationToken cancellationToken = default)
+    {
+        if (songIds.Count == 0 || string.IsNullOrWhiteSpace(destinationPath)) return false;
+        var partialPath = destinationPath + ".partial";
+        Status = EditorLocale.German
+            ? songIds.Count == 1
+                ? "Songpaket wird exportiert …"
+                : $"Songpaket mit {songIds.Count} Songs wird exportiert …"
+            : songIds.Count == 1
+                ? "Exporting song package …"
+                : $"Exporting package with {songIds.Count} songs …";
+        try
+        {
+            using var transfer = new HttpClient { BaseAddress = ServerAddress, Timeout = Timeout.InfiniteTimeSpan };
+            using var request = new HttpRequestMessage(HttpMethod.Post, "/api/admin/song-packages/export")
+            {
+                Content = JsonContent.Create(new SongPackageExportRequest(songIds.ToArray()))
+            };
+            using var response = await transfer.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(await ReadTransferErrorAsync(response, cancellationToken));
+            await using (var source = await response.Content.ReadAsStreamAsync(cancellationToken))
+            await using (var destination = new FileStream(partialPath, FileMode.Create, FileAccess.Write,
+                             FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                await source.CopyToAsync(destination, cancellationToken);
+            File.Move(partialPath, destinationPath, overwrite: true);
+            Status = EditorLocale.German
+                ? songIds.Count == 1
+                    ? "Songpaket vollständig exportiert."
+                    : $"{songIds.Count} Songs vollständig exportiert."
+                : songIds.Count == 1
+                    ? "Song package exported successfully."
+                    : $"{songIds.Count} songs exported successfully.";
+            return true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Status = (EditorLocale.German ? "Export fehlgeschlagen: " : "Export failed: ") + exception.Message;
+            return false;
+        }
+        finally
+        {
+            try { if (File.Exists(partialPath)) File.Delete(partialPath); }
+            catch (IOException) { }
+        }
+    }
+
+    public async Task<bool> ImportSongPackagesAsync(IReadOnlyList<string> packagePaths,
+        CancellationToken cancellationToken = default)
+    {
+        var paths = packagePaths.Where(path => !string.IsNullOrWhiteSpace(path) && File.Exists(path)).ToArray();
+        if (paths.Length == 0) return false;
+        var importedSongs = 0;
+        try
+        {
+            using var transfer = new HttpClient { BaseAddress = ServerAddress, Timeout = Timeout.InfiniteTimeSpan };
+            for (var index = 0; index < paths.Length; index++)
+            {
+                Status = EditorLocale.German
+                    ? paths.Length == 1
+                        ? "Songpaket wird geprüft und importiert …"
+                        : $"Songpaket {index + 1} von {paths.Length} wird geprüft und importiert …"
+                    : paths.Length == 1
+                        ? "Validating and importing song package …"
+                        : $"Validating and importing package {index + 1} of {paths.Length} …";
+                await using var stream = new FileStream(paths[index], FileMode.Open, FileAccess.Read, FileShare.Read,
+                    1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                using var content = new StreamContent(stream, 1024 * 1024);
+                content.Headers.ContentType = new("application/vnd.neonstage.song-package+zip");
+                using var response = await transfer.PostAsync("/api/admin/song-packages/import", content,
+                    cancellationToken);
+                if (!response.IsSuccessStatusCode)
+                    throw new InvalidOperationException(await ReadTransferErrorAsync(response, cancellationToken));
+                var result = await response.Content.ReadFromJsonAsync<SongPackageImportResultDto>(cancellationToken)
+                             ?? throw new InvalidOperationException(EditorLocale.German
+                                 ? "Der Server lieferte kein Importergebnis."
+                                 : "The server returned no import result.");
+                importedSongs += result.ImportedSongs;
+            }
+            await MergeNewSongsAsync(cancellationToken);
+            Status = EditorLocale.German
+                ? $"Import abgeschlossen: {importedSongs} Song(s) vollständig übernommen."
+                : $"Import complete: {importedSongs} song(s) imported successfully.";
+            return true;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            Status = EditorLocale.German
+                ? $"Import nach {importedSongs} Song(s) abgebrochen: {exception.Message}"
+                : $"Import stopped after {importedSongs} song(s): {exception.Message}";
+            return false;
+        }
+    }
+
+    private static async Task<string> ReadTransferErrorAsync(HttpResponseMessage response,
+        CancellationToken cancellationToken)
+    {
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (string.IsNullOrWhiteSpace(body)) return $"Serverfehler {(int)response.StatusCode}";
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            if (document.RootElement.TryGetProperty("detail", out var detail) &&
+                !string.IsNullOrWhiteSpace(detail.GetString())) return detail.GetString()!;
+        }
+        catch (JsonException) { }
+        return body.Length <= 1000 ? body : body[..1000];
+    }
+
     public void ToggleConsole()
     {
         ConsoleVisible = !ConsoleVisible;

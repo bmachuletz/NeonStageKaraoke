@@ -31,7 +31,7 @@ development: [Support Neon Stage on Ko-fi](https://ko-fi.com/Z6Q023YEX5).
 - Synchronized instrumental/vocal playback with independent levels
 - Word and optional syllable timing, lyric effects, reactive visuals, and transitions
 - CUDA pipeline with source separation, ASR verification, forced alignment, candidate comparison, and quality gates
-- Avalonia editor with waveform, stage preview, loops, undo/redo, cover import, review states, and per-song or full-library realignment
+- Avalonia editor with waveform, stage preview, loops, undo/redo, cover import, review states, portable single/multi-song packages, and per-song or full-library realignment
 - German UI for German locales and English UI for other locales where supported
 
 ## Screens
@@ -242,6 +242,8 @@ Songs, lyrics, cover art, generated stems, local databases, service credentials,
 A stage-ready library entry requires audio, lyrics, instrumental, and vocal stems. Automatically aligned material enters **In review**. Only an explicitly **Released** editor version is available to the stage.
 
 The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. The official Spotify Web API supplies catalog metadata for request imports after the operator configures a Spotify developer application; it does not expose lyrics text. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB.
+
+Use **Management → Song packages** to export one song, export a selected group, or import one or several portable `.neonstage.zip` packages. A package contains the master audio, instrumental and vocal stems, synchronized lyrics, alignment and visualization sidecars, cover art, review state, and the complete editor lyrics-version history. Imports validate every file checksum, never overwrite an existing song project, and only publish a song after the complete package has been verified.
 
 ## Localization
 

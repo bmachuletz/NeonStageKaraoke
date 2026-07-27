@@ -192,6 +192,45 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         return await GetAsync(songId, versionId, ct);
     }
 
+    public async Task<int> ImportAsync(Guid songId, IReadOnlyList<LyricsVersionDto> versions,
+        CancellationToken ct)
+    {
+        if (versions.Count == 0) return 0;
+        if (versions.Count > 10_000 || versions.Any(version => version.Revision <= 0) ||
+            versions.Select(version => version.Revision).Distinct().Count() != versions.Count)
+            throw new InvalidDataException("Das Songpaket enthält ungültige Lyrics-Revisionen.");
+        foreach (var version in versions)
+            ValidateDocument(songId, version.DocumentJson, allowTimingConflicts: true);
+
+        await EnsureInitializedAsync(ct);
+        await using var connection = await OpenAsync(ct);
+        await using var transaction = await connection.BeginTransactionAsync(ct);
+        var existing = connection.CreateCommand();
+        existing.Transaction = (SqliteTransaction)transaction;
+        existing.CommandText = "SELECT COUNT(*) FROM lyrics_versions WHERE songId=$song";
+        existing.Parameters.AddWithValue("$song", songId.ToString());
+        if (Convert.ToInt32(await existing.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture) != 0)
+            throw new InvalidOperationException("Für den importierten Song existieren bereits Lyrics-Versionen.");
+
+        foreach (var version in versions.OrderBy(version => version.Revision))
+        {
+            var command = connection.CreateCommand();
+            command.Transaction = (SqliteTransaction)transaction;
+            command.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt) VALUES($id,$song,$revision,$status,$json,$analysis,$created,$updated)";
+            command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString());
+            command.Parameters.AddWithValue("$song", songId.ToString());
+            command.Parameters.AddWithValue("$revision", version.Revision);
+            command.Parameters.AddWithValue("$status", version.Status.ToString());
+            command.Parameters.AddWithValue("$json", version.DocumentJson);
+            command.Parameters.AddWithValue("$analysis", (object?)version.AnalysisRunId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$created", version.CreatedAt.ToString("O"));
+            command.Parameters.AddWithValue("$updated", version.UpdatedAt.ToString("O"));
+            await command.ExecuteNonQueryAsync(ct);
+        }
+        await transaction.CommitAsync(ct);
+        return versions.Count;
+    }
+
     private async Task EnsureInitializedAsync(CancellationToken ct)
     {
         if (_initialized) return;

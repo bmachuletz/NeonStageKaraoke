@@ -23,6 +23,13 @@
             <Button.Flyout><MenuFlyout>
               <MenuItem Header="Wünsche und Downloads" Click="OpenWishlistConsoleClick" />
               <MenuItem Header="MP3-Ordner importieren …" Click="OpenFolderImportConsoleClick" />
+              <MenuItem Header="Songpakete">
+                <MenuItem Header="Ausgewählten Song exportieren …" Click="ExportCurrentSongPackageClick" />
+                <MenuItem Header="Mehrere Songs exportieren …" Click="ExportMultipleSongPackagesClick" />
+                <Separator />
+                <MenuItem Header="Ein Songpaket importieren …" Click="ImportSingleSongPackageClick" />
+                <MenuItem Header="Mehrere Songpakete importieren …" Click="ImportMultipleSongPackagesClick" />
+              </MenuItem>
               <MenuItem Header="Events verwalten …" Click="OpenEventManagementClick" />
               <MenuItem Header="Admin-Webseite öffnen" Click="OpenAdminWebsiteClick" />
             </MenuFlyout></Button.Flyout>

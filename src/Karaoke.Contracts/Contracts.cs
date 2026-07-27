@@ -128,3 +128,8 @@ public sealed record CreateLyricsVersionRequest(string DocumentJson, string? Ana
 public sealed record UpdateLyricsVersionRequest(long ExpectedRevision, string DocumentJson,
     LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false);
 public sealed record ChangeLyricsVersionStatusRequest(long ExpectedRevision, bool AllowTimingConflicts = false);
+public sealed record SongPackageExportRequest(IReadOnlyList<Guid> SongIds);
+public sealed record ImportedSongPackageDto(Guid SongId, string Title, string Artist,
+    SongReviewStatus ReviewStatus, int ImportedFiles, int ImportedLyricsVersions);
+public sealed record SongPackageImportResultDto(int ImportedSongs,
+    IReadOnlyList<ImportedSongPackageDto> Songs);

@@ -811,7 +811,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         hubContext.Clients.All.SendAsync(KaraokeHubEvents.ScanStatusChanged, GetScanStatus(), cancellationToken);
 
     private static LibraryScanStatusDto EmptyStatus() => new(false, 0, 0, 0, 0, 0, null, null, null);
-    private static Guid StableId(string value) => new(MD5.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(value).ToLowerInvariant())));
+    internal static Guid StableId(string value) => new(MD5.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(value).ToLowerInvariant())));
     private static string Mime(string extension) => extension.ToLowerInvariant() switch
     {
         ".mp3" => "audio/mpeg", ".flac" => "audio/flac", ".m4a" => "audio/mp4",

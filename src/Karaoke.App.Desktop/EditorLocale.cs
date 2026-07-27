@@ -16,6 +16,10 @@ public static class EditorLocale
         ["Wünsche, Events und Admin-Portal"]="Requests, events and admin portal",
         ["Wünsche und Importe"]="Requests and imports", ["Wünsche und Downloads"]="Requests and downloads",
         ["MP3-Ordner importieren …"]="Import MP3 folder …", ["Events verwalten …"]="Manage events …",
+        ["Songpakete"]="Song packages", ["Ausgewählten Song exportieren …"]="Export selected song …",
+        ["Mehrere Songs exportieren …"]="Export multiple songs …",
+        ["Ein Songpaket importieren …"]="Import one song package …",
+        ["Mehrere Songpakete importieren …"]="Import multiple song packages …",
         ["Admin-Webseite öffnen"]="Open admin website", ["Rückgängig (Strg+Z)"]="Undo (Ctrl+Z)",
         ["Wiederholen (Strg+Shift+Z)"]="Redo (Ctrl+Shift+Z)", ["Alignment ▾"]="Alignment ▾",
         ["GPU-Alignment starten"]="Start GPU alignment", ["Ausgewählten Song neu alignen"]="Realign selected song",
@@ -67,7 +71,13 @@ public static class EditorLocale
         ["Ordnerpfad auf dem Neon-Stage-Server …"]="Folder path on the Neon Stage server …",
         ["ORDNER WÄHLEN …"]="SELECT FOLDER …", ["Unterordner rekursiv durchsuchen"]="Search subfolders recursively",
         ["Die Originaldateien bleiben unverändert. Nur technisch vollständige Songs gelangen in die Bibliothek."]="Original files remain unchanged. Only technically complete songs enter the library.",
-        ["▶ IMPORT STARTEN"]="▶ START IMPORT"
+        ["▶ IMPORT STARTEN"]="▶ START IMPORT", ["Mehrere Songs exportieren"]="Export multiple songs",
+        ["SONGPAKET ZUSAMMENSTELLEN"]="BUILD SONG PACKAGE",
+        ["Alle Projektdateien und Lyrics-Versionen der ausgewählten Songs werden übernommen."]="All project files and lyric versions of the selected songs are included.",
+        ["Alle sichtbaren"]="Select visible", ["Auswahl löschen"]="Clear selection",
+        ["Ausgewählte exportieren"]="Export selected", ["Songpaket exportieren"]="Export song package",
+        ["Mehrere Neon-Stage-Songpakete importieren"]="Import multiple Neon Stage song packages",
+        ["Neon-Stage-Songpaket importieren"]="Import Neon Stage song package"
     };
 
     public static string Text(string value)
@@ -92,8 +102,16 @@ public static class EditorLocale
             if (control is TextBox { Watermark: string watermark } textBox) textBox.Watermark = Text(watermark);
             if (ToolTip.GetTip(control) is string tip) ToolTip.SetTip(control, Text(tip));
             if (control is Button { Flyout: MenuFlyout flyout })
-                foreach (var item in flyout.Items.OfType<MenuItem>())
-                    if (item.Header is string header) item.Header = Text(header);
+                ApplyMenuItems(flyout.Items.OfType<MenuItem>());
+        }
+    }
+
+    private static void ApplyMenuItems(IEnumerable<MenuItem> items)
+    {
+        foreach (var item in items)
+        {
+            if (item.Header is string header) item.Header = Text(header);
+            ApplyMenuItems(item.Items.OfType<MenuItem>());
         }
     }
 }
