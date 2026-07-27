@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Karaoke.Editor.Core;
 
 namespace Karaoke.Server;
 
@@ -20,8 +21,15 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
     {
         if (!Path.GetExtension(audio.FileName).Equals(".mp3", StringComparison.OrdinalIgnoreCase))
             throw new ArgumentException("Der Projektimport unterstützt derzeit MP3-Dateien.");
-        title = string.IsNullOrWhiteSpace(title) ? Path.GetFileNameWithoutExtension(audio.FileName) : title.Trim();
-        artist = string.IsNullOrWhiteSpace(artist) ? "Unbekannter Interpret" : artist.Trim();
+        var ultraStar = UltraStarLyricsImporter.LooksLikeUltraStar(lyrics)
+            ? UltraStarLyricsImporter.Parse(lyrics!)
+            : null;
+        title = string.IsNullOrWhiteSpace(title)
+            ? ultraStar?.Metadata.Title ?? Path.GetFileNameWithoutExtension(audio.FileName)
+            : title.Trim();
+        artist = string.IsNullOrWhiteSpace(artist)
+            ? ultraStar?.Metadata.Artist ?? "Unbekannter Interpret"
+            : artist.Trim();
         lock (_gate)
         {
             if (_status.IsRunning) return null;
@@ -34,7 +42,8 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
         await using (var target = File.Create(audioPath)) await audio.CopyToAsync(target, cancellationToken);
         var lrcPath = Path.ChangeExtension(audioPath, ".lrc");
         if (!string.IsNullOrWhiteSpace(lyrics))
-            await File.WriteAllTextAsync(lrcPath, NormalizeLyrics(lyrics), new UTF8Encoding(false), cancellationToken);
+            await File.WriteAllTextAsync(lrcPath, ultraStar?.ToEnhancedLrc() ?? NormalizeLyrics(lyrics),
+                new UTF8Encoding(false), cancellationToken);
         _ = Task.Run(() => ProcessAsync(audioPath, lrcPath, useLrclib && string.IsNullOrWhiteSpace(lyrics)));
         return GetStatus();
     }
@@ -96,9 +105,14 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
         }
     }
     private void Set(int percent, string message) { lock (_gate) _status = _status with { Percent = percent, Message = message }; }
-    private static string NormalizeLyrics(string value) => value.Contains('[', StringComparison.Ordinal) || value.Contains('<', StringComparison.Ordinal)
-        ? value.Trim() + Environment.NewLine
-        : "[re:Plain lyrics imported by Neon Stage; GPU alignment required]" + Environment.NewLine + value.Trim() + Environment.NewLine;
+    private static string NormalizeLyrics(string value)
+    {
+        if (UltraStarLyricsImporter.LooksLikeUltraStar(value))
+            return UltraStarLyricsImporter.Parse(value).ToEnhancedLrc();
+        return value.Contains('[', StringComparison.Ordinal) || value.Contains('<', StringComparison.Ordinal)
+            ? value.Trim() + Environment.NewLine
+            : "[re:Plain lyrics imported by Neon Stage; GPU alignment required]" + Environment.NewLine + value.Trim() + Environment.NewLine;
+    }
     private static string SafeName(string value)
     {
         var invalid = Path.GetInvalidFileNameChars().ToHashSet();

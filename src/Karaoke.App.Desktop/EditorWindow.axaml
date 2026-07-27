@@ -23,6 +23,7 @@
             <Button.Flyout><MenuFlyout>
               <MenuItem Header="Wünsche und Downloads" Click="OpenWishlistConsoleClick" />
               <MenuItem Header="MP3-Ordner importieren …" Click="OpenFolderImportConsoleClick" />
+              <MenuItem Header="UltraStar-Lyrics importieren …" Click="ImportUltraStarLyricsClick" />
               <MenuItem Header="Download-Provider konfigurieren …" Click="OpenDownloadProviderSettingsClick" />
               <MenuItem Header="Songpakete">
                 <MenuItem Header="Ausgewählten Song exportieren …" Click="ExportCurrentSongPackageClick" />

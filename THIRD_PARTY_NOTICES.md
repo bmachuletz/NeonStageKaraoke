@@ -90,6 +90,7 @@ are ignored and never enter the application releases.
 | Spotify Web API | metadata/search integration | Spotify Developer Terms and branding rules; API access does not license music or lyrics |
 | Qobuz API | optional catalog matching and authorized purchase downloads | Qobuz API/partner and store terms; API access does not grant media rights, and only account-authorized `intent=download` responses are accepted |
 | LRCLIB API | lyrics lookup | service terms and copyright in individual lyrics remain applicable |
+| [UltraStar Deluxe TXT format](https://github.com/UltraStar-Deluxe/USDX) | optional lyrics import compatibility | UltraStar Deluxe itself is GPL-2.0-or-later. Neon Stage's parser is an independent implementation of the text format; no USDX source code, executable, song, audio, cover, or lyrics data is bundled. Imported user content retains its own rights and terms. |
 | Ko-fi widget | support link on the static project website | externally hosted Ko-fi JavaScript and Ko-fi terms/privacy policy; not bundled into application releases |
 
 ## Distribution checklist

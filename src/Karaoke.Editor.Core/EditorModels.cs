@@ -13,7 +13,8 @@ public enum SegmentOrigin
     ManuallyCreated,
     ManuallyAdjusted,
     DerivedFromParent,
-    ImportedFromServer
+    ImportedFromServer,
+    ImportedFromUltraStar
 }
 
 [JsonConverter(typeof(JsonStringEnumConverter))]

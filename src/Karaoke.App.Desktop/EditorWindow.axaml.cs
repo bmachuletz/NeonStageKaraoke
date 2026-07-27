@@ -263,6 +263,42 @@ public partial class EditorWindow : Window
     {
         if (DataContext is EditorViewModel viewModel) await viewModel.StartFolderImportAsync();
     }
+    private async void ImportUltraStarLyricsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel { SelectedSong: not null } viewModel)
+        {
+            (DataContext as EditorViewModel)?.ReportTimelineStatus(EditorLocale.German
+                ? "Bitte zuerst einen Song auswählen."
+                : "Select a song first.");
+            return;
+        }
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = EditorLocale.Text("UltraStar-Lyrics importieren"),
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("UltraStar Deluxe TXT") { Patterns = ["*.txt"] }]
+        });
+        var path = files.FirstOrDefault()?.TryGetLocalPath();
+        if (string.IsNullOrWhiteSpace(path)) return;
+        try
+        {
+            var imported = UltraStarLyricsImporter.Parse(await File.ReadAllTextAsync(path));
+            var replacing = viewModel.Document is { Lines.Count: > 0 };
+            if (!await new ConfirmUltraStarImportWindow(imported, viewModel.SelectedSong, replacing)
+                    .ShowDialog<bool>(this)) return;
+            viewModel.ImportUltraStarLyrics(imported);
+        }
+        catch (UltraStarFormatException exception)
+        {
+            viewModel.ReportTimelineStatus(EditorLocale.German ? exception.Message : exception.EnglishMessage);
+        }
+        catch (Exception exception)
+        {
+            viewModel.ReportTimelineStatus((EditorLocale.German
+                ? "UltraStar-Import fehlgeschlagen: "
+                : "UltraStar import failed: ") + exception.Message);
+        }
+    }
     private async void ExportCurrentSongPackageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel) return;

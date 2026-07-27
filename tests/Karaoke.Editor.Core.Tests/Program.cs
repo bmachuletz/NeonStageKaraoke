@@ -270,6 +270,110 @@ Assert(waveform.Levels.Count > 1, "Waveform wird in mehreren vorberechneten Aufl
 Assert(waveform.SelectLevel(.1).SamplesPerPeak > waveform.Levels[0].SamplesPerPeak,
     "Weite Zoomstufen verwenden eine gröbere gecachte Waveform.");
 
+const string relativeUltraStar = """
+#TITLE:Timing Demo
+#ARTIST:Example Artist
+#MP3:demo.mp3
+#RELATIVE:yes
+#BPM:120,0
+#GAP:1000
+: 0 2 60 Hel
+: 2 2 60 lo
+- 8 8
+* 0 2 62 New line
+F 2 2 62
+E
+""";
+Assert(UltraStarLyricsImporter.LooksLikeUltraStar(relativeUltraStar),
+    "UltraStar Deluxe TXT wird anhand von Header und Notenzeilen erkannt.");
+Assert(UltraStarLyricsImporter.LooksLikeUltraStar("#BPM:120\n: invalid"),
+    "Auch ein beschädigtes UltraStar-Dokument wird erkannt, damit es nicht als Plaintext importiert wird.");
+var ultraStar = UltraStarLyricsImporter.Parse(relativeUltraStar);
+Assert(ultraStar.Metadata is { Title: "Timing Demo", Artist: "Example Artist", Relative: true } &&
+       ultraStar.Metadata.Bpm == 120 && ultraStar.Metadata.GapMilliseconds == 1000,
+    "UltraStar-Metadaten, Dezimalkomma, GAP und RELATIVE werden übernommen.");
+Assert(ultraStar.Lines.Count == 2 && ultraStar.Lines[0].Start == TimeSpan.FromSeconds(1) &&
+       ultraStar.Lines[1].Start == TimeSpan.FromSeconds(2),
+    "Relative UltraStar-Beats werden mit der offiziellen Viertelbeat-Zeitbasis umgerechnet.");
+Assert(ultraStar.Lines[0].Words is [{ Text: "Hello", Syllables.Count: 2 }] &&
+       ultraStar.Lines[1].Words is [{ Text: "New" }, { Text: "line" }],
+    "UltraStar-Noten werden anhand ihrer Leerzeichen zu Wörtern und Silben zusammengesetzt.");
+var ultraStarDocument = ultraStar.ToEditorDocument(Guid.NewGuid());
+Assert(ultraStarDocument.Segments.All(segment => segment.Origin == SegmentOrigin.ImportedFromUltraStar) &&
+       TimelineEditing.ValidateLineSequence(ultraStarDocument).Count == 0,
+    "Der Editor erhält eine vollständige, kollisionsfreie UltraStar-Hierarchie mit nachvollziehbarer Herkunft.");
+Assert(ultraStar.ToEnhancedLrc().Contains("<00:01.000,00:01.500>Hello", StringComparison.Ordinal),
+    "Der Server kann UltraStar-Timing verlustarm als Enhanced LRC an die Pipeline übergeben.");
+
+const string absoluteUltraStar = """
+#TITLE:Absolute Demo
+#ARTIST:Example Artist
+#BPM:100.0
+#GAP:0
+: 10 0 60 two words
+- 20
+: 20 2 60 done
+E
+""";
+var absoluteImport = UltraStarLyricsImporter.Parse(absoluteUltraStar);
+Assert(absoluteImport.Lines[0].Start == TimeSpan.FromSeconds(1.5) &&
+       absoluteImport.Lines[0].Words is [{ Text: "two" }, { Text: "words" }] &&
+       absoluteImport.Warnings.Count > 0,
+    "Absolute Beats, Dezimalpunkt, mehrere Wörter in einer Note und Noten ohne Dauer werden robust normalisiert.");
+
+try
+{
+    UltraStarLyricsImporter.Parse("#BPM:120\nB 8 140\n: 0 2 60 demo\nE");
+    throw new InvalidOperationException("Test fehlgeschlagen: Variable BPM hätte abgelehnt werden müssen.");
+}
+catch (UltraStarFormatException)
+{
+    Console.WriteLine("OK: Nicht verlustfrei unterstützte variable BPM werden explizit abgelehnt.");
+}
+
+LyricsEditorDocument? replacedDocument = ultraStarDocument;
+var replacementDocument = absoluteImport.ToEditorDocument(ultraStarDocument.SongId);
+var replaceHistory = new CommandHistory();
+replaceHistory.Execute(new ReplaceLyricsDocumentCommand(replacedDocument, replacementDocument,
+    value => replacedDocument = value, "Lyrics ersetzen"));
+Assert(ReferenceEquals(replacedDocument, replacementDocument),
+    "Ein UltraStar-Import kann die Lyrics eines bestehenden Projekts vollständig ersetzen.");
+Assert(replaceHistory.Undo() && ReferenceEquals(replacedDocument, ultraStarDocument),
+    "Das vollständige Ersetzen der Lyrics ist rückgängig machbar.");
+Assert(replaceHistory.Redo() && ReferenceEquals(replacedDocument, replacementDocument),
+    "Das vollständige Ersetzen der Lyrics kann wiederholt werden.");
+
+if (args is ["--usdx-corpus", var corpusPath])
+{
+    var files = Directory.EnumerateFiles(corpusPath, "*.txt", SearchOption.AllDirectories).ToArray();
+    var candidates = 0;
+    var accepted = 0;
+    var rejected = new Dictionary<string, int>(StringComparer.Ordinal);
+    foreach (var file in files)
+    {
+        var text = File.ReadAllText(file);
+        if (!UltraStarLyricsImporter.LooksLikeUltraStar(text)) continue;
+        candidates++;
+        try
+        {
+            var parsed = UltraStarLyricsImporter.Parse(text);
+            if (!parsed.Lines.Zip(parsed.Lines.Skip(1)).All(pair => pair.First.End <= pair.Second.Start))
+                throw new InvalidOperationException("Corpus-Import erzeugt überlappende Zeilen.");
+            accepted++;
+        }
+        catch (UltraStarFormatException exception)
+        {
+            var reason = exception.LineNumber > 0 && exception.EnglishMessage.Contains(": ", StringComparison.Ordinal)
+                ? exception.EnglishMessage[(exception.EnglishMessage.IndexOf(": ", StringComparison.Ordinal) + 2)..]
+                : exception.EnglishMessage;
+            rejected[reason] = rejected.GetValueOrDefault(reason) + 1;
+        }
+    }
+    Console.WriteLine($"UltraStar-Corpus: {accepted}/{candidates} kompatible Dateien akzeptiert; {rejected.Values.Sum()} kontrolliert abgelehnt.");
+    foreach (var reason in rejected.OrderByDescending(item => item.Value))
+        Console.WriteLine($"  {reason.Value} × {reason.Key}");
+}
+
 Console.WriteLine("Lyrics-Editor-Core-Tests erfolgreich.");
 
 static LyricSegment Segment(string text, LyricSegmentType type, double start, double end, Guid? parent = null) => new()

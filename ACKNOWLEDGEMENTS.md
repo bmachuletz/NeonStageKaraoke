@@ -46,6 +46,10 @@ Special thanks go to:
   and their model authors and contributors for making practical stem
   separation available to the community.
 - [LRCLIB](https://lrclib.net/) and its community for an open lyrics service.
+- [UltraStar Deluxe](https://github.com/UltraStar-Deluxe/USDX) and its
+  community for documenting and maintaining a widely used timed karaoke text
+  format. Neon Stage implements compatible TXT import independently and does
+  not bundle UltraStar song collections.
 - [Qobuz](https://www.qobuz.com/) for high-quality purchase formats and its
   integration ecosystem. The optional provider only uses download access
   explicitly authorized by Qobuz for the configured account.

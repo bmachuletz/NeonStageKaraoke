@@ -31,7 +31,7 @@ development: [Support Neon Stage on Ko-fi](https://ko-fi.com/Z6Q023YEX5).
 - Synchronized instrumental/vocal playback with independent levels
 - Word and optional syllable timing, lyric effects, reactive visuals, and transitions
 - CUDA pipeline with source separation, ASR verification, forced alignment, candidate comparison, and quality gates
-- Avalonia editor with waveform, stage preview, loops, undo/redo, cover import, review states, portable single/multi-song packages, and per-song or full-library realignment
+- Avalonia editor with waveform, stage preview, loops, undo/redo, cover import, UltraStar Deluxe TXT import, review states, portable single/multi-song packages, and per-song or full-library realignment
 - German UI for German locales and English UI for other locales where supported
 
 ## Screens
@@ -285,6 +285,29 @@ Songs, lyrics, cover art, generated stems, local databases, service credentials,
 A stage-ready library entry requires audio, lyrics, instrumental, and vocal stems. Automatically aligned material enters **In review**. Only an explicitly **Released** editor version is available to the stage.
 
 The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. Spotify and the optional Qobuz integration supply catalog metadata for request imports; neither is treated as a lyrics source. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB.
+
+### Import UltraStar Deluxe lyrics
+
+Neon Stage imports UltraStar Deluxe `.txt` lyrics with their beat-level timing,
+including `#BPM`, `#GAP`, absolute or `#RELATIVE:yes` timing, normal, golden,
+freestyle, rap, and rap-golden notes. Notes are reconstructed as timed words and
+syllables for the live editor preview.
+
+- For a new project, choose the UltraStar TXT in **New song**. Title and artist
+  metadata are filled when available; a referenced adjacent MP3 is selected
+  automatically when it exists.
+- For a song already open in the editor, choose **Management → Import UltraStar
+  lyrics…**. Confirming replaces the complete current lyrics document, but does
+  not modify audio, stems, cover art, or any saved lyrics version. Undo is
+  available before closing, and **Save** creates a new version.
+- The MP3-folder and server song-import workflows recognize UltraStar TXT
+  sidecars as well and convert their timing to Enhanced LRC before alignment.
+
+Variable-BPM directives and duet tracks are currently rejected explicitly
+because Neon Stage cannot preserve those semantics yet. Malformed source files
+with backwards-running notes or overlapping lyric lines are also rejected
+instead of being silently mistimed. No UltraStar song, audio, cover, or lyrics
+data is included in this repository or any release.
 
 Use **Management → Song packages** to export one song, export a selected group, or import one or several portable `.neonstage.zip` packages. A package contains the master audio, instrumental and vocal stems, synchronized lyrics, alignment and visualization sidecars, cover art, review state, and the complete editor lyrics-version history. Imports validate every file checksum, never overwrite an existing song project, and only publish a song after the complete package has been verified.
 

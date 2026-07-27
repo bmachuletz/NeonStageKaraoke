@@ -7,7 +7,7 @@ namespace Karaoke.Editor.Core;
 public static class LyricsDocumentImporter
 {
     public static LyricsEditorDocument Import(LyricsDto source, string? analysisRunId = null,
-        string? modelVersion = null)
+        string? modelVersion = null, SegmentOrigin detailedOrigin = SegmentOrigin.GeneratedByAi)
     {
         var document = new LyricsEditorDocument
         {
@@ -20,18 +20,18 @@ public static class LyricsDocumentImporter
         {
             var lineSegment = Create(source.SongId, $"line:{line.Index}", null,
                 LyricSegmentType.Line, line.Start, line.End ?? line.Start, line.Text,
-                line.Words is { Count: > 0 } ? SegmentOrigin.GeneratedByAi : SegmentOrigin.ImportedLineLyrics,
+                line.Words is { Count: > 0 } ? detailedOrigin : SegmentOrigin.ImportedLineLyrics,
                 null, analysisRunId, modelVersion);
             foreach (var word in line.Words ?? [])
             {
                 var wordSegment = Create(source.SongId, $"line:{line.Index}:word:{word.Index}", lineSegment.Id,
                     LyricSegmentType.Word, word.Start, word.End ?? word.Start, word.Text,
-                    SegmentOrigin.GeneratedByAi, word.SyllableConfidence, analysisRunId, modelVersion);
+                    detailedOrigin, word.SyllableConfidence, analysisRunId, modelVersion);
                 foreach (var syllable in word.Syllables ?? [])
                     wordSegment.Children.Add(Create(source.SongId,
                         $"line:{line.Index}:word:{word.Index}:syllable:{syllable.Index}", wordSegment.Id,
                         LyricSegmentType.Syllable, syllable.Start, syllable.End ?? syllable.Start,
-                        syllable.Text, SegmentOrigin.GeneratedByAi, syllable.Confidence,
+                        syllable.Text, detailedOrigin, syllable.Confidence,
                         analysisRunId, modelVersion));
                 lineSegment.Children.Add(wordSegment);
             }

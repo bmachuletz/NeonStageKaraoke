@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using Karaoke.Editor.Core;
 using Karaoke.Contracts;
 
 namespace Karaoke.Server;
@@ -214,6 +215,8 @@ public sealed class FolderImportService(
 
     private static string NormalizeLyrics(string value)
     {
+        if (UltraStarLyricsImporter.LooksLikeUltraStar(value))
+            return UltraStarLyricsImporter.Parse(value).ToEnhancedLrc();
         var normalized = value.Replace("\r\n", "\n").Replace('\r', '\n').Trim();
         var timed = System.Text.RegularExpressions.Regex.IsMatch(normalized,
             @"(?m)^\[(?:\d{1,3}:)?\d{1,2}[.:]\d{1,3}\]");

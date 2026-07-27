@@ -16,6 +16,8 @@ public static class EditorLocale
         ["Wünsche, Events und Admin-Portal"]="Requests, events and admin portal",
         ["Wünsche und Importe"]="Requests and imports", ["Wünsche und Downloads"]="Requests and downloads",
         ["MP3-Ordner importieren …"]="Import MP3 folder …", ["Events verwalten …"]="Manage events …",
+        ["UltraStar-Lyrics importieren …"]="Import UltraStar lyrics …",
+        ["UltraStar-Lyrics importieren"]="Import UltraStar lyrics",
         ["Download-Provider konfigurieren …"]="Configure download provider …",
         ["Songpakete"]="Song packages", ["Ausgewählten Song exportieren …"]="Export selected song …",
         ["Mehrere Songs exportieren …"]="Export multiple songs …",
@@ -131,7 +133,18 @@ public static class EditorLocale
         ["DOWNLOAD-QUALITÄT"]="DOWNLOAD QUALITY", ["API-BASISADRESSE"]="API BASE URL",
         ["Gespeichertes App-Secret und User-Token beim Speichern löschen"]="Delete the stored app secret and user token when saving",
         ["Nur von Qobuz für den angemeldeten Account autorisierte Kaufdownloads werden akzeptiert. Der angezeigte Preis ist reine Kataloginformation; Neon Stage kauft niemals automatisch. Streaming-URLs oder Schutzumgehungen verwendet das Plugin nicht. FLAC kann direkt durch Matcher, Aligner und Stage verarbeitet werden."]="Only purchase downloads authorized by Qobuz for the signed-in account are accepted. The displayed price is catalog information only; Neon Stage never purchases automatically. The plugin does not use streaming URLs or protection bypasses. FLAC is processed directly by the matcher, aligner, and stage.",
-        ["Konfiguration speichern"]="Save configuration"
+        ["Konfiguration speichern"]="Save configuration",
+        ["LYRICS (OPTIONAL · LRC / ULTRASTAR TXT)"]="LYRICS (OPTIONAL · LRC / ULTRASTAR TXT)",
+        ["Plain-Text, LRC, Enhanced LRC oder UltraStar-Deluxe-TXT hier einfügen …"]="Paste plain text, LRC, Enhanced LRC, or UltraStar Deluxe TXT here …",
+        ["Neues Songprojekt"]="New song project", ["NEUES SONGPROJEKT"]="NEW SONG PROJECT",
+        ["MP3 importieren · Stems trennen · Lyrics ausrichten"]="Import MP3 · separate stems · align lyrics",
+        ["MP3-DATEI"]="MP3 FILE", ["Noch keine MP3 ausgewählt"]="No MP3 selected",
+        ["MP3 auswählen …"]="Select MP3 …", ["TITEL"]="TITLE", ["INTERPRET"]="ARTIST",
+        ["Aus Datei …"]="From file …", ["Zwischenablage"]="Clipboard",
+        ["Wenn das Feld leer ist, automatisch passende Lyrics bei LRCLIB suchen"]="When the field is empty, automatically search LRCLIB for matching lyrics",
+        ["Der Auftrag läuft nach dem Import in der Hintergrundkonsole weiter. Der Editor bleibt benutzbar."]="The job continues in the background console after import. The editor remains available.",
+        ["Projekt anlegen"]="Create project", ["MP3 für das neue Songprojekt auswählen"]="Select MP3 for the new song project",
+        ["Lyrics laden"]="Load lyrics"
     };
 
     public static string Text(string value)

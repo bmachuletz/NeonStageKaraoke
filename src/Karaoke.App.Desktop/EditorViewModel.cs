@@ -1940,6 +1940,41 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 
     public void ReportTimelineStatus(string status) => Status = status;
 
+    public void ImportUltraStarLyrics(UltraStarLyricsImport imported)
+    {
+        if (SelectedSong is not { } song)
+            throw new InvalidOperationException(EditorLocale.German
+                ? "Bitte zuerst einen Song auswählen."
+                : "Select a song first.");
+        var replacement = imported.ToEditorDocument(song.Id);
+        var previous = Document;
+        _audio.Stop();
+        _visualClockSuspended = false;
+        LoopEnabled = false;
+        LoopStart = null;
+        LoopEnd = null;
+        SelectedSegment = null;
+        History.Execute(new ReplaceLyricsDocumentCommand(previous, replacement,
+            value => Document = value, EditorLocale.German ? "UltraStar-Lyrics importieren" : "Import UltraStar lyrics"));
+
+        // Ein Import darf weder eine veröffentlichte noch eine vorhandene
+        // Entwurfsversion überschreiben. Der nächste Speichervorgang legt stets
+        // einen neuen, verwaltbaren Lyrics-Stand an.
+        _serverVersionId = null;
+        _serverRevision = 0;
+        _serverVersionStatus = null;
+        _loadedSourceFingerprint = null;
+        if (replacement.Lines.Count > 0) AnchorPosition(replacement.Lines.Min(line => line.Start));
+        PreviewRevision++;
+        TimelineRevision++;
+        OnPropertyChanged(nameof(Document));
+        OnPropertyChanged(nameof(ReviewSummary));
+        SaveLocalRecoverySnapshot();
+        Status = EditorLocale.German
+            ? $"UltraStar-Lyrics als neuer ungespeicherter Arbeitsstand importiert · {replacement.Lines.Count} Zeilen · Rückgängig möglich"
+            : $"UltraStar lyrics imported as a new unsaved working state · {replacement.Lines.Count} lines · Undo is available";
+    }
+
     private LyricSegment? FindLine(LyricSegment segment) => Document?.Lines.FirstOrDefault(line =>
         line.Id == segment.Id || line.DescendantsAndSelf().Any(candidate => candidate.Id == segment.Id));
     private (TimeSpan PreviousEnd, TimeSpan? NextStart) LineNeighborBounds(LyricSegment line)
