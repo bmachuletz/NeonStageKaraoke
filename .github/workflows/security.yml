@@ -1,0 +1,19 @@
+name: Repository security guard
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject credentials, media, models, and runtime data
+        run: bash scripts/security/scan-repository.sh

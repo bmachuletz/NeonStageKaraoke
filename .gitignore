@@ -40,6 +40,14 @@ lyrics-word-aligner/models/
 .env.*
 !.env.example
 src/variables
+*.pem
+*.key
+*.pfx
+*.p12
+*.jks
+*.keystore
+secrets.json
+appsettings.*.local.json
 **/__pycache__/
 *.py[cod]
 .venv/
