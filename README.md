@@ -36,10 +36,11 @@ development: [Support Neon Stage on Ko-fi](https://ko-fi.com/Z6Q023YEX5).
 
 ## Screens
 
-The screenshots use generated demo artwork and the pangram
-“The quick brown fox jumps over the lazy dog.” They contain no real songs,
-artist material, production library data, or real lyrics; all displayed track
-names are fictional demo metadata.
+These are real captures of the current Unity stage and Avalonia editor running
+against an isolated synthetic demo library. The test audio was generated
+locally, the cover uses project-owned artwork, and the only lyric-like text is
+the pangram “The quick brown fox jumps over the lazy dog.” No real songs,
+artist material, production library data, or real lyrics are shown.
 
 ![Neon Stage Unity stage demo with safe placeholder lyrics](site/assets/stage-demo.png)
 
