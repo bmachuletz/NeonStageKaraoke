@@ -65,6 +65,29 @@ public sealed class EditorTimelineControl : Control
         set { _selectedSegment = value; InvalidateVisual(); }
     }
 
+    public IReadOnlyList<LyricSegment> GetSelectedSegments()
+    {
+        var selection = SelectedSegment is not null && _selectedSegments.Contains(SelectedSegment)
+            ? _selectedSegments
+            : SelectedSegment is null ? [] : [SelectedSegment];
+        return LyricsSegmentClipboard.NormalizeSelection(selection);
+    }
+
+    public void SelectOnly(LyricSegment? segment)
+    {
+        _selectedSegments.Clear();
+        if (segment is not null) _selectedSegments.Add(segment);
+        SelectedSegment = segment;
+    }
+
+    public void SelectSegments(IEnumerable<LyricSegment> segments)
+    {
+        var normalized = LyricsSegmentClipboard.NormalizeSelection(segments);
+        _selectedSegments.Clear();
+        foreach (var segment in normalized) _selectedSegments.Add(segment);
+        SelectedSegment = normalized.FirstOrDefault();
+    }
+
     public override void Render(DrawingContext context)
     {
         base.Render(context);
@@ -100,9 +123,23 @@ public sealed class EditorTimelineControl : Control
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
+        base.OnPointerPressed(e);
         Focus();
         var point = e.GetPosition(this);
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+        var pointer = e.GetCurrentPoint(this).Properties;
+        if (pointer.IsRightButtonPressed)
+        {
+            var contextHit = FindSegment(point);
+            if (contextHit is not null && !_selectedSegments.Contains(contextHit))
+            {
+                _selectedSegments.Clear();
+                _selectedSegments.Add(contextHit);
+                SelectedSegment = contextHit;
+                SegmentSelected?.Invoke(this, contextHit);
+            }
+            return;
+        }
+        if (!pointer.IsLeftButtonPressed) return;
         if (e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {
             _rangeAnchor = _viewport.PixelToTime(point.X);
@@ -288,10 +325,7 @@ public sealed class EditorTimelineControl : Control
             throw new InvalidOperationException("Bitte zuerst mit Shift + Ziehen einen Waveform-Bereich markieren.");
         if (History is null) throw new InvalidOperationException("Die Änderungshistorie ist noch nicht bereit.");
 
-        var currentSelection = SelectedSegment is not null && _selectedSegments.Contains(SelectedSegment)
-            ? _selectedSegments
-            : SelectedSegment is null ? [] : [SelectedSegment];
-        var normalized = NormalizeSelection(currentSelection).ToList();
+        var normalized = GetSelectedSegments().ToList();
         if (normalized.Count == 0)
             throw new InvalidOperationException("Bitte zuerst mindestens eine Zeile, ein Wort oder eine Silbe auswählen.");
 

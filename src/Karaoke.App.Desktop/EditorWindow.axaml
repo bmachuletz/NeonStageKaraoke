@@ -102,7 +102,15 @@
           </Grid>
         </Border>
         <local:EditorTimelineControl Grid.Row="1" x:Name="Timeline" Document="{Binding Document}" Waveform="{Binding Waveform}"
-                                     Playhead="{Binding Playhead}" Revision="{Binding TimelineRevision}" />
+                                     Playhead="{Binding Playhead}" Revision="{Binding TimelineRevision}">
+          <local:EditorTimelineControl.ContextMenu>
+            <ContextMenu>
+              <MenuItem Header="Kopieren    Strg+C" Click="CopyLyricsSegmentsClick" />
+              <MenuItem Header="Ausschneiden    Strg+X" Click="CutLyricsSegmentsClick" />
+              <MenuItem Header="Einfügen am Abspielcursor    Strg+V" Click="PasteLyricsSegmentsClick" />
+            </ContextMenu>
+          </local:EditorTimelineControl.ContextMenu>
+        </local:EditorTimelineControl>
         <Border Grid.Row="2" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0">
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
             <Button Content="◀" ToolTip.Tip="Zurück" />

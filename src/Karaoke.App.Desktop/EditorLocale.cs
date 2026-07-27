@@ -57,6 +57,30 @@ public static class EditorLocale
         ["Der markierte Bereich ist für die ausgewählten Segmente zu kurz."]="The selected range is too short for the selected segments.",
         ["Der markierte Bereich würde ein Untersegment auf null verkürzen."]="The selected range would reduce a child segment to zero duration.",
         ["Der Zielbereich kollidiert mit einem nicht ausgewählten Segment."]="The target range collides with an unselected segment.",
+        ["Kopieren    Strg+C"]="Copy    Ctrl+C", ["Ausschneiden    Strg+X"]="Cut    Ctrl+X",
+        ["Einfügen am Abspielcursor    Strg+V"]="Paste at playhead    Ctrl+V",
+        ["Die Auswahl enthält kein kopierbares Lyrics-Segment."]="The selection contains no copyable lyrics segment.",
+        ["Bitte nur Segmente derselben Ebene gemeinsam kopieren."]="Please copy only segments from the same level together.",
+        ["Die Zwischenablage enthält keine Neon-Stage-Lyrics-Segmente."]="The clipboard does not contain Neon Stage lyrics segments.",
+        ["Der Lyrics-Inhalt der Zwischenablage ist beschädigt."]="The lyrics clipboard content is corrupted.",
+        ["Der Lyrics-Inhalt der Zwischenablage wird nicht unterstützt."]="The lyrics clipboard content is not supported.",
+        ["Der Lyrics-Inhalt der Zwischenablage ist ungültig."]="The lyrics clipboard content is invalid.",
+        ["Der Lyrics-Inhalt der Zwischenablage enthält überlappende Segmente."]="The lyrics clipboard content contains overlapping segments.",
+        ["Der Einfügecursor darf nicht vor dem Song liegen."]="The paste cursor cannot be before the song.",
+        ["Die Auswahl gehört nicht zum aktuellen Song."]="The selection does not belong to the current song.",
+        ["Ein ausgewähltes Segment besitzt keine Zeile."]="A selected segment has no parent line.",
+        ["Der letzte Zeilenblock kann nicht ausgeschnitten werden."]="The final line block cannot be cut.",
+        ["Das letzte Wort einer Zeile kann nicht ausgeschnitten werden."]="The final word of a line cannot be cut.",
+        ["Die letzte Silbe eines Wortes kann nicht ausgeschnitten werden."]="The final syllable of a word cannot be cut.",
+        ["Dieser Lyrics-Segmenttyp kann nicht eingefügt werden."]="This lyrics segment type cannot be pasted.",
+        ["Die eingefügten Wörter würden außerhalb der Zielzeile liegen."]="The pasted words would be outside the target line.",
+        ["Die eingefügten Silben würden außerhalb der Zielzeile liegen."]="The pasted syllables would be outside the target line.",
+        ["Das Zielwort besitzt keine Zeile."]="The target word has no parent line.",
+        ["Die eingefügten Silben würden das Zielwort mit einem Nachbarwort überlappen lassen."]="The pasted syllables would make the target word overlap an adjacent word.",
+        ["Bitte eine Zielzeile auswählen oder den Abspielcursor in eine Zeile setzen."]="Select a target line or place the playhead inside a line.",
+        ["Bitte ein Zielwort auswählen oder den Abspielcursor in ein Wort setzen."]="Select a target word or place the playhead inside a word.",
+        ["Die kopierten Segmente überlappen sich bereits untereinander."]="The copied segments already overlap each other.",
+        ["Am Abspielcursor ist nicht genügend freier Platz zum Einfügen."]="There is not enough free space at the playhead to paste.",
         ["Zeilen-, Wort- oder Silbentext"]="Line, word, or syllable text", ["STAGE-DARSTELLUNG"]="STAGE PRESENTATION",
         ["Haltezeit nach der Zeile (Sekunden, leer = automatisch)"]="Hold after line (seconds; empty = automatic)",
         ["automatisch"]="automatic", ["Darstellung übernehmen"]="Apply presentation", ["← verschieben"]="← move",
@@ -114,6 +138,8 @@ public static class EditorLocale
             if (control is TextBlock textBlock) textBlock.Text = Text(textBlock.Text ?? string.Empty);
             if (control is TextBox { Watermark: string watermark } textBox) textBox.Watermark = Text(watermark);
             if (ToolTip.GetTip(control) is string tip) ToolTip.SetTip(control, Text(tip));
+            if (control.ContextMenu is { } contextMenu)
+                ApplyMenuItems(contextMenu.Items.OfType<MenuItem>());
             if (control is Button { Flyout: MenuFlyout flyout })
                 ApplyMenuItems(flyout.Items.OfType<MenuItem>());
         }

@@ -1641,6 +1641,200 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         RefreshEditor();
     }
 
+    public string CopyLyricsSegments(IEnumerable<LyricSegment> selection)
+    {
+        var payload = LyricsSegmentClipboard.Create(selection);
+        var count = payload.Segments.Count;
+        Status = EditorLocale.German
+            ? count == 1 ? "Lyrics-Segment kopiert." : $"{count} Lyrics-Segmente kopiert."
+            : count == 1 ? "Lyrics segment copied." : $"{count} lyrics segments copied.";
+        return LyricsSegmentClipboard.Serialize(payload);
+    }
+
+    public void CutLyricsSegments(IEnumerable<LyricSegment> selection)
+    {
+        if (Document is null) throw new InvalidOperationException("Bitte zuerst einen Song laden.");
+        var payload = LyricsSegmentClipboard.Create(selection);
+        var roots = LyricsSegmentClipboard.NormalizeSelection(selection).ToList();
+        var documentSegments = Document.Segments.ToHashSet();
+        if (roots.Any(segment => !documentSegments.Contains(segment)))
+            throw new InvalidOperationException("Die Auswahl gehört nicht zum aktuellen Song.");
+
+        LyricSegment? fallback;
+        if (payload.SegmentType == LyricSegmentType.Line)
+        {
+            if (Document.Lines.Count - roots.Count < 1)
+                throw new InvalidOperationException("Der letzte Zeilenblock kann nicht ausgeschnitten werden.");
+            History.Execute(new EditLineCollectionCommand(Document.Lines, "Zeilen ausschneiden", () =>
+            {
+                foreach (var line in roots) Document.Lines.Remove(line);
+            }));
+            fallback = Document.Lines.OrderBy(line => line.Start)
+                .FirstOrDefault(line => line.Start >= Playhead) ?? Document.Lines.OrderBy(line => line.Start).LastOrDefault();
+        }
+        else
+        {
+            var affectedLines = roots.Select(segment => FindLine(segment) ??
+                    throw new InvalidOperationException("Ein ausgewähltes Segment besitzt keine Zeile."))
+                .Distinct().ToList();
+            if (payload.SegmentType == LyricSegmentType.Word &&
+                roots.GroupBy(FindLine).Any(group => group.Key is null || group.Key.Children.Count <= group.Count()))
+                throw new InvalidOperationException("Das letzte Wort einer Zeile kann nicht ausgeschnitten werden.");
+            if (payload.SegmentType == LyricSegmentType.Syllable &&
+                roots.GroupBy(FindParentWord).Any(group => group.Key is null || group.Key.Children.Count <= group.Count()))
+                throw new InvalidOperationException("Die letzte Silbe eines Wortes kann nicht ausgeschnitten werden.");
+
+            History.Execute(new EditSegmentForestCommand(affectedLines, "Lyrics-Segmente ausschneiden", () =>
+            {
+                if (payload.SegmentType == LyricSegmentType.Word)
+                {
+                    foreach (var group in roots.GroupBy(segment => FindLine(segment)!))
+                    {
+                        foreach (var word in group) group.Key.Children.Remove(word);
+                        TimelineEditing.SynchronizeLineText(group.Key);
+                    }
+                }
+                else
+                {
+                    foreach (var group in roots.GroupBy(segment => FindParentWord(segment)!))
+                    {
+                        foreach (var syllable in group) group.Key.Children.Remove(syllable);
+                        TimelineEditing.FitParentToChildren(group.Key);
+                        TimelineEditing.SynchronizeWordText(group.Key);
+                        if (FindLine(group.Key) is { } line) TimelineEditing.SynchronizeLineText(line);
+                    }
+                }
+            }));
+            fallback = payload.SegmentType == LyricSegmentType.Syllable
+                ? FindParentWord(roots[0])
+                : affectedLines[0];
+        }
+
+        SelectedSegment = fallback;
+        Status = EditorLocale.German
+            ? roots.Count == 1 ? "Lyrics-Segment ausgeschnitten." : $"{roots.Count} Lyrics-Segmente ausgeschnitten."
+            : roots.Count == 1 ? "Lyrics segment cut." : $"{roots.Count} lyrics segments cut.";
+        RefreshEditor();
+    }
+
+    public IReadOnlyList<LyricSegment> PasteLyricsSegments(string clipboardText)
+    {
+        if (Document is null) throw new InvalidOperationException("Bitte zuerst einen Song laden.");
+        var payload = LyricsSegmentClipboard.Deserialize(clipboardText);
+        var inserted = payload.SegmentType switch
+        {
+            LyricSegmentType.Line => PasteLines(payload),
+            LyricSegmentType.Word => PasteWords(payload),
+            LyricSegmentType.Syllable => PasteSyllables(payload),
+            _ => throw new InvalidOperationException("Dieser Lyrics-Segmenttyp kann nicht eingefügt werden.")
+        };
+        SelectedSegment = inserted[0];
+        Status = EditorLocale.German
+            ? inserted.Count == 1 ? "Lyrics-Segment am Abspielcursor eingefügt." : $"{inserted.Count} Lyrics-Segmente am Abspielcursor eingefügt."
+            : inserted.Count == 1 ? "Lyrics segment pasted at the playhead." : $"{inserted.Count} lyrics segments pasted at the playhead.";
+        RefreshEditor();
+        return inserted;
+    }
+
+    private IReadOnlyList<LyricSegment> PasteLines(LyricsSegmentClipboardPayload payload)
+    {
+        var created = LyricsSegmentClipboard.Instantiate(payload, Playhead, null).ToList();
+        EnsureNoOverlap(created, Document!.Lines, useEffectiveBounds: true);
+        History.Execute(new EditLineCollectionCommand(Document.Lines, "Zeilen einfügen", () =>
+        {
+            foreach (var line in created)
+                if (!Document.Lines.Contains(line)) Document.Lines.Add(line);
+            SortSegments(Document.Lines);
+        }));
+        return created;
+    }
+
+    private IReadOnlyList<LyricSegment> PasteWords(LyricsSegmentClipboardPayload payload)
+    {
+        var line = ResolvePasteLine();
+        var created = LyricsSegmentClipboard.Instantiate(payload, Playhead, line.Id).ToList();
+        if (created.Any(word => word.Start < line.Start || word.End > line.End))
+            throw new InvalidOperationException("Die eingefügten Wörter würden außerhalb der Zielzeile liegen.");
+        EnsureNoOverlap(created, line.Children, useEffectiveBounds: false);
+        History.Execute(new EditSegmentTreeCommand(line, "Wörter einfügen", () =>
+        {
+            foreach (var word in created)
+                if (!line.Children.Contains(word)) line.Children.Add(word);
+            SortSegments(line.Children);
+            TimelineEditing.SynchronizeLineText(line);
+        }));
+        return created;
+    }
+
+    private IReadOnlyList<LyricSegment> PasteSyllables(LyricsSegmentClipboardPayload payload)
+    {
+        var word = ResolvePasteWord();
+        var line = FindLine(word) ?? throw new InvalidOperationException("Das Zielwort besitzt keine Zeile.");
+        var created = LyricsSegmentClipboard.Instantiate(payload, Playhead, word.Id).ToList();
+        if (created.Any(syllable => syllable.Start < line.Start || syllable.End > line.End))
+            throw new InvalidOperationException("Die eingefügten Silben würden außerhalb der Zielzeile liegen.");
+        EnsureNoOverlap(created, word.Children, useEffectiveBounds: false);
+        var newWordStart = word.Children.Concat(created).Min(segment => segment.Start);
+        var newWordEnd = word.Children.Concat(created).Max(segment => segment.End);
+        var otherWords = line.Children.Where(candidate => candidate.Id != word.Id).ToList();
+        if (otherWords.Any(candidate => Overlaps(newWordStart, newWordEnd, candidate.Start, candidate.End)))
+            throw new InvalidOperationException("Die eingefügten Silben würden das Zielwort mit einem Nachbarwort überlappen lassen.");
+        History.Execute(new EditSegmentTreeCommand(line, "Silben einfügen", () =>
+        {
+            foreach (var syllable in created)
+                if (!word.Children.Contains(syllable)) word.Children.Add(syllable);
+            SortSegments(word.Children);
+            TimelineEditing.FitParentToChildren(word);
+            TimelineEditing.SynchronizeWordText(word);
+            TimelineEditing.SynchronizeLineText(line);
+        }));
+        return created;
+    }
+
+    private LyricSegment ResolvePasteLine() => SelectedSegment is not null && FindLine(SelectedSegment) is { } selectedLine
+        ? selectedLine
+        : Document!.Lines.FirstOrDefault(line => line.Start <= Playhead && line.End >= Playhead)
+          ?? throw new InvalidOperationException("Bitte eine Zielzeile auswählen oder den Abspielcursor in eine Zeile setzen.");
+
+    private LyricSegment ResolvePasteWord()
+    {
+        if (SelectedSegment?.Type == LyricSegmentType.Word) return SelectedSegment;
+        if (SelectedSegment is { Type: LyricSegmentType.Syllable } syllable && FindParentWord(syllable) is { } parent)
+            return parent;
+        var line = ResolvePasteLine();
+        return line.Children.FirstOrDefault(word => word.Start <= Playhead && word.End >= Playhead)
+               ?? throw new InvalidOperationException("Bitte ein Zielwort auswählen oder den Abspielcursor in ein Wort setzen.");
+    }
+
+    private static void EnsureNoOverlap(IReadOnlyList<LyricSegment> inserted,
+        IEnumerable<LyricSegment> existing, bool useEffectiveBounds)
+    {
+        var insertedBounds = inserted.Select(segment => useEffectiveBounds
+            ? (Start: TimelineEditing.EffectiveStart(segment), End: TimelineEditing.EffectiveEnd(segment))
+            : (segment.Start, segment.End)).OrderBy(item => item.Start).ToList();
+        for (var index = 1; index < insertedBounds.Count; index++)
+            if (Overlaps(insertedBounds[index - 1].Start, insertedBounds[index - 1].End,
+                    insertedBounds[index].Start, insertedBounds[index].End))
+                throw new InvalidOperationException("Die kopierten Segmente überlappen sich bereits untereinander.");
+        foreach (var candidate in existing)
+        {
+            var candidateStart = useEffectiveBounds ? TimelineEditing.EffectiveStart(candidate) : candidate.Start;
+            var candidateEnd = useEffectiveBounds ? TimelineEditing.EffectiveEnd(candidate) : candidate.End;
+            if (insertedBounds.Any(item => Overlaps(item.Start, item.End, candidateStart, candidateEnd)))
+                throw new InvalidOperationException("Am Abspielcursor ist nicht genügend freier Platz zum Einfügen.");
+        }
+    }
+
+    private static bool Overlaps(TimeSpan leftStart, TimeSpan leftEnd, TimeSpan rightStart, TimeSpan rightEnd) =>
+        leftStart < rightEnd && leftEnd > rightStart;
+
+    private static void SortSegments(List<LyricSegment> segments)
+    {
+        var ordered = segments.OrderBy(segment => segment.Start).ThenBy(segment => segment.End).ToList();
+        segments.Clear();
+        segments.AddRange(ordered);
+    }
+
     public void DeleteSelected()
     {
         if (SelectedSegment is not { Type: LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable } segment ||

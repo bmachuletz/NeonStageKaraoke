@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input.Platform;
 using Avalonia.VisualTree;
 using Avalonia.Platform.Storage;
 using Karaoke.Contracts;
@@ -10,6 +11,9 @@ namespace Karaoke.App.Desktop;
 
 public partial class EditorWindow : Window
 {
+    private string? _lyricsClipboardFallback;
+    private bool _selectionOriginatesFromTimeline;
+
     public EditorWindow()
     {
         InitializeComponent();
@@ -19,13 +23,21 @@ public partial class EditorWindow : Window
             if (DataContext is not EditorViewModel viewModel) return;
             Timeline.History = viewModel.History;
             Timeline.PositionRequested += (_, position) => viewModel.Seek(position);
-            Timeline.SegmentSelected += (_, segment) => viewModel.SelectSegment(segment);
+            Timeline.SegmentSelected += (_, segment) =>
+            {
+                _selectionOriginatesFromTimeline = true;
+                try { viewModel.SelectSegment(segment); }
+                finally { _selectionOriginatesFromTimeline = false; }
+            };
             Timeline.RangeSelected += (_, range) => viewModel.SetLoopRange(range.Start, range.End);
             Timeline.SegmentEdited += (_, _) => viewModel.NotifyTimelineEdit();
             viewModel.PropertyChanged += (_, args) =>
             {
                 if (args.PropertyName == nameof(EditorViewModel.SelectedSegment))
-                    Timeline.SelectedSegment = viewModel.SelectedSegment;
+                {
+                    if (_selectionOriginatesFromTimeline) Timeline.SelectedSegment = viewModel.SelectedSegment;
+                    else Timeline.SelectOnly(viewModel.SelectedSegment);
+                }
                 if (args.PropertyName is nameof(EditorViewModel.LoopStart) or nameof(EditorViewModel.LoopEnd))
                     Timeline.SetLoopRange(viewModel.LoopStart, viewModel.LoopEnd);
             };
@@ -190,6 +202,46 @@ public partial class EditorWindow : Window
         }
         catch (InvalidOperationException exception) { viewModel.ReportTimelineStatus(exception.Message); }
     }
+    private async void CopyLyricsSegmentsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        await CopyLyricsSegmentsAsync(cut: false);
+    private async void CutLyricsSegmentsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        await CopyLyricsSegmentsAsync(cut: true);
+    private async void PasteLyricsSegmentsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        await PasteLyricsSegmentsAsync();
+
+    private async Task CopyLyricsSegmentsAsync(bool cut)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        try
+        {
+            var selection = Timeline.GetSelectedSegments();
+            var text = viewModel.CopyLyricsSegments(selection);
+            _lyricsClipboardFallback = text;
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (clipboard is not null) await clipboard.SetTextAsync(text);
+            if (cut) viewModel.CutLyricsSegments(selection);
+        }
+        catch (Exception exception)
+        {
+            viewModel.ReportTimelineStatus(exception.Message);
+        }
+    }
+
+    private async Task PasteLyricsSegmentsAsync()
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            var text = clipboard is null ? null : await clipboard.TryGetTextAsync();
+            var inserted = viewModel.PasteLyricsSegments(text ?? _lyricsClipboardFallback ?? string.Empty);
+            Timeline.SelectSegments(inserted);
+        }
+        catch (Exception exception)
+        {
+            viewModel.ReportTimelineStatus(exception.Message);
+        }
+    }
     private void ToggleConsoleClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
         (DataContext as EditorViewModel)?.ToggleConsole();
     private void OpenWishlistConsoleClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
@@ -336,6 +388,8 @@ public partial class EditorWindow : Window
         var editsText = sourceControl is TextBox ||
                         sourceControl?.GetVisualAncestors().OfType<TextBox>().Any() == true;
         if (editsText && !eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
+        if (editsText && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+            eventArgs.Key is Key.C or Key.X or Key.V) return;
         if (eventArgs.Key == Key.Space) { await viewModel.PlayPauseAsync(); eventArgs.Handled = true; }
         else if (eventArgs.Key == Key.Z && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
@@ -345,6 +399,21 @@ public partial class EditorWindow : Window
         else if (eventArgs.Key == Key.S && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             await viewModel.SaveDraftAsync();
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.Key == Key.C && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            await CopyLyricsSegmentsAsync(cut: false);
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.Key == Key.X && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            await CopyLyricsSegmentsAsync(cut: true);
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.Key == Key.V && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            await PasteLyricsSegmentsAsync();
             eventArgs.Handled = true;
         }
         else if (eventArgs.Key == Key.N) { viewModel.SelectNextReviewSegment(); eventArgs.Handled = true; }

@@ -132,6 +132,32 @@ Assert(syncHistory.Undo() && coarseLine.Start == TimeSpan.FromSeconds(30) && coa
     "Das Synchronisieren eines Textbereichs ist als ein atomarer Schritt rückgängig machbar.");
 Assert(syncHistory.Redo() && coarseLine.Start == TimeSpan.FromSeconds(35) && coarseWord.Start == TimeSpan.FromSeconds(36),
     "Das Synchronisieren eines Textbereichs ist vollständig wiederholbar.");
+
+var clipboardLine = Segment("Hallo Welt", LyricSegmentType.Line, 50, 54);
+clipboardLine.StageEffect = StageLineEffect.EmberBurst;
+var clipboardWord = Segment("Hallo", LyricSegmentType.Word, 50.5, 52.5, clipboardLine.Id);
+var clipboardSyllable = Segment("Hal", LyricSegmentType.Syllable, 50.5, 51.5, clipboardWord.Id);
+clipboardWord.Children.Add(clipboardSyllable);
+clipboardLine.Children.Add(clipboardWord);
+var clipboardPayload = LyricsSegmentClipboard.Create([clipboardLine, clipboardWord]);
+Assert(clipboardPayload.Segments.Count == 1 && clipboardPayload.SegmentType == LyricSegmentType.Line,
+    "Bei gemeinsamer Auswahl eines Elternsegments und seines Kindes wird nur der vollständige Elternblock kopiert.");
+var clipboardText = LyricsSegmentClipboard.Serialize(clipboardPayload);
+var restoredPayload = LyricsSegmentClipboard.Deserialize(clipboardText);
+var pastedLines = LyricsSegmentClipboard.Instantiate(restoredPayload, TimeSpan.FromSeconds(70), null);
+Assert(pastedLines[0].Start == TimeSpan.FromSeconds(70) && pastedLines[0].End == TimeSpan.FromSeconds(74) &&
+       pastedLines[0].Children[0].Start == TimeSpan.FromSeconds(70.5) &&
+       pastedLines[0].Children[0].ParentId == pastedLines[0].Id &&
+       pastedLines[0].Children[0].Children[0].ParentId == pastedLines[0].Children[0].Id,
+    "Kopierte Zeilen behalten beim Einfügen ihre relativen Wort- und Silbenzeiten sowie eine neue gültige Hierarchie.");
+Assert(pastedLines[0].Id != clipboardLine.Id && pastedLines[0].Children[0].Id != clipboardWord.Id &&
+       pastedLines[0].StageEffect == StageLineEffect.EmberBurst,
+    "Eingefügte Lyrics erhalten neue IDs und behalten ihre Stage-Darstellung.");
+var secondClipboardWord = Segment("Welt", LyricSegmentType.Word, 53, 54, clipboardLine.Id);
+var multiWordPayload = LyricsSegmentClipboard.Create([clipboardWord, secondClipboardWord]);
+var pastedWords = LyricsSegmentClipboard.Instantiate(multiWordPayload, TimeSpan.FromSeconds(80), Guid.NewGuid());
+Assert(pastedWords[0].Start == TimeSpan.FromSeconds(80) && pastedWords[1].Start == TimeSpan.FromSeconds(82.5),
+    "Eine Mehrfachauswahl behält beim Einfügen ihre relativen Abstände.");
 var editableLines = new List<LyricSegment> { Segment("A", LyricSegmentType.Line, 1, 2) };
 var insertedLine = Segment("B", LyricSegmentType.Line, 2, 3);
 var lineHistory = new CommandHistory();
