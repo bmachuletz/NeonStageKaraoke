@@ -1,46 +1,52 @@
+name: neon-stage-aligner
+
 services:
   lyrics-aligner:
+    image: ${NEON_STAGE_ALIGNER_IMAGE:-neon-stage-aligner:local}
     build: .
     container_name: lyrics-aligner
     ports:
-      - "8081:8080"
+      - "${LRC_ALIGNER_PORT:-8081}:8080"
     volumes:
-      - ./data:/data
-      - ./models:/models
+      - type: bind
+        source: ${LRC_ALIGNER_DATA_PATH:-./data}
+        target: /data
+      - type: bind
+        source: ${LRC_ALIGNER_MODEL_PATH:-./models}
+        target: /models
     environment:
-      ALIGN_DEVICE: cuda
-      LRC_PRE_ROLL: "0.45"
-      LRC_POST_ROLL: "0.35"
-      # Kleine Zeilenfenster sind robust gegen lange Songs und wiederholte
-      # Refrains. Die Vollspur-ASR bleibt als unabhängige Gegenprobe aktiv.
-      LRC_ALIGNMENT_MODE: "line-windows"
-      # Promptfähige ASR-Modelle erhalten nur einen deduplizierten Wortschatz,
-      # niemals den vollständigen Liedtext in erwarteter Reihenfolge.
-      LRC_ASR_PROMPT: "true"
-      LRC_ASR_MODEL: "Qwen/Qwen3-ASR-1.7B-hf"
-      # Full Whisper large-v3 fits sequentially on the RTX 4070 Laptop (8 GB):
-      # measured 6.26 GiB allocated / 6.62 GiB reserved for a 45 s window.
-      LRC_STABLE_TS_MODEL: "large-v3"
-      # Whisper and the forced aligner are deliberately processed in small,
-      # sequential windows for the 8 GiB laptop GPU.
-      LRC_STABLE_TS_CHUNK_SECONDS: "30"
-      LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS: "3"
-      LRC_ALIGNMENT_BATCH_SIZE: "1"
-      PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
-      LRC_ASR_PROMPT_MAX_CHARS: "1600"
-      LRC_STABLE_TS_PROMPT_MAX_CHARS: "700"
-      # Additive Punk/Rock candidate selection. The historical path remains the
-      # mandatory baseline and fallback for every job.
-      LRC_ALIGNMENT_CANDIDATES: "true"
-      LRC_ALIGNMENT_CANDIDATE_BLEND: "true"
-      LRC_ALIGNMENT_BLEND_RATIOS: "0.10"
-      LRC_ALIGNMENT_MIN_IMPROVEMENT: "0.01"
-      LRC_ALIGNMENT_CANDIDATE_ORIGINAL: "false"
-      # Standard vocal separation retains backing/chorus vocals which the
-      # karaoke model intentionally leaves in the accompaniment. It is an
-      # analysis candidate only; exported controllable stems remain karaoke.
-      LRC_ALIGNMENT_CANDIDATE_ALTERNATIVE: "true"
-      LRC_ALIGNMENT_ALTERNATIVE_MODEL: "model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt"
+      ALIGN_DEVICE: ${ALIGN_DEVICE:-cuda}
+      LRC_PRE_ROLL: ${LRC_PRE_ROLL:-0.45}
+      LRC_POST_ROLL: ${LRC_POST_ROLL:-0.35}
+      # Small line windows are robust for long tracks and repeated choruses.
+      # Full-song ASR remains active as an independent transcript check.
+      LRC_ALIGNMENT_MODE: ${LRC_ALIGNMENT_MODE:-line-windows}
+      # Prompt-capable ASR receives a deduplicated vocabulary, never the full
+      # lyrics in their expected order.
+      LRC_ASR_PROMPT: ${LRC_ASR_PROMPT:-true}
+      LRC_ASR_MODEL: ${LRC_ASR_MODEL:-Qwen/Qwen3-ASR-1.7B-hf}
+      # Whisper large-v3 and the forced aligner run in small sequential chunks
+      # so the validated configuration fits an 8 GiB consumer GPU.
+      LRC_STABLE_TS_MODEL: ${LRC_STABLE_TS_MODEL:-large-v3}
+      LRC_STABLE_TS_CHUNK_SECONDS: ${LRC_STABLE_TS_CHUNK_SECONDS:-30}
+      LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS: ${LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS:-3}
+      LRC_ALIGNMENT_BATCH_SIZE: ${LRC_ALIGNMENT_BATCH_SIZE:-1}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
+      LRC_ASR_PROMPT_MAX_CHARS: ${LRC_ASR_PROMPT_MAX_CHARS:-1600}
+      LRC_STABLE_TS_PROMPT_MAX_CHARS: ${LRC_STABLE_TS_PROMPT_MAX_CHARS:-700}
+      LRC_ASR_EXTRA_CONTEXT: ${LRC_ASR_EXTRA_CONTEXT:-}
+      # Additive candidate selection always preserves the historical baseline
+      # as fallback and requires a measurable improvement from alternatives.
+      LRC_ALIGNMENT_CANDIDATES: ${LRC_ALIGNMENT_CANDIDATES:-true}
+      LRC_ALIGNMENT_CANDIDATE_BLEND: ${LRC_ALIGNMENT_CANDIDATE_BLEND:-true}
+      LRC_ALIGNMENT_BLEND_RATIOS: ${LRC_ALIGNMENT_BLEND_RATIOS:-0.10}
+      LRC_ALIGNMENT_MIN_IMPROVEMENT: ${LRC_ALIGNMENT_MIN_IMPROVEMENT:-0.01}
+      LRC_ALIGNMENT_CANDIDATE_ORIGINAL: ${LRC_ALIGNMENT_CANDIDATE_ORIGINAL:-false}
+      # The alternative separator preserves more backing/chorus vocals for
+      # analysis. Exported controllable stems still use the karaoke model.
+      LRC_ALIGNMENT_CANDIDATE_ALTERNATIVE: ${LRC_ALIGNMENT_CANDIDATE_ALTERNATIVE:-true}
+      LRC_ALIGNMENT_ALTERNATIVE_MODEL: ${LRC_ALIGNMENT_ALTERNATIVE_MODEL:-model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt}
+      LRC_ALIGNMENT_KEEP_CANDIDATES: ${LRC_ALIGNMENT_KEEP_CANDIDATES:-false}
     deploy:
       resources:
         reservations:

@@ -17,6 +17,10 @@ concurrency:
 
 jobs:
   deploy:
+    # Set the repository variable ENABLE_GITHUB_PAGES=true after Pages has
+    # been enabled for the repository. Private repositories require a plan
+    # that supports private GitHub Pages.
+    if: ${{ vars.ENABLE_GITHUB_PAGES == 'true' }}
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

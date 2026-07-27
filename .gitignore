@@ -47,6 +47,7 @@ src/variables
 *.jks
 *.keystore
 secrets.json
+spotify-connection.json
 appsettings.*.local.json
 **/__pycache__/
 *.py[cod]
@@ -82,3 +83,5 @@ library/
 !src/Karaoke.App.Android/Resources/drawable/app_icon.png
 !src/Karaoke.Stage.Unity/Assets/Resources/NeonStageIcon.png
 !lyrics-word-aligner/third_party/SOFA/example.png
+!site/assets/
+!site/assets/*.png
