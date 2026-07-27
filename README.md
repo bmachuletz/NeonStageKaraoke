@@ -34,6 +34,18 @@ development: [Support Neon Stage on Ko-fi](https://ko-fi.com/Z6Q023YEX5).
 - Avalonia editor with waveform, stage preview, loops, undo/redo, cover import, review states, and per-song or full-library realignment
 - German UI for German locales and English UI for other locales where supported
 
+## Screens
+
+These are real captures of the current Unity stage and Avalonia editor running
+against an isolated synthetic demo library. The test audio was generated
+locally, the cover uses project-owned artwork, and the only lyric-like text is
+the pangram “The quick brown fox jumps over the lazy dog.” No real songs,
+artist material, production library data, or real lyrics are shown.
+
+![Neon Stage Unity stage demo with safe placeholder lyrics](site/assets/stage-demo.png)
+
+![Neon Stage Lyrics Editor demo with safe placeholder lyrics](site/assets/editor-demo.png)
+
 ## Architecture
 
 ```text
@@ -116,10 +128,55 @@ processing remain host/worker jobs because their CUDA models and downloader
 toolchains are not release payloads. Run the documented worker scripts against
 the container URL when those operations are needed.
 
+### Configure Spotify Web API access
+
+Spotify integration is optional, but it is not anonymous. Search uses Spotify's
+official Web API with an application access token, while connecting the
+operator's account uses Authorization Code flow with the
+`playlist-modify-private` scope to maintain the private Neon Stage request
+playlist. You must supply a Client ID, Client Secret, and registered Redirect
+URI to the server.
+
+1. Sign in to the [Spotify for Developers Dashboard](https://developer.spotify.com/dashboard).
+2. Choose **Create app**, enter an app name and description, accept Spotify's
+   Developer Terms, and create the app.
+3. Open the app's settings and add this development Redirect URI exactly:
+
+   ```text
+   http://127.0.0.1:5274/api/spotify/callback
+   ```
+
+   Spotify requires an exact match. For plain HTTP it permits explicit
+   loopback addresses such as `127.0.0.1`; `localhost` is not accepted. For a
+   remotely hosted server, register the actual HTTPS callback instead, for
+   example `https://karaoke.example.com/api/spotify/callback`.
+4. Copy the app's Client ID and Client Secret into the untracked root `.env`:
+
+   ```dotenv
+   SPOTIFY_CLIENT_ID=
+   SPOTIFY_CLIENT_SECRET=
+   SPOTIFY_REDIRECT_URI=http://127.0.0.1:5274/api/spotify/callback
+   ```
+
+5. Restart the server. On the server computer, open
+   `http://127.0.0.1:5274/` and choose **Connect Spotify** once. The callback
+   exchanges the authorization code server-side and stores the resulting token
+   below `KARAOKE_DATA_PATH`, never in a client application.
+
+Keep the Client Secret and the generated `spotify-connection.json` private.
+Never put either value into Unity, the mobile portal, a Docker image, logs, or
+Git. Spotify apps start in Development Mode and remain subject to Spotify's
+current user and quota restrictions. See Spotify's official
+[app registration](https://developer.spotify.com/documentation/web-api/concepts/apps),
+[Redirect URI](https://developer.spotify.com/documentation/web-api/concepts/redirect_uri),
+and [Authorization Code](https://developer.spotify.com/documentation/web-api/tutorials/code-flow)
+documentation.
+
 ## Alignment container
 
 ```bash
 cd lyrics-word-aligner
+cp .env.example .env
 docker compose build
 docker compose up -d
 curl http://127.0.0.1:8081/health
@@ -184,7 +241,7 @@ Songs, lyrics, cover art, generated stems, local databases, service credentials,
 
 A stage-ready library entry requires audio, lyrics, instrumental, and vocal stems. Automatically aligned material enters **In review**. Only an explicitly **Released** editor version is available to the stage.
 
-The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. Spotify's public Web API supplies catalog metadata for request imports but does not expose the lyrics text; Neon Stage therefore does not rely on private Spotify endpoints.
+The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. The official Spotify Web API supplies catalog metadata for request imports after the operator configures a Spotify developer application; it does not expose lyrics text. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB.
 
 ## Localization
 
