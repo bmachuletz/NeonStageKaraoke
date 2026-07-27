@@ -126,7 +126,8 @@ public sealed class EditorTimelineControl : Control
         else
         {
             var hit = FindSegment(point);
-            if (e.KeyModifiers.HasFlag(KeyModifiers.Control) && hit is { Type: LyricSegmentType.Word or LyricSegmentType.Syllable })
+            if (e.KeyModifiers.HasFlag(KeyModifiers.Control) &&
+                hit is { Type: LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable })
             {
                 if (!_selectedSegments.Add(hit)) _selectedSegments.Remove(hit);
                 SelectedSegment = _selectedSegments.Contains(hit) ? hit : _selectedSegments.LastOrDefault();
@@ -148,8 +149,8 @@ public sealed class EditorTimelineControl : Control
                 var normalized = NormalizeSelection(_selectedSegments).ToList();
                 if (normalized.Count > 1)
                 {
-                    _multiDrag = new(normalized, Document!.Lines.Where(candidate => normalized.Any(item =>
-                        candidate.DescendantsAndSelf().Contains(item))).Distinct().ToList(),
+                    _multiDrag = new(Document!, normalized, Document!.Lines.Where(candidate => normalized.Any(item =>
+                            candidate.DescendantsAndSelf().Contains(item))).Distinct().ToList(),
                         _viewport.PixelToTime(point.X));
                     var multiState = _multiDrag;
                     _multiDragCommand = new EditSegmentForestCommand(multiState.Roots,
@@ -278,6 +279,37 @@ public sealed class EditorTimelineControl : Control
         _loopStart = start;
         _loopEnd = end;
         InvalidateVisual();
+    }
+
+    public int SynchronizeSelectionToRange()
+    {
+        if (Document is null) throw new InvalidOperationException("Bitte zuerst einen Song laden.");
+        if (_loopStart is not { } start || _loopEnd is not { } end || end - start < TimeSpan.FromMilliseconds(100))
+            throw new InvalidOperationException("Bitte zuerst mit Shift + Ziehen einen Waveform-Bereich markieren.");
+        if (History is null) throw new InvalidOperationException("Die Änderungshistorie ist noch nicht bereit.");
+
+        var currentSelection = SelectedSegment is not null && _selectedSegments.Contains(SelectedSegment)
+            ? _selectedSegments
+            : SelectedSegment is null ? [] : [SelectedSegment];
+        var normalized = NormalizeSelection(currentSelection).ToList();
+        if (normalized.Count == 0)
+            throw new InvalidOperationException("Bitte zuerst mindestens eine Zeile, ein Wort oder eine Silbe auswählen.");
+
+        var roots = Document.Lines.Where(line => normalized.Any(segment =>
+            line.DescendantsAndSelf().Contains(segment))).Distinct().ToList();
+        var synchronizedCount = 0;
+        var command = new EditSegmentForestCommand(roots, "Auswahl mit Waveform-Bereich synchronisieren", () =>
+            synchronizedCount = TimelineEditing.FitSelectionToRange(Document, normalized, start, end));
+        try { History.Execute(command); }
+        catch
+        {
+            command.Undo();
+            throw;
+        }
+
+        SegmentEdited?.Invoke(this, EventArgs.Empty);
+        InvalidateVisual();
+        return synchronizedCount;
     }
 
     private void DrawLoopRange(DrawingContext context, Rect bounds)
@@ -495,30 +527,65 @@ public sealed class EditorTimelineControl : Control
         foreach (var segment in state.Segments)
         {
             var line = state.Roots.First(root => root.DescendantsAndSelf().Contains(segment));
-            var siblings = segment.Type == LyricSegmentType.Word
-                ? line.Children
-                : line.Children.First(word => word.Id == segment.ParentId).Children;
+            List<LyricSegment> siblings;
+            TimeSpan outerStart;
+            TimeSpan? outerEnd;
+            if (segment.Type == LyricSegmentType.Line)
+            {
+                siblings = state.Document.Lines.OrderBy(TimelineEditing.EffectiveStart).ToList();
+                outerStart = TimeSpan.Zero;
+                outerEnd = null;
+            }
+            else if (segment.Type == LyricSegmentType.Word)
+            {
+                siblings = line.Children;
+                outerStart = line.Start;
+                outerEnd = line.End;
+            }
+            else
+            {
+                var word = line.Children.First(parent => parent.Id == segment.ParentId);
+                siblings = word.Children;
+                outerStart = line.Start;
+                outerEnd = line.End;
+            }
+
             var index = siblings.IndexOf(segment);
-            var lower = index > 0 && !selected.Contains(siblings[index - 1]) ? siblings[index - 1].End
-                : segment.Type == LyricSegmentType.Word ? line.Start : TimeSpan.Zero;
-            var upper = index + 1 < siblings.Count && !selected.Contains(siblings[index + 1]) ? siblings[index + 1].Start
-                : segment.Type == LyricSegmentType.Word ? line.End : TimeSpan.MaxValue;
-            minimumDelta = Max(minimumDelta, lower - segment.Start);
-            if (upper != TimeSpan.MaxValue)
-                maximumDelta = Min(maximumDelta, upper - segment.End);
+            var effectiveStart = segment.Type == LyricSegmentType.Line
+                ? TimelineEditing.EffectiveStart(segment) : segment.Start;
+            var effectiveEnd = segment.Type == LyricSegmentType.Line
+                ? TimelineEditing.EffectiveEnd(segment) : segment.End;
+            if (index == 0)
+                minimumDelta = Max(minimumDelta, outerStart - effectiveStart);
+            else if (!selected.Contains(siblings[index - 1]))
+                minimumDelta = Max(minimumDelta,
+                    (segment.Type == LyricSegmentType.Line
+                        ? TimelineEditing.EffectiveEnd(siblings[index - 1])
+                        : siblings[index - 1].End) - effectiveStart);
+
+            if (index + 1 < siblings.Count && !selected.Contains(siblings[index + 1]))
+                maximumDelta = Min(maximumDelta,
+                    (segment.Type == LyricSegmentType.Line
+                        ? TimelineEditing.EffectiveStart(siblings[index + 1])
+                        : siblings[index + 1].Start) - effectiveEnd);
+            else if (index + 1 == siblings.Count && outerEnd is { } maximum)
+                maximumDelta = Min(maximumDelta, maximum - effectiveEnd);
         }
         if (delta < minimumDelta) delta = minimumDelta;
         if (delta > maximumDelta) delta = maximumDelta;
+
         var affectedWords = new HashSet<LyricSegment>();
         foreach (var segment in state.Segments)
         {
-            if (segment.Type == LyricSegmentType.Word) TimelineEditing.MoveWithChildren(segment, delta);
+            if (segment.Type is LyricSegmentType.Line or LyricSegmentType.Word)
+                TimelineEditing.MoveWithChildren(segment, delta);
             else
             {
                 segment.Start += delta;
                 segment.End += delta;
                 TimelineEditing.MarkAdjusted(segment);
-                var word = state.Roots.SelectMany(root => root.Children).First(parent => parent.Id == segment.ParentId);
+                var word = state.Roots.SelectMany(root => root.Children)
+                    .First(parent => parent.Id == segment.ParentId);
                 affectedWords.Add(word);
             }
         }
@@ -549,9 +616,10 @@ public sealed class EditorTimelineControl : Control
         public TimeSpan InitialEnd { get; } = initialEnd;
         public TimeSpan Current { get; set; } = pointerStart;
     }
-    private sealed class MultiSegmentDragState(IReadOnlyList<LyricSegment> segments,
+    private sealed class MultiSegmentDragState(LyricsEditorDocument document, IReadOnlyList<LyricSegment> segments,
         IReadOnlyList<LyricSegment> roots, TimeSpan pointerStart)
     {
+        public LyricsEditorDocument Document { get; } = document;
         public IReadOnlyList<LyricSegment> Segments { get; } = segments;
         public IReadOnlyList<LyricSegment> Roots { get; } = roots;
         public TimeSpan PointerStart { get; } = pointerStart;

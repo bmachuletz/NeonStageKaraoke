@@ -1740,6 +1740,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         SaveLocalRecoverySnapshot();
     }
 
+    public void ReportTimelineStatus(string status) => Status = status;
+
     private LyricSegment? FindLine(LyricSegment segment) => Document?.Lines.FirstOrDefault(line =>
         line.Id == segment.Id || line.DescendantsAndSelf().Any(candidate => candidate.Id == segment.Id));
     private (TimeSpan PreviousEnd, TimeSpan? NextStart) LineNeighborBounds(LyricSegment line)

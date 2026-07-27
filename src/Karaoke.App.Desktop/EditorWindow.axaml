@@ -132,6 +132,8 @@
             <Button Content="Darstellung übernehmen" Click="ApplyLinePresentationClick" />
           </StackPanel>
           <TextBlock Text="TIMING · 10 ms" Foreground="#8993A6" FontSize="10" FontWeight="SemiBold" />
+          <Button Content="⟷ Synchronisieren" Click="SynchronizeSelectionClick" HorizontalAlignment="Stretch"
+                  ToolTip.Tip="Mehrfachauswahl: Strg + Klick. Waveform-Bereich: Shift + Ziehen. Danach exakt einpassen." />
           <UniformGrid Columns="2" Rows="3">
             <Button Content="← verschieben" Click="MoveBackClick" IsEnabled="{Binding CanDeleteSegment}" />
             <Button Content="verschieben →" Click="MoveForwardClick" IsEnabled="{Binding CanDeleteSegment}" />

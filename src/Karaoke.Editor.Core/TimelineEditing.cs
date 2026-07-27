@@ -102,6 +102,94 @@ public static class TimelineEditing
         }
     }
 
+    /// <summary>
+    /// Fits one or more selected lyric segments into an exact target range. The complete selected
+    /// forest is transformed with one shared affine mapping, so relative gaps and durations are
+    /// preserved. Segments outside the selection are not moved.
+    /// </summary>
+    public static int FitSelectionToRange(LyricsEditorDocument document,
+        IEnumerable<LyricSegment> selection, TimeSpan targetStart, TimeSpan targetEnd)
+    {
+        if (targetStart < TimeSpan.Zero)
+            throw new InvalidOperationException("Der markierte Bereich darf nicht vor dem Song beginnen.");
+        if (targetEnd <= targetStart)
+            throw new InvalidOperationException("Der markierte Bereich besitzt keine gültige Dauer.");
+
+        var documentSegments = document.Segments.ToHashSet();
+        var selected = selection.Distinct().ToList();
+        if (selected.Count == 0)
+            throw new InvalidOperationException("Bitte zuerst mindestens eine Zeile, ein Wort oder eine Silbe auswählen.");
+        if (selected.Any(segment => !documentSegments.Contains(segment) ||
+                                    segment.Type is not (LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable)))
+            throw new InvalidOperationException("Die Auswahl enthält kein bearbeitbares Lyrics-Segment.");
+
+        // If a parent and one of its descendants are selected, the parent owns the transformation.
+        var roots = selected.Where(segment => !selected.Any(parent => !ReferenceEquals(parent, segment) &&
+            parent.DescendantsAndSelf().Contains(segment))).ToList();
+        var affected = roots.SelectMany(root => root.DescendantsAndSelf()).Distinct().ToList();
+        // The explicitly selected objects define the envelope. Their outer boundaries therefore
+        // land exactly on the waveform selection even if an imported child is slightly malformed.
+        var sourceStart = roots.Min(segment => segment.Start);
+        var sourceEnd = roots.Max(segment => segment.End);
+        if (sourceEnd <= sourceStart)
+            throw new InvalidOperationException("Die ausgewählten Segmente besitzen keine gültige Dauer.");
+
+        var sourceTicks = (double)(sourceEnd - sourceStart).Ticks;
+        var targetTicks = (double)(targetEnd - targetStart).Ticks;
+        var transformed = affected.ToDictionary(segment => segment, segment => (
+            Start: targetStart + TimeSpan.FromTicks((long)Math.Round((segment.Start - sourceStart).Ticks / sourceTicks * targetTicks)),
+            End: targetStart + TimeSpan.FromTicks((long)Math.Round((segment.End - sourceStart).Ticks / sourceTicks * targetTicks))));
+
+        foreach (var root in roots)
+        {
+            var duration = transformed[root].End - transformed[root].Start;
+            var minimum = root.Type switch
+            {
+                LyricSegmentType.Line => TimeSpan.FromMilliseconds(100),
+                LyricSegmentType.Word => TimeSpan.FromMilliseconds(35),
+                _ => TimeSpan.FromMilliseconds(25)
+            };
+            if (duration < minimum)
+                throw new InvalidOperationException("Der markierte Bereich ist für die ausgewählten Segmente zu kurz.");
+        }
+        if (transformed.Any(item => item.Value.End <= item.Value.Start))
+            throw new InvalidOperationException("Der markierte Bereich würde ein Untersegment auf null verkürzen.");
+
+        var beforeErrors = ValidateHierarchy(document).Concat(ValidateLineSequence(document)).ToHashSet();
+        var snapshots = documentSegments.ToDictionary(segment => segment, segment => new TimingSnapshot(
+            segment.Start, segment.End, segment.Origin, segment.IsManuallyAdjusted, segment.RequiresReview));
+        try
+        {
+            foreach (var (segment, timing) in transformed)
+            {
+                segment.Start = timing.Start;
+                segment.End = timing.End;
+                MarkAdjusted(segment);
+            }
+
+            // A partial syllable selection may change the outer word boundary. Other syllables of
+            // that word stay untouched and therefore remain the natural limit of the parent word.
+            var affectedWords = roots.Where(segment => segment.Type == LyricSegmentType.Syllable)
+                .Select(segment => document.Lines.SelectMany(line => line.Children)
+                    .First(word => word.Id == segment.ParentId))
+                .Where(word => !affected.Contains(word))
+                .Distinct();
+            foreach (var word in affectedWords) FitParentToChildren(word);
+
+            var newErrors = ValidateHierarchy(document).Concat(ValidateLineSequence(document))
+                .Where(error => !beforeErrors.Contains(error)).ToList();
+            if (newErrors.Count > 0)
+                throw new InvalidOperationException("Der Zielbereich kollidiert mit einem nicht ausgewählten Segment.");
+        }
+        catch
+        {
+            foreach (var (segment, snapshot) in snapshots) snapshot.Restore(segment);
+            throw;
+        }
+
+        return roots.Count;
+    }
+
     public static void ResizeLineContainer(LyricSegment line, TimeSpan newStart, TimeSpan newEnd,
         TimeSpan minimumDuration)
     {
@@ -259,5 +347,18 @@ public static class TimelineEditing
         segment.IsManuallyAdjusted = true;
         segment.Origin = SegmentOrigin.ManuallyAdjusted;
         segment.RequiresReview = true;
+    }
+
+    private readonly record struct TimingSnapshot(TimeSpan Start, TimeSpan End, SegmentOrigin Origin,
+        bool IsManuallyAdjusted, bool RequiresReview)
+    {
+        public void Restore(LyricSegment segment)
+        {
+            segment.Start = Start;
+            segment.End = End;
+            segment.Origin = Origin;
+            segment.IsManuallyAdjusted = IsManuallyAdjusted;
+            segment.RequiresReview = RequiresReview;
+        }
     }
 }

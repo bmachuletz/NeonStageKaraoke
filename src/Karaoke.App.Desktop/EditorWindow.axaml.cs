@@ -174,6 +174,22 @@ public partial class EditorWindow : Window
     }
     private void ToggleLoopClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
         (DataContext as EditorViewModel)?.ToggleLoop();
+    private void SynchronizeSelectionClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        try
+        {
+            var count = Timeline.SynchronizeSelectionToRange();
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? count == 1
+                    ? "Segment exakt mit dem Waveform-Bereich synchronisiert."
+                    : $"{count} Segmente gemeinsam mit dem Waveform-Bereich synchronisiert."
+                : count == 1
+                    ? "Segment synchronized exactly with the waveform range."
+                    : $"{count} segments synchronized together with the waveform range.");
+        }
+        catch (InvalidOperationException exception) { viewModel.ReportTimelineStatus(exception.Message); }
+    }
     private void ToggleConsoleClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
         (DataContext as EditorViewModel)?.ToggleConsole();
     private void OpenWishlistConsoleClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>

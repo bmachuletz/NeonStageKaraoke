@@ -68,6 +68,70 @@ Assert(forestHistory.Undo() && scalableWord.Start == TimeSpan.FromSeconds(10) &&
     "Rückgängig stellt eine vollständige Mehrfachverschiebung wieder her.");
 Assert(forestHistory.Redo() && scalableWord.Start == TimeSpan.FromSeconds(10.1) && secondWord.Start == TimeSpan.FromSeconds(12.1),
     "Vorwärts wiederholt eine vollständige Mehrfachverschiebung.");
+
+var syncDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var syncLine = Segment("Wir singen heute", LyricSegmentType.Line, 20, 26);
+var syncFirstWord = Segment("Wir", LyricSegmentType.Word, 20, 21, syncLine.Id);
+var syncSecondWord = Segment("singen", LyricSegmentType.Word, 22, 24, syncLine.Id);
+var syncThirdWord = Segment("heute", LyricSegmentType.Word, 25, 26, syncLine.Id);
+syncSecondWord.Children.AddRange([
+    Segment("sin", LyricSegmentType.Syllable, 22, 23, syncSecondWord.Id),
+    Segment("gen", LyricSegmentType.Syllable, 23, 24, syncSecondWord.Id)
+]);
+syncLine.Children.AddRange([syncFirstWord, syncSecondWord, syncThirdWord]);
+syncDocument.Lines.Add(syncLine);
+var synchronized = TimelineEditing.FitSelectionToRange(syncDocument, [syncFirstWord, syncSecondWord],
+    TimeSpan.FromSeconds(21), TimeSpan.FromSeconds(25));
+Assert(synchronized == 2 && syncFirstWord.Start == TimeSpan.FromSeconds(21) &&
+       syncSecondWord.End == TimeSpan.FromSeconds(25) && syncSecondWord.Children[0].Start == TimeSpan.FromSeconds(23),
+    "Mehrere Wörter werden gemeinsam und proportional exakt in den markierten Waveform-Bereich eingepasst.");
+Assert(syncThirdWord.Start == TimeSpan.FromSeconds(25),
+    "Nicht ausgewählte nachfolgende Wörter bleiben beim Synchronisieren unverändert.");
+var beforeRejectedSync = syncFirstWord.Start;
+try
+{
+    TimelineEditing.FitSelectionToRange(syncDocument, [syncFirstWord],
+        TimeSpan.FromSeconds(24.5), TimeSpan.FromSeconds(25.5));
+    throw new InvalidOperationException("Test fehlgeschlagen: Eine Kollision hätte abgelehnt werden müssen.");
+}
+catch (InvalidOperationException)
+{
+    Assert(syncFirstWord.Start == beforeRejectedSync,
+        "Eine kollidierende Synchronisierung wird vollständig und ohne Teiländerung verworfen.");
+}
+
+var syllableDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var syllableLine = Segment("Hallo", LyricSegmentType.Line, 8, 12);
+var syllableWord = Segment("Hallo", LyricSegmentType.Word, 9, 11, syllableLine.Id);
+var syllableLeft = Segment("Hal", LyricSegmentType.Syllable, 9, 10, syllableWord.Id);
+var syllableRight = Segment("lo", LyricSegmentType.Syllable, 10, 11, syllableWord.Id);
+syllableWord.Children.AddRange([syllableLeft, syllableRight]);
+syllableLine.Children.Add(syllableWord);
+syllableDocument.Lines.Add(syllableLine);
+TimelineEditing.FitSelectionToRange(syllableDocument, [syllableLeft],
+    TimeSpan.FromSeconds(8.75), TimeSpan.FromSeconds(9.75));
+Assert(syllableLeft.Start == TimeSpan.FromSeconds(8.75) && syllableLeft.End == TimeSpan.FromSeconds(9.75) &&
+       syllableWord.Start == TimeSpan.FromSeconds(8.75) && syllableWord.End == TimeSpan.FromSeconds(11),
+    "Eine einzelne Silbe übernimmt den Bereich exakt und aktualisiert ihre Wortgrenze ohne die Nachbarsilbe zu verschieben.");
+
+var syncLineDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var coarseLine = Segment("Grobe Zeile", LyricSegmentType.Line, 30, 34);
+var coarseWord = Segment("Grobe", LyricSegmentType.Word, 31, 33, coarseLine.Id);
+coarseLine.Children.Add(coarseWord);
+var untouchedLine = Segment("Danach", LyricSegmentType.Line, 40, 42);
+syncLineDocument.Lines.AddRange([coarseLine, untouchedLine]);
+var syncHistory = new CommandHistory();
+syncHistory.Execute(new EditSegmentTreeCommand(coarseLine, "Zeile synchronisieren", () =>
+    TimelineEditing.FitSelectionToRange(syncLineDocument, [coarseLine],
+        TimeSpan.FromSeconds(35), TimeSpan.FromSeconds(39))));
+Assert(coarseLine.Start == TimeSpan.FromSeconds(35) && coarseLine.End == TimeSpan.FromSeconds(39) &&
+       coarseWord.Start == TimeSpan.FromSeconds(36) && coarseWord.End == TimeSpan.FromSeconds(38) &&
+       untouchedLine.Start == TimeSpan.FromSeconds(40),
+    "Eine Zeile wird mitsamt Inhalt grob proportional eingepasst, ohne die Folgezeile zu verschieben.");
+Assert(syncHistory.Undo() && coarseLine.Start == TimeSpan.FromSeconds(30) && coarseWord.Start == TimeSpan.FromSeconds(31),
+    "Das Synchronisieren eines Textbereichs ist als ein atomarer Schritt rückgängig machbar.");
+Assert(syncHistory.Redo() && coarseLine.Start == TimeSpan.FromSeconds(35) && coarseWord.Start == TimeSpan.FromSeconds(36),
+    "Das Synchronisieren eines Textbereichs ist vollständig wiederholbar.");
 var editableLines = new List<LyricSegment> { Segment("A", LyricSegmentType.Line, 1, 2) };
 var insertedLine = Segment("B", LyricSegmentType.Line, 2, 3);
 var lineHistory = new CommandHistory();
