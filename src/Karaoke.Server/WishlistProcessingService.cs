@@ -6,7 +6,8 @@ public sealed record WishlistProcessingStatus(bool IsRunning, Guid? EventId, str
     DateTimeOffset? FinishedAt, int? ExitCode, string Message, IReadOnlyList<string> RecentOutput,
     int Current, int Total, int Percent);
 
-public sealed class WishlistProcessingService(IWebHostEnvironment environment, ServerSettingsService settings, ILogger<WishlistProcessingService> logger)
+public sealed class WishlistProcessingService(IWebHostEnvironment environment, ServerSettingsService settings,
+    QobuzPluginSettingsService qobuzSettings, ILogger<WishlistProcessingService> logger)
 {
     private readonly object _gate = new();
     private WishlistProcessingStatus _status = new(false, null, null, null, null, null, "Bereit", [], 0, 0, 0);
@@ -53,6 +54,16 @@ public sealed class WishlistProcessingService(IWebHostEnvironment environment, S
             start.ArgumentList.Add("--server"); start.ArgumentList.Add("http://127.0.0.1:5274");
             start.ArgumentList.Add("--library"); start.ArgumentList.Add(settings.Get().LibraryPath);
             if (maximum > 0) { start.ArgumentList.Add("--max"); start.ArgumentList.Add(maximum.ToString()); }
+            var qobuz = await qobuzSettings.GetWorkerSettingsAsync(CancellationToken.None);
+            start.Environment["NEONSTAGE_DOWNLOAD_PROVIDER"] = qobuz.Enabled ? "qobuz" : "youtube";
+            if (qobuz.Enabled)
+            {
+                start.Environment["QOBUZ_APP_ID"] = qobuz.AppId;
+                start.Environment["QOBUZ_APP_SECRET"] = qobuz.AppSecret;
+                start.Environment["QOBUZ_USER_AUTH_TOKEN"] = qobuz.UserAuthToken;
+                start.Environment["QOBUZ_FORMAT_ID"] = qobuz.FormatId.ToString();
+                start.Environment["QOBUZ_API_BASE_URL"] = qobuz.ApiBaseUrl;
+            }
             using var process = new Process { StartInfo = start };
             process.OutputDataReceived += (_, args) => AddLine(output, args.Data);
             process.ErrorDataReceived += (_, args) => AddLine(output, args.Data);
@@ -86,6 +97,7 @@ public sealed class WishlistProcessingService(IWebHostEnvironment environment, S
             var stage = 0d;
             if (line.StartsWith("Wunsch:", StringComparison.Ordinal)) { current = Math.Min(_status.Total, current + 1); stage = .02; }
             else if (line.StartsWith("Spotify:", StringComparison.Ordinal)) stage = .08;
+            else if (line.StartsWith("Qobuz:", StringComparison.Ordinal)) stage = .16;
             else if (line.StartsWith("LRCLIB-Matching:", StringComparison.Ordinal)) stage = .25;
             else if (line.StartsWith("GPU-Wort-/Silbenalignment:", StringComparison.Ordinal)) stage = .48;
             else if (line.StartsWith("Quality-Gate akzeptiert:", StringComparison.Ordinal)) stage = .9;

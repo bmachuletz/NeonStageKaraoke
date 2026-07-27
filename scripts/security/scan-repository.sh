@@ -10,7 +10,7 @@ while IFS= read -r tracked_file; do
     .env|.env.*|*/.env|*/.env.*)
       [[ "$tracked_file" == *.example ]] || violations+=("$tracked_file")
       ;;
-    src/variables|*/src/variables|*.pem|*.key|*.pfx|*.p12|*.jks|*.keystore|*/secrets.json|secrets.json|*/spotify-connection.json|spotify-connection.json|*appsettings.*.local.json)
+    src/variables|*/src/variables|*.pem|*.key|*.pfx|*.p12|*.jks|*.keystore|*/secrets.json|secrets.json|*/spotify-connection.json|spotify-connection.json|*.qobuz-plugin.json|*appsettings.*.local.json)
       violations+=("$tracked_file")
       ;;
   esac

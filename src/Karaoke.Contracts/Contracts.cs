@@ -32,6 +32,32 @@ public sealed record PlaybackPositionDto(Guid QueueEntryId, TimeSpan Position, D
 public sealed record PlaybackControllerRequest(Guid ClientId, string ClientName);
 public sealed record PlaybackControllerDto(bool OwnsControl, Guid? ControllerId, string? ControllerName, DateTimeOffset LeaseExpiresAt);
 public sealed record LibrarySettingsDto(string LibraryPath);
+public enum QobuzDownloadQuality
+{
+    Mp3_320 = 5,
+    FlacCd = 6,
+    FlacHiRes96 = 7,
+    FlacHiRes192 = 27
+}
+public sealed record QobuzPluginSettingsDto(
+    bool Enabled,
+    bool Configured,
+    string AppId,
+    bool HasAppSecret,
+    bool HasUserAuthToken,
+    QobuzDownloadQuality Quality,
+    string ApiBaseUrl,
+    bool ManagedByEnvironment,
+    string Status);
+public sealed record UpdateQobuzPluginSettingsRequest(
+    bool Enabled,
+    string AppId,
+    string? AppSecret,
+    string? UserAuthToken,
+    QobuzDownloadQuality Quality = QobuzDownloadQuality.FlacCd,
+    string? ApiBaseUrl = null,
+    bool ClearStoredCredentials = false);
+public enum AudioCatalogSource { Spotify, Qobuz }
 public sealed record SpotifyStatusDto(bool Configured, bool Connected, string? PlaylistUrl = null, string? Message = null);
 public sealed record SpotifyTrackDto(
     string Id,
@@ -42,7 +68,18 @@ public sealed record SpotifyTrackDto(
     string? ImageUrl,
     int DurationMilliseconds,
     bool HasSyncedLyrics,
-    string? SpotifyUrl = null);
+    string? SpotifyUrl = null,
+    AudioCatalogSource Source = AudioCatalogSource.Spotify,
+    string? SourceUrl = null,
+    decimal? Price = null,
+    string? Currency = null,
+    string? QobuzId = null,
+    string? AudioQuality = null)
+{
+    public string SourceLabel => Source == AudioCatalogSource.Qobuz ? "QOBUZ" : "SPOTIFY";
+    public string PriceLabel => Price is null ? string.Empty : $"{Price:0.00} {Currency}".Trim();
+    public bool HasPrice => Price is not null;
+}
 public sealed record AddWishRequest(SpotifyTrackDto Track, string RequestedBy);
 public sealed record WishDto(Guid Id, SpotifyTrackDto Track, string RequestedBy, DateTimeOffset RequestedAt, string Status);
 public sealed record FolderImportRequest(string SourcePath, bool Recursive = true);

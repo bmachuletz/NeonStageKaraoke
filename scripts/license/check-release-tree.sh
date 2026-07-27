@@ -14,7 +14,7 @@ done < <(find . -type f \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.flac' -
   -not -path './.env' -print)
 
 if rg --files-with-matches --hidden -g '!.tools/**' -g '!src/variables' -g '!**/bin/**' -g '!**/obj/**' -g '!**/Library/**' -g '!**/data/**' \
-  '^[[:space:]]*(SPOTIFY_CLIENT_SECRET|Spotify__ClientSecret|CLIENT_SECRET|API_KEY|PASSWORD)[[:space:]]*[:=][[:space:]]*[^$<{[:space:]][^[:space:]]+' .; then
+  '^[[:space:]]*(SPOTIFY_CLIENT_SECRET|Spotify__ClientSecret|QOBUZ_APP_SECRET|Qobuz__AppSecret|QOBUZ_USER_AUTH_TOKEN|Qobuz__UserAuthToken|CLIENT_SECRET|API_KEY|PASSWORD)[[:space:]]*[:=][[:space:]]*[^$<{[:space:]][^[:space:]]+' .; then
   printf 'Möglicher fest codierter Zugangswert gefunden.\n' >&2
   failed=1
 fi

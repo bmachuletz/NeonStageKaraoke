@@ -17,6 +17,7 @@ builder.Services.PostConfigure<KaraokeOptions>(options =>
     }
 });
 builder.Services.Configure<SpotifyOptions>(builder.Configuration.GetSection("Spotify"));
+builder.Services.Configure<QobuzOptions>(builder.Configuration.GetSection("Qobuz"));
 builder.Services.AddHttpClient();
 builder.Services.AddSingleton<LibraryRepository>();
 builder.Services.AddSingleton<ChangeFeedService>();
@@ -25,6 +26,10 @@ builder.Services.AddSingleton<QueueService>();
 builder.Services.AddSingleton<PlaybackControllerService>();
 builder.Services.AddSingleton<ServerSettingsService>();
 builder.Services.AddSingleton<SpotifyService>();
+builder.Services.AddSingleton<QobuzPluginSettingsService>();
+builder.Services.AddSingleton<LyricsAvailabilityService>();
+builder.Services.AddSingleton<QobuzCatalogService>();
+builder.Services.AddSingleton<AudioCatalogSearchService>();
 builder.Services.AddSingleton<WishlistRepository>();
 builder.Services.AddSingleton<EventRepository>();
 builder.Services.AddSingleton<WishlistProcessingService>();
@@ -408,6 +413,19 @@ app.MapPut("/api/settings/library", async (LibrarySettingsDto request, ServerSet
         return Results.BadRequest(exception.Message);
     }
 });
+app.MapGet("/api/admin/download-providers/qobuz", async (QobuzPluginSettingsService settings, CancellationToken ct) =>
+    Results.Ok(await settings.GetAsync(ct)));
+app.MapPut("/api/admin/download-providers/qobuz", async (HttpContext context,
+    UpdateQobuzPluginSettingsRequest request, QobuzPluginSettingsService settings, CancellationToken ct) =>
+{
+    if (!CanTransmitAdminSecrets(context))
+        return Results.BadRequest("Qobuz-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
+    try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
+    catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
 app.MapGet("/api/spotify/status", async (SpotifyService spotify, CancellationToken ct) => Results.Ok(await spotify.GetStatusAsync(ct)));
 app.MapGet("/api/spotify/connect", (SpotifyService spotify) =>
 {
@@ -425,10 +443,10 @@ app.MapGet("/api/spotify/callback", async (string? code, string? state, string? 
     }
     catch (Exception exception) { return Results.BadRequest(exception.Message); }
 });
-app.MapGet("/api/wishlist/search", async (string? q, SpotifyService spotify, CancellationToken ct) =>
+app.MapGet("/api/wishlist/search", async (string? q, AudioCatalogSearchService catalog, CancellationToken ct) =>
 {
-    try { return Results.Ok(await spotify.SearchAsync(q ?? string.Empty, ct)); }
-    catch (Exception exception) { return Results.Problem("Spotify-Suche fehlgeschlagen: " + exception.Message); }
+    try { return Results.Ok(await catalog.SearchAsync(q ?? string.Empty, ct)); }
+    catch (Exception exception) { return Results.Problem("Katalogsuche fehlgeschlagen: " + exception.Message); }
 });
 app.MapGet("/api/wishlist", async (string? eventToken, WishlistRepository wishes, EventRepository events, CancellationToken ct) =>
     await events.ResolveIdAsync(eventToken, ct) is { } eventId ? Results.Ok(await wishes.GetAsync(eventId, ct)) : Results.NotFound());
@@ -438,7 +456,8 @@ app.MapPost("/api/wishlist", async (string? eventToken, AddWishRequest request, 
     if (eventId is null) return Results.NotFound();
     var existed = (await wishes.GetAsync(eventId.Value, ct)).Any(wish => wish.Track.Id == request.Track.Id);
     var wish = await wishes.AddAsync(eventId.Value, request, ct);
-    if (!existed)
+    if (!existed && request.Track.Source == AudioCatalogSource.Spotify &&
+        request.Track.Uri.StartsWith("spotify:track:", StringComparison.Ordinal))
     {
         try { await spotify.AddToPlaylistAsync(request.Track.Uri, ct); }
         catch (Exception) { /* Der lokale Wunsch bleibt auch bei einer Spotify-Störung erhalten. */ }
@@ -451,6 +470,7 @@ app.MapDelete("/api/wishlist/{id:guid}", async (Guid id, string? eventToken, Wis
 // Event activation resets the playback state. Initialize the queue schema before
 // accepting requests so a freshly created database can start a quick session
 // before the queue endpoint has ever been called.
+await app.Services.GetRequiredService<QobuzPluginSettingsService>().InitializeAsync(CancellationToken.None);
 await app.Services.GetRequiredService<QueueService>().InitializeAsync(CancellationToken.None);
 
 app.Run();
@@ -460,6 +480,17 @@ static Guid? ReadControllerId(HttpRequest request) =>
 
 static bool HasControl(HttpRequest request, PlaybackControllerService controller) =>
     ReadControllerId(request) is { } id && controller.Owns(id);
+
+static bool CanTransmitAdminSecrets(HttpContext context)
+{
+    if (context.Request.IsHttps) return true;
+    var remote = context.Connection.RemoteIpAddress;
+    var local = context.Connection.LocalIpAddress;
+    if (remote is null) return false;
+    if (remote.IsIPv4MappedToIPv6) remote = remote.MapToIPv4();
+    if (local?.IsIPv4MappedToIPv6 == true) local = local.MapToIPv4();
+    return System.Net.IPAddress.IsLoopback(remote) || remote.Equals(local);
+}
 
 static async Task<IResult> ChangeLyricsStatus(Guid songId, Guid versionId, long expectedRevision,
     LyricsVersionStatus target, bool allowTimingConflicts, LyricsVersionRepository versions, CancellationToken ct)

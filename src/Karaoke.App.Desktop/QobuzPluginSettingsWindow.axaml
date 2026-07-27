@@ -1,0 +1,68 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.QobuzPluginSettingsWindow" Title="Download-Provider konfigurieren"
+        Width="720" Height="680" MinWidth="590" MinHeight="560" Background="#0D1016"
+        WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="5">
+      <TextBlock Text="QOBUZ DOWNLOAD-PLUGIN" Foreground="#DFFF28" FontSize="22" FontWeight="Bold" />
+      <TextBlock Text="Autorisierte Kaufdownloads statt YouTube · standardmäßig als CD-FLAC"
+                 Foreground="#8993A6" />
+    </StackPanel>
+
+    <ScrollViewer Grid.Row="1" Margin="0,22,0,16">
+      <StackPanel Spacing="13">
+        <Border Padding="14" CornerRadius="8" Background="#171D28" BorderBrush="#303848" BorderThickness="1">
+          <StackPanel Spacing="8">
+            <CheckBox x:Name="EnabledBox" Content="Qobuz für die Wunschlisten-Pipeline aktivieren"
+                      FontWeight="SemiBold" />
+            <TextBlock Text="Ist das Plugin deaktiviert oder unvollständig konfiguriert, verwendet Neon Stage weiterhin YouTube/Sunnify. Bei aktiviertem Qobuz gibt es keinen stillen YouTube-Fallback."
+                       Foreground="#AAB2C1" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+
+        <TextBlock Text="QOBUZ PARTNER-ZUGANG" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+        <TextBlock Text="Qobuz vergibt API-Zugänge für Integrationen. Neon Stage benötigt kein Qobuz-Passwort und speichert keines. App-Secret und User-Token werden ausschließlich auf dem Server abgelegt."
+                   Foreground="#AAB2C1" TextWrapping="Wrap" />
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+          <StackPanel>
+            <TextBlock Text="APP-ID" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="AppIdBox" Watermark="Von Qobuz bereitgestellte App-ID" />
+          </StackPanel>
+          <StackPanel Grid.Column="1">
+            <TextBlock Text="APP-SECRET" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="AppSecretBox" PasswordChar="●" Watermark="Leer lassen = gespeichertes Secret behalten" />
+          </StackPanel>
+        </Grid>
+        <StackPanel>
+          <TextBlock Text="AUTORISIERTER USER-AUTH-TOKEN" Foreground="#8993A6" FontSize="10" />
+          <TextBox x:Name="UserTokenBox" PasswordChar="●" Watermark="Leer lassen = gespeicherten Token behalten" />
+        </StackPanel>
+
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+          <StackPanel>
+            <TextBlock Text="DOWNLOAD-QUALITÄT" Foreground="#8993A6" FontSize="10" />
+            <ComboBox x:Name="QualityBox" />
+          </StackPanel>
+          <StackPanel Grid.Column="1">
+            <TextBlock Text="API-BASISADRESSE" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="ApiBaseUrlBox" />
+          </StackPanel>
+        </Grid>
+
+        <CheckBox x:Name="ClearCredentialsBox" Content="Gespeichertes App-Secret und User-Token beim Speichern löschen" />
+        <Border Padding="12" CornerRadius="6" Background="#201B1227" BorderBrush="#4A3658" BorderThickness="1">
+          <TextBlock Text="Nur von Qobuz für den angemeldeten Account autorisierte Kaufdownloads werden akzeptiert. Der angezeigte Preis ist reine Kataloginformation; Neon Stage kauft niemals automatisch. Streaming-URLs oder Schutzumgehungen verwendet das Plugin nicht. FLAC kann direkt durch Matcher, Aligner und Stage verarbeitet werden."
+                     Foreground="#C4B9CF" TextWrapping="Wrap" />
+        </Border>
+        <TextBlock x:Name="TransportWarningText" Foreground="#FFB45E" TextWrapping="Wrap" IsVisible="False" />
+        <TextBlock x:Name="StatusText" Foreground="#45E6D0" FontFamily="monospace" TextWrapping="Wrap" />
+      </StackPanel>
+    </ScrollViewer>
+
+    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+      <Button Content="Schließen" Click="CloseClick" />
+      <Button x:Name="SaveButton" Content="Konfiguration speichern" Click="SaveClick"
+              Background="#DFFF28" Foreground="#11151C" />
+    </StackPanel>
+  </Grid>
+</Window>

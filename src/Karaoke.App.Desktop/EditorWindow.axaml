@@ -23,6 +23,7 @@
             <Button.Flyout><MenuFlyout>
               <MenuItem Header="Wünsche und Downloads" Click="OpenWishlistConsoleClick" />
               <MenuItem Header="MP3-Ordner importieren …" Click="OpenFolderImportConsoleClick" />
+              <MenuItem Header="Download-Provider konfigurieren …" Click="OpenDownloadProviderSettingsClick" />
               <MenuItem Header="Songpakete">
                 <MenuItem Header="Ausgewählten Song exportieren …" Click="ExportCurrentSongPackageClick" />
                 <MenuItem Header="Mehrere Songs exportieren …" Click="ExportMultipleSongPackagesClick" />
@@ -195,13 +196,13 @@
 
         <Grid Grid.Row="2" IsVisible="{Binding WishlistConsoleVisible}" RowDefinitions="Auto,130,42,*">
           <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,4,0,4">
-            <TextBox Watermark="Spotify: Titel oder Interpret suchen …" Text="{Binding AdminWishQuery}"
+            <TextBox Watermark="Spotify oder Qobuz: Titel oder Interpret suchen …" Text="{Binding AdminWishQuery}"
                      KeyDown="AdminWishQueryKeyDown" />
             <Button Grid.Column="1" Content="⌕ SUCHEN" Click="SearchAdminWishesClick" Margin="8,0,0,0" />
             <Button Grid.Column="2" Content="▶ ALLE EVENTS ABARBEITEN" Click="StartWishProcessingClick" Margin="8,0,0,0" />
           </Grid>
           <ListBox Grid.Row="1" ItemsSource="{Binding AdminWishSearchResults}" Background="#0B1017" BorderThickness="0">
-            <ListBox.ItemTemplate><DataTemplate><Grid ColumnDefinitions="*,Auto" Margin="6,2"><StackPanel><TextBlock Text="{Binding Title}" FontWeight="SemiBold"/><TextBlock Text="{Binding Artist}" Foreground="#8993A6" FontSize="10"/><TextBlock Text="✓ Lyrics gefunden" Foreground="#45E6D0" FontSize="10" IsVisible="{Binding HasSyncedLyrics}"/></StackPanel><Button Grid.Column="1" Content="IMPORTIEREN →" Tag="{Binding}" IsEnabled="{Binding HasSyncedLyrics}" Click="ImportAdminWishClick" /></Grid></DataTemplate></ListBox.ItemTemplate>
+            <ListBox.ItemTemplate><DataTemplate><Grid ColumnDefinitions="Auto,*,Auto" Margin="6,3"><Border Padding="7,3" Margin="0,0,9,0" CornerRadius="8" Background="#3A214C" VerticalAlignment="Center"><TextBlock Text="{Binding SourceLabel}" Foreground="#FF69D9" FontSize="9" FontWeight="Bold"/></Border><StackPanel Grid.Column="1"><TextBlock Text="{Binding Title}" FontWeight="SemiBold"/><TextBlock Text="{Binding Artist}" Foreground="#8993A6" FontSize="10"/><StackPanel Orientation="Horizontal" Spacing="9"><TextBlock Text="✓ Lyrics gefunden" Foreground="#45E6D0" FontSize="10" IsVisible="{Binding HasSyncedLyrics}"/><TextBlock Text="{Binding PriceLabel}" Foreground="#DFFF28" FontSize="10" FontWeight="Bold" IsVisible="{Binding HasPrice}"/><TextBlock Text="{Binding AudioQuality}" Foreground="#67BFFF" FontSize="10"/></StackPanel></StackPanel><Button Grid.Column="2" Content="IMPORTIEREN →" Tag="{Binding}" IsEnabled="{Binding HasSyncedLyrics}" Click="ImportAdminWishClick" /></Grid></DataTemplate></ListBox.ItemTemplate>
           </ListBox>
           <Grid Grid.Row="2" ColumnDefinitions="*,Auto" Margin="0,2,0,8">
             <ProgressBar Minimum="0" Maximum="100" Value="{Binding WishProgress}" Height="12" Foreground="#DFFF28" Background="#202717" />

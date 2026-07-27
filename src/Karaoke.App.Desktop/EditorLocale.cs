@@ -16,6 +16,7 @@ public static class EditorLocale
         ["Wünsche, Events und Admin-Portal"]="Requests, events and admin portal",
         ["Wünsche und Importe"]="Requests and imports", ["Wünsche und Downloads"]="Requests and downloads",
         ["MP3-Ordner importieren …"]="Import MP3 folder …", ["Events verwalten …"]="Manage events …",
+        ["Download-Provider konfigurieren …"]="Configure download provider …",
         ["Songpakete"]="Song packages", ["Ausgewählten Song exportieren …"]="Export selected song …",
         ["Mehrere Songs exportieren …"]="Export multiple songs …",
         ["Ein Songpaket importieren …"]="Import one song package …",
@@ -90,6 +91,7 @@ public static class EditorLocale
         ["Niedrige Konfidenz"]="Low confidence", ["Timing-Konflikte"]="Timing conflicts", ["Manuell korrigiert"]="Manually adjusted",
         ["Nächster unsicherer Bereich  N"]="Next uncertain region  N", ["Als geprüft markieren  R"]="Mark reviewed  R",
         ["▶ ALLE EVENTS ABARBEITEN"]="▶ PROCESS ALL EVENTS", ["Spotify: Titel oder Interpret suchen …"]="Spotify: search title or artist …",
+        ["Spotify oder Qobuz: Titel oder Interpret suchen …"]="Spotify or Qobuz: search title or artist …",
         ["⌕ SUCHEN"]="⌕ SEARCH", ["✓ Lyrics gefunden"]="✓ Lyrics found", ["IMPORTIEREN →"]="IMPORT →",
         ["▶ Verarbeiten"]="▶ Process", ["EVENTVERWALTUNG"]="EVENT MANAGEMENT",
         ["Sessions planen, teilen und auf die Bühne schalten"]="Plan, share and activate sessions on stage",
@@ -114,7 +116,22 @@ public static class EditorLocale
         ["Alle sichtbaren"]="Select visible", ["Auswahl löschen"]="Clear selection",
         ["Ausgewählte exportieren"]="Export selected", ["Songpaket exportieren"]="Export song package",
         ["Mehrere Neon-Stage-Songpakete importieren"]="Import multiple Neon Stage song packages",
-        ["Neon-Stage-Songpaket importieren"]="Import Neon Stage song package"
+        ["Neon-Stage-Songpaket importieren"]="Import Neon Stage song package",
+        ["Download-Provider konfigurieren"]="Configure download provider",
+        ["QOBUZ DOWNLOAD-PLUGIN"]="QOBUZ DOWNLOAD PLUGIN",
+        ["Autorisierte Kaufdownloads statt YouTube · standardmäßig als CD-FLAC"]="Authorized purchase downloads instead of YouTube · CD-quality FLAC by default",
+        ["Qobuz für die Wunschlisten-Pipeline aktivieren"]="Enable Qobuz for the request pipeline",
+        ["Ist das Plugin deaktiviert oder unvollständig konfiguriert, verwendet Neon Stage weiterhin YouTube/Sunnify. Bei aktiviertem Qobuz gibt es keinen stillen YouTube-Fallback."]="When the plugin is disabled or incomplete, Neon Stage continues to use YouTube/Sunnify. There is no silent YouTube fallback while Qobuz is enabled.",
+        ["QOBUZ PARTNER-ZUGANG"]="QOBUZ PARTNER ACCESS",
+        ["Qobuz vergibt API-Zugänge für Integrationen. Neon Stage benötigt kein Qobuz-Passwort und speichert keines. App-Secret und User-Token werden ausschließlich auf dem Server abgelegt."]="Qobuz provides API access for integrations. Neon Stage neither needs nor stores a Qobuz password. The app secret and user token are stored only on the server.",
+        ["APP-SECRET"]="APP SECRET", ["Von Qobuz bereitgestellte App-ID"]="App ID supplied by Qobuz",
+        ["Leer lassen = gespeichertes Secret behalten"]="Leave blank to keep stored secret",
+        ["AUTORISIERTER USER-AUTH-TOKEN"]="AUTHORIZED USER AUTH TOKEN",
+        ["Leer lassen = gespeicherten Token behalten"]="Leave blank to keep stored token",
+        ["DOWNLOAD-QUALITÄT"]="DOWNLOAD QUALITY", ["API-BASISADRESSE"]="API BASE URL",
+        ["Gespeichertes App-Secret und User-Token beim Speichern löschen"]="Delete the stored app secret and user token when saving",
+        ["Nur von Qobuz für den angemeldeten Account autorisierte Kaufdownloads werden akzeptiert. Der angezeigte Preis ist reine Kataloginformation; Neon Stage kauft niemals automatisch. Streaming-URLs oder Schutzumgehungen verwendet das Plugin nicht. FLAC kann direkt durch Matcher, Aligner und Stage verarbeitet werden."]="Only purchase downloads authorized by Qobuz for the signed-in account are accepted. The displayed price is catalog information only; Neon Stage never purchases automatically. The plugin does not use streaming URLs or protection bypasses. FLAC is processed directly by the matcher, aligner, and stage.",
+        ["Konfiguration speichern"]="Save configuration"
     };
 
     public static string Text(string value)

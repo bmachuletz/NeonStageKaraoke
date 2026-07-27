@@ -7,6 +7,8 @@ aligner_url="${LRC_ALIGNER_URL:-http://127.0.0.1:8081}"
 library="${KARAOKE_LIBRARY_PATH:-/home/benjamin/Karaoke/Sunnify}"
 sunnify_dir="${SUNNIFY_SOURCE:-$repo_root/.tools/sunnify-spotify-downloader}"
 python_bin="${SUNNIFY_PYTHON:-$repo_root/.tools/sunnify-venv/bin/python}"
+qobuz_python="${QOBUZ_PYTHON:-python3}"
+download_provider="${NEONSTAGE_DOWNLOAD_PROVIDER:-youtube}"
 max_wishes=0
 dry_run=0
 event_token=""
@@ -35,12 +37,22 @@ done
 for command in curl jq flock install dotnet; do
   command -v "$command" >/dev/null || { echo "Fehlendes Programm: $command" >&2; exit 1; }
 done
-if ((dry_run == 0)); then
+[[ "$download_provider" == youtube || "$download_provider" == qobuz ]] || {
+  echo "Unbekannter Download-Provider: $download_provider" >&2; exit 2;
+}
+if ((dry_run == 0)) && [[ "$download_provider" == youtube ]]; then
   [[ -x "$python_bin" && -f "$sunnify_dir/Spotify_Downloader.py" ]] || {
     echo "Sunnify Headless ist noch nicht eingerichtet." >&2
     echo "Zuerst ausführen: $repo_root/scripts/linux/setup-sunnify-headless.sh" >&2
     exit 1
   }
+fi
+if ((dry_run == 0)) && [[ "$download_provider" == qobuz ]]; then
+  command -v "$qobuz_python" >/dev/null || { echo "Python für das Qobuz-Plugin fehlt: $qobuz_python" >&2; exit 1; }
+  [[ -f "$repo_root/scripts/python/qobuz_headless.py" ]] || { echo "Qobuz-Plugin fehlt." >&2; exit 1; }
+  for variable in QOBUZ_APP_ID QOBUZ_APP_SECRET QOBUZ_USER_AUTH_TOKEN; do
+    [[ -n "${!variable:-}" ]] || { echo "Qobuz ist aktiviert, aber $variable fehlt." >&2; exit 1; }
+  done
 fi
 [[ -d "$library" ]] || { echo "Bibliothek nicht gefunden: $library" >&2; exit 1; }
 curl -fsS "$server_url/api/health" >/dev/null || { echo "Neon-Stage-Server nicht erreichbar: $server_url" >&2; exit 1; }
@@ -78,12 +90,16 @@ while IFS= read -r wish; do
   wish_event_token=$(jq -r '._eventToken // empty' <<<"$wish")
   spotify_id=$(jq -r '.track.id' <<<"$wish")
   spotify_url=$(jq -r '.track.spotifyUrl // empty' <<<"$wish")
+  catalog_source=$(jq -r '.track.sourceLabel // (if .track.source == 1 then "qobuz" else "spotify" end)' <<<"$wish" | tr '[:upper:]' '[:lower:]')
+  qobuz_id=$(jq -r '.track.qobuzId // empty' <<<"$wish")
   title=$(jq -r '.track.title' <<<"$wish")
   artist=$(jq -r '.track.artist' <<<"$wish")
-  [[ -n "$spotify_url" ]] || spotify_url="https://open.spotify.com/track/$spotify_id"
+  if [[ "$catalog_source" == spotify ]]; then
+    [[ -n "$spotify_url" ]] || spotify_url="https://open.spotify.com/track/$spotify_id"
+  fi
   echo
   echo "Wunsch: $title · $artist"
-  echo "Spotify: $spotify_url"
+  [[ -z "$spotify_url" ]] || echo "Spotify: $spotify_url"
   if ((dry_run != 0)); then
     ((processed+=1))
     continue
@@ -91,16 +107,34 @@ while IFS= read -r wish; do
 
   staging=$(mktemp -d -p /tmp neonstage-wish.XXXXXXXX)
   result_file="$staging/sunnify-result.json"
-  if ! "$python_bin" "$repo_root/scripts/python/sunnify_headless.py" \
-      --sunnify-source "$sunnify_dir" --format mp3 --quality 320 \
-      "$spotify_url" "$staging" >"$result_file"; then
+  if [[ "$download_provider" == qobuz ]]; then
+    echo "Download-Provider: Qobuz (autorisierter Kaufdownload)"
+    download_command=("$qobuz_python" "$repo_root/scripts/python/qobuz_headless.py"
+      --title "$title" --artist "$artist"
+      --album "$(jq -r '.track.album // empty' <<<"$wish")"
+      --duration-ms "$(jq -r '.track.durationMilliseconds // 0' <<<"$wish")"
+      --output "$staging")
+    [[ -z "$qobuz_id" ]] || download_command+=(--track-id "$qobuz_id")
+  else
+    if [[ "$catalog_source" == qobuz ]]; then
+      echo "Dieser Wunsch stammt aus Qobuz, das Qobuz-Plugin ist aber nicht aktiv." >&2
+      rm -rf -- "$staging"
+      ((failed+=1))
+      continue
+    fi
+    echo "Download-Provider: YouTube / Sunnify"
+    download_command=("$python_bin" "$repo_root/scripts/python/sunnify_headless.py"
+      --sunnify-source "$sunnify_dir" --format mp3 --quality 320
+      "$spotify_url" "$staging")
+  fi
+  if ! "${download_command[@]}" >"$result_file"; then
     echo "Download fehlgeschlagen: $(jq -r '.errors // .messages // [] | join("; ")' "$result_file" 2>/dev/null || true)" >&2
     rm -rf -- "$staging"
     ((failed+=1))
     continue
   fi
   downloaded=$(jq -er '.track.file' "$result_file")
-  [[ -f "$downloaded" ]] || { echo "Sunnify meldete keine Audiodatei." >&2; rm -rf -- "$staging"; ((failed+=1)); continue; }
+  [[ -f "$downloaded" ]] || { echo "Der Download-Provider meldete keine Audiodatei." >&2; rm -rf -- "$staging"; ((failed+=1)); continue; }
 
   # Keep artist folders readable while excluding path separators/control chars.
   safe_artist=$(jq -rn --arg value "$artist" '$value | gsub("[/\\\\]"; "_") | gsub("^[. ]+|[. ]+$"; "")')

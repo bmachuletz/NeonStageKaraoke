@@ -63,7 +63,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private readonly HashSet<Guid> _realignedSongsPendingReview = [];
     private bool _wishWorkerRunning;
     private string _adminWishQuery = string.Empty;
-    private string _adminWishSearchStatus = "Spotify durchsuchen und einen Treffer direkt importieren.";
+    private string _adminWishSearchStatus = "Spotify oder Qobuz durchsuchen und einen Treffer direkt importieren.";
     private bool _adminWishSearching;
     private string _folderImportPath = string.Empty;
     private bool _folderImportRecursive = true;
@@ -623,24 +623,27 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     public async Task SearchAdminWishesAsync(CancellationToken cancellationToken = default)
     {
         var query = AdminWishQuery.Trim();
-        if (query.Length < 2) { AdminWishSearchStatus = "Bitte mindestens zwei Zeichen eingeben."; return; }
+        if (query.Length < 2) { AdminWishSearchStatus = Localized("Bitte mindestens zwei Zeichen eingeben.", "Enter at least two characters."); return; }
         AdminWishSearching = true;
-        AdminWishSearchStatus = "Spotify und LRCLIB werden durchsucht …";
+        AdminWishSearchStatus = Localized("Spotify, Qobuz und LRCLIB werden durchsucht …",
+            "Searching Spotify, Qobuz, and LRCLIB …");
         try
         {
             var results = await _http.GetFromJsonAsync<IReadOnlyList<SpotifyTrackDto>>(
                 $"/api/wishlist/search?q={Uri.EscapeDataString(query)}", cancellationToken) ?? [];
             AdminWishSearchResults.Clear();
             foreach (var track in results) AdminWishSearchResults.Add(track);
-            AdminWishSearchStatus = $"{results.Count} Treffer · Titel mit Lyrics können direkt importiert werden.";
+            AdminWishSearchStatus = Localized(
+                $"{results.Count} Treffer · Titel mit Lyrics können direkt importiert werden.",
+                $"{results.Count} results · tracks with lyrics can be imported directly.");
         }
-        catch (Exception exception) { AdminWishSearchStatus = "Suche fehlgeschlagen: " + exception.Message; }
+        catch (Exception exception) { AdminWishSearchStatus = Localized("Suche fehlgeschlagen: ", "Search failed: ") + exception.Message; }
         finally { AdminWishSearching = false; }
     }
 
     public async Task ImportAdminWishAsync(SpotifyTrackDto track, CancellationToken cancellationToken = default)
     {
-        if (!track.HasSyncedLyrics) { AdminWishSearchStatus = "Für diesen Treffer wurden keine geeigneten Lyrics gefunden."; return; }
+        if (!track.HasSyncedLyrics) { AdminWishSearchStatus = Localized("Für diesen Treffer wurden keine geeigneten Lyrics gefunden.", "No suitable lyrics were found for this result."); return; }
         ShowWishlistConsole();
         AppendConsole($"> Admin-Import: {track.Title} · {track.Artist}");
         try
@@ -650,11 +653,12 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
                 AppendConsole("Ein Worker läuft bereits. Der Titel bleibt in der Wunschliste und kann danach verarbeitet werden.");
             else response.EnsureSuccessStatusCode();
-            AdminWishSearchStatus = $"{track.Title} wurde an die Import-Pipeline übergeben.";
+            AdminWishSearchStatus = Localized($"{track.Title} wurde an die Import-Pipeline übergeben.",
+                $"{track.Title} was submitted to the import pipeline.");
             await LoadWishEventsAsync(cancellationToken);
             await RefreshJobStatusAsync(cancellationToken);
         }
-        catch (Exception exception) { AdminWishSearchStatus = "Import konnte nicht gestartet werden: " + exception.Message; }
+        catch (Exception exception) { AdminWishSearchStatus = Localized("Import konnte nicht gestartet werden: ", "Could not start import: ") + exception.Message; }
     }
 
     public async Task ImportSongAsync(NewSongProjectRequest request, CancellationToken cancellationToken = default)
@@ -2016,6 +2020,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             FilteredSongs.Add(song);
     }
 
+    private static string Localized(string german, string english) => EditorLocale.German ? german : english;
+
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? property = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
@@ -2047,7 +2053,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 public sealed record EditorWishItem(KaraokeEventDto Event, WishDto Wish)
 {
     public string Title => Wish.Track.Title;
-    public string Details => $"{Wish.Track.Artist} · {Wish.RequestedBy} · {Wish.Status}";
+    public string Details => $"{Wish.Track.SourceLabel} · {Wish.Track.Artist} · {Wish.RequestedBy} · {Wish.Status}";
 }
 
 public sealed record EditorLyricsVersionItem(LyricsVersionSummaryDto Version, bool IsCurrent)

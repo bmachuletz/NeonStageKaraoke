@@ -58,6 +58,41 @@ try
     Assert(restartedSettings.Get().LibraryPath == Path.GetFullPath(libraryPath), "Der Bibliothekspfad bleibt nach einem Serverneustart erhalten.");
     Directory.Delete(libraryPath);
 
+    var qobuzSettings = new QobuzPluginSettingsService(options, Options.Create(new QobuzOptions()));
+    var savedQobuz = await qobuzSettings.UpdateAsync(new(false, "partner-app", "secret-value", "user-token",
+        QobuzDownloadQuality.FlacCd), default);
+    Assert(savedQobuz.Configured && savedQobuz.HasAppSecret && savedQobuz.HasUserAuthToken &&
+           !savedQobuz.Enabled,
+        "Qobuz-Credentials werden nur als Vorhanden-Flags an den Editor zurückgegeben.");
+    var restartedQobuz = new QobuzPluginSettingsService(restartedOptions, Options.Create(new QobuzOptions()));
+    var workerQobuz = await restartedQobuz.GetWorkerSettingsAsync(default);
+    Assert(workerQobuz.AppId == "partner-app" && workerQobuz.AppSecret == "secret-value" &&
+           workerQobuz.UserAuthToken == "user-token" && workerQobuz.FormatId == 6,
+        "Die serverseitige Qobuz-Konfiguration bleibt nach einem Neustart erhalten.");
+    using (var qobuzTrackJson = JsonDocument.Parse("""
+    {
+      "id": 123456,
+      "title": "Example Song",
+      "duration": 187,
+      "performer": { "name": "Example Artist" },
+      "album": {
+        "title": "Example Album",
+        "image": { "large": "https://static.qobuz.example/cover.jpg" },
+        "maximum_bit_depth": 24,
+        "maximum_sampling_rate": 96
+      },
+      "price": 1.49,
+      "currency": "EUR"
+    }
+    """))
+    {
+        var mappedQobuz = QobuzCatalogService.Map(qobuzTrackJson.RootElement);
+        Assert(mappedQobuz is { Source: AudioCatalogSource.Qobuz, QobuzId: "123456", Price: 1.49m,
+                   Currency: "EUR", AudioQuality: "FLAC 24 bit / 96 kHz" } &&
+               mappedQobuz.SourceUrl == "https://open.qobuz.com/track/123456",
+            "Qobuz-Suchergebnisse behalten Quelle, Preis, Qualität und Katalog-ID.");
+    }
+
     var lyricsVersions = new LyricsVersionRepository(options);
     var versionSongId = Guid.NewGuid();
     var editorJson = JsonSerializer.Serialize(new { schemaVersion = 1, songId = versionSongId, lines = Array.Empty<object>() });
@@ -223,6 +258,9 @@ finally
     if (File.Exists(databasePath)) File.Delete(databasePath);
     var settingsPath = Path.Combine(Path.GetDirectoryName(databasePath)!, Path.GetFileNameWithoutExtension(databasePath) + ".server-settings.json");
     if (File.Exists(settingsPath)) File.Delete(settingsPath);
+    var qobuzPath = Path.Combine(Path.GetDirectoryName(databasePath)!,
+        Path.GetFileNameWithoutExtension(databasePath) + ".qobuz-plugin.json");
+    if (File.Exists(qobuzPath)) File.Delete(qobuzPath);
 }
 
 static void Assert(bool condition, string message)

@@ -7,7 +7,8 @@ using Microsoft.Extensions.Options;
 
 namespace Karaoke.Server;
 
-public sealed class SpotifyService(IHttpClientFactory clients, IOptions<SpotifyOptions> spotifyOptions, IOptions<KaraokeOptions> karaokeOptions)
+public sealed class SpotifyService(IHttpClientFactory clients, IOptions<SpotifyOptions> spotifyOptions,
+    IOptions<KaraokeOptions> karaokeOptions, LyricsAvailabilityService lyricsAvailability)
 {
     private readonly SpotifyOptions _options = spotifyOptions.Value;
     private readonly SemaphoreSlim _tokenLock = new(1, 1);
@@ -69,9 +70,11 @@ public sealed class SpotifyService(IHttpClientFactory clients, IOptions<SpotifyO
             return new SpotifyTrackDto(item.GetProperty("id").GetString()!, item.GetProperty("uri").GetString()!, item.GetProperty("name").GetString()!,
                 artists, album.GetProperty("name").GetString() ?? "", image.ValueKind == JsonValueKind.Object ? image.GetProperty("url").GetString() : null,
                 item.GetProperty("duration_ms").GetInt32(), false,
+                item.GetProperty("external_urls").GetProperty("spotify").GetString(),
+                AudioCatalogSource.Spotify,
                 item.GetProperty("external_urls").GetProperty("spotify").GetString());
         }).ToArray();
-        return await Task.WhenAll(tracks.Select(track => CheckLyricsAsync(track, ct)));
+        return await Task.WhenAll(tracks.Select(track => lyricsAvailability.CheckAsync(track, ct)));
     }
 
     public async Task AddToPlaylistAsync(string spotifyUri, CancellationToken ct)
@@ -84,21 +87,6 @@ public sealed class SpotifyService(IHttpClientFactory clients, IOptions<SpotifyO
         request.Content = JsonContent.Create(new { uris = new[] { spotifyUri } });
         using var response = await client.SendAsync(request, ct);
         response.EnsureSuccessStatusCode();
-    }
-
-    private async Task<SpotifyTrackDto> CheckLyricsAsync(SpotifyTrackDto track, CancellationToken ct)
-    {
-        try
-        {
-            var client = clients.CreateClient();
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("NeonStageKaraoke/1.0");
-            var url = $"https://lrclib.net/api/search?track_name={Uri.EscapeDataString(track.Title)}&artist_name={Uri.EscapeDataString(track.Artist)}";
-            using var response = await client.GetAsync(url, ct);
-            if (!response.IsSuccessStatusCode) return track;
-            using var doc = JsonDocument.Parse(await response.Content.ReadAsStreamAsync(ct));
-            return track with { HasSyncedLyrics = doc.RootElement.EnumerateArray().Any(x => x.TryGetProperty("syncedLyrics", out var lrc) && lrc.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(lrc.GetString())) };
-        }
-        catch { return track; }
     }
 
     private async Task EnsurePlaylistAsync(CancellationToken ct)

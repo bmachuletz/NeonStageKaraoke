@@ -25,7 +25,7 @@ development: [Support Neon Stage on Ko-fi](https://ko-fi.com/Z6Q023YEX5).
 
 - Responsive guest and administration portals with planned events and ad-hoc sessions
 - Shareable event links and QR codes
-- Library search, queue management, requests, Spotify metadata, and LRCLIB matching
+- Library search, queue management, requests, combined Spotify/Qobuz catalog search, and LRCLIB matching
 - Font-independent heart, smile, thumbs-up, applause, and fire reactions
 - Unity 6 stage for Linux and Android, including ARM32
 - Synchronized instrumental/vocal playback with independent levels
@@ -172,6 +172,35 @@ current user and quota restrictions. See Spotify's official
 and [Authorization Code](https://developer.spotify.com/documentation/web-api/tutorials/code-flow)
 documentation.
 
+### Optional Qobuz purchase-download provider
+
+Qobuz can replace the YouTube/Sunnify download step when an official Qobuz
+integration is configured. The combined request search marks every result as
+Spotify or Qobuz; Qobuz results also show the catalog price and maximum audio
+quality when those fields are returned by the account's API response. Directly
+selected Qobuz results retain their catalog track ID through the worker. Prices
+are informational: Neon Stage never purchases a track automatically.
+
+Configure the plugin in **Management → Configure download provider…** in the
+Lyrics Editor, or provide `QOBUZ_*` values in the untracked `.env`. Qobuz API
+integration access is not an anonymous public credential: contact
+[`api@qobuz.com`](mailto:api@qobuz.com) for the current partner onboarding and
+documentation. Neon Stage needs an App ID, App Secret, and authorized User Auth
+Token; it never asks for or stores a Qobuz account password.
+
+The default format is lossless CD-quality FLAC. Matcher, aligner, library, and
+stage consume FLAC directly, while MP3 320 and Hi-Res FLAC remain selectable.
+The provider requests only Qobuz `intent=download` URLs authorized for the
+configured account. It does not turn subscription streams into library files,
+extract application keys, or bypass purchase entitlements. If Qobuz rejects a
+download, the request remains open and is not silently routed to YouTube.
+The Editor writes secrets only when it reaches the server on the same host or
+through HTTPS; remote plain-HTTP configuration is rejected.
+
+See [`docs/wishlist-worker.md`](docs/wishlist-worker.md) for worker and security
+details. Qobuz currently documents normal file downloads for purchased tracks
+in its [official download guide](https://help.qobuz.com/en/articles/369151-tutorial-how-to-download-without-qobuz-downloader).
+
 ## Alignment container
 
 ```bash
@@ -255,7 +284,7 @@ Songs, lyrics, cover art, generated stems, local databases, service credentials,
 
 A stage-ready library entry requires audio, lyrics, instrumental, and vocal stems. Automatically aligned material enters **In review**. Only an explicitly **Released** editor version is available to the stage.
 
-The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. The official Spotify Web API supplies catalog metadata for request imports after the operator configures a Spotify developer application; it does not expose lyrics text. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB.
+The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. Spotify and the optional Qobuz integration supply catalog metadata for request imports; neither is treated as a lyrics source. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB.
 
 Use **Management → Song packages** to export one song, export a selected group, or import one or several portable `.neonstage.zip` packages. A package contains the master audio, instrumental and vocal stems, synchronized lyrics, alignment and visualization sidecars, cover art, review state, and the complete editor lyrics-version history. Imports validate every file checksum, never overwrite an existing song project, and only publish a song after the complete package has been verified.
 
@@ -265,7 +294,7 @@ Web portals use the browser locale: German for `de`, English otherwise. `localSt
 
 ## Media, services, and privacy
 
-Operators are responsible for all media rights and third-party terms. Neon Stage is not affiliated with or endorsed by Spotify, LRCLIB, artists, or labels. See [`docs/legal/media-and-services.md`](docs/legal/media-and-services.md).
+Operators are responsible for all media rights and third-party terms. Neon Stage is not affiliated with or endorsed by Spotify, Qobuz, LRCLIB, artists, or labels. See [`docs/legal/media-and-services.md`](docs/legal/media-and-services.md).
 
 ## License
 

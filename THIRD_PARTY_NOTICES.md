@@ -88,6 +88,7 @@ are ignored and never enter the application releases.
 | AppImage Type-2 runtime | embedded launcher in each AppImage | MIT; its upstream license and bundled-dependency inventory are included as `AppImage-Type2-Runtime-LICENSE.txt` in every AppImage |
 | Sunnify Spotify Downloader | optional, separately installed downloader | GPL-3.0; not vendored or bundled by Neon Stage |
 | Spotify Web API | metadata/search integration | Spotify Developer Terms and branding rules; API access does not license music or lyrics |
+| Qobuz API | optional catalog matching and authorized purchase downloads | Qobuz API/partner and store terms; API access does not grant media rights, and only account-authorized `intent=download` responses are accepted |
 | LRCLIB API | lyrics lookup | service terms and copyright in individual lyrics remain applicable |
 | Ko-fi widget | support link on the static project website | externally hosted Ko-fi JavaScript and Ko-fi terms/privacy policy; not bundled into application releases |
 

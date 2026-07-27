@@ -357,6 +357,11 @@ public partial class EditorWindow : Window
         await new EventManagementWindow(viewModel.ServerAddress).ShowDialog(this);
         await viewModel.LoadWishEventsAsync();
     }
+    private async void OpenDownloadProviderSettingsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is EditorViewModel viewModel)
+            await new QobuzPluginSettingsWindow(viewModel.ServerAddress).ShowDialog(this);
+    }
     private void OpenAdminWebsiteClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel viewModel) return;

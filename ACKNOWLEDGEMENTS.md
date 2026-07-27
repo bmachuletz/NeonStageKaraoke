@@ -46,6 +46,9 @@ Special thanks go to:
   and their model authors and contributors for making practical stem
   separation available to the community.
 - [LRCLIB](https://lrclib.net/) and its community for an open lyrics service.
+- [Qobuz](https://www.qobuz.com/) for high-quality purchase formats and its
+  integration ecosystem. The optional provider only uses download access
+  explicitly authorized by Qobuz for the configured account.
 - The authors and maintainers of all direct and transitive packages that are
   too numerous to name individually here.
 

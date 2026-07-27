@@ -48,6 +48,7 @@ src/variables
 *.keystore
 secrets.json
 spotify-connection.json
+*.qobuz-plugin.json
 appsettings.*.local.json
 **/__pycache__/
 *.py[cod]
