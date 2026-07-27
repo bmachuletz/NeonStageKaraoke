@@ -17,6 +17,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private string _server = DefaultServer;
     private string _status = "Verbinde mit NeonStage …";
     private string? _loadedSongId;
+    private string? _loadedQueueEntryId;
+    private string? _loadedStartedAt;
     private string _title = "NEON STAGE – UNITY AUDIO LAB";
     private string _songTitle = "NEON STAGE";
     private string _songArtist = "UNITY AUDIO LAB";
@@ -24,6 +26,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private string _controllerId = "";
     private bool _ownsControl;
     private bool _commandRunning;
+    private bool _autoAdvanceRunning;
     private float _nextQrRefresh;
     private float _nextTimingReport;
     private bool _timingReportRunning;
@@ -77,6 +80,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             PlayerPrefs.Save();
         }
         _audio = gameObject.AddComponent<StageAudioEngine>();
+        _audio.PlaybackEnded += HandlePlaybackEnded;
         _loading = new StageLoadingView(gameObject);
         _lyrics.Initialize(gameObject);
         _visuals = new StageVisualView(gameObject);
@@ -85,6 +89,11 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         _ = _visuals.LoadQrAsync(_server);
         _ = ClaimControlAsync();
         StartCoroutine(PollQueue());
+    }
+
+    private void OnDestroy()
+    {
+        if (_audio != null) _audio.PlaybackEnded -= HandlePlaybackEnded;
     }
 
     private static void ConfigureStageCamera()
@@ -169,6 +178,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                     _visuals.SetSessionActive(false);
                     _activeEventId = null;
                     _loadedSongId = null;
+                    _loadedQueueEntryId = null;
+                    _loadedStartedAt = null;
                     if (_audio.IsPlaying) _audio.Pause();
                     _songTitle = "NEON STAGE";
                     _songArtist = StageLocale.Text("BEREIT FÜR DEINE PARTY", "READY FOR YOUR PARTY");
@@ -198,6 +209,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                     _activeEventId = activeEvent.id;
                     _lastReactionId = 0;
                     _loadedSongId = null;
+                    _loadedQueueEntryId = null;
+                    _loadedStartedAt = null;
                     _songTitle = activeEvent.name;
                     _songArtist = StageLocale.Text("SESSION BEREIT", "SESSION READY");
                     _ = _visuals.LoadQrAsync(_server, true);
@@ -212,18 +225,26 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             }
 
             var state = JsonUtility.FromJson<PlaybackStateDto>(request.downloadHandler.text);
-            if (state?.current?.song != null && _loadedSongId != state.current.song.id)
-                _visuals.BeginSongTransition(state.current.song, _songTitle, _songArtist);
+            var current = state?.current;
+            var playbackChanged = current?.song != null &&
+                (_loadedQueueEntryId != current.id ||
+                 !string.Equals(_loadedStartedAt, current.startedAt, StringComparison.Ordinal));
+            if (current?.song != null && playbackChanged)
+                _visuals.BeginSongTransition(current.song, _songTitle, _songArtist);
             await _visuals.SetNextAsync(_server, state?.queue is { Length: > 0 } ? state.queue[0] : null);
-            if (state?.current?.song == null)
+            if (state == null || current?.song == null)
             {
+                _loadedSongId = null;
+                _loadedQueueEntryId = null;
+                _loadedStartedAt = null;
+                if (_audio.HasClip) _audio.Stop();
                 _status = "Warteliste bereit – noch kein aktiver Song";
                 return;
             }
 
-            _title = $"{state.current.song.title} · {state.current.song.artist}";
-            _songTitle = state.current.song.title;
-            _songArtist = state.current.song.artist;
+            _title = $"{current.song.title} · {current.song.artist}";
+            _songTitle = current.song.title;
+            _songArtist = current.song.artist;
             if (!state.isRunning || state.isPaused)
             {
                 if (_audio.IsPlaying) _audio.Pause();
@@ -231,14 +252,22 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                 return;
             }
 
-            if (_loadedSongId == state.current.song.id)
+            if (!playbackChanged)
             {
+                if (_audio.HasEnded)
+                {
+                    _status = StageLocale.Text("Titel beendet – nächster Song wird gestartet …", "Song finished – starting next song …");
+                    _ = CompletePlaybackAndAdvanceAsync();
+                    return;
+                }
                 if (!_audio.IsPlaying) _audio.Resume();
                 _status = _audio.Status;
                 return;
             }
 
-            _loadedSongId = state.current.song.id;
+            _loadedSongId = current.song.id;
+            _loadedQueueEntryId = current.id;
+            _loadedStartedAt = current.startedAt;
             _status = StageLocale.Text("Prüfe vorbereitete Karaoke-Spuren …", "Checking prepared karaoke stems …");
             await _lyrics.LoadAsync(_server, _loadedSongId);
             await _visuals.LoadCoverAsync(_server, _loadedSongId);
@@ -267,11 +296,56 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         {
             _status = $"Audiofehler: {exception.Message}";
             _loadedSongId = null;
+            _loadedQueueEntryId = null;
+            _loadedStartedAt = null;
         }
         finally
         {
             _refreshing = false;
         }
+    }
+
+    private void HandlePlaybackEnded() => _ = CompletePlaybackAndAdvanceAsync();
+
+    private async Task CompletePlaybackAndAdvanceAsync()
+    {
+        if (_autoAdvanceRunning || string.IsNullOrWhiteSpace(_loadedQueueEntryId)) return;
+        _autoAdvanceRunning = true;
+        var completedEntryId = _loadedQueueEntryId;
+        try
+        {
+            _status = StageLocale.Text("Titel beendet – nächster Song wird gestartet …", "Song finished – starting next song …");
+            await ClaimControlAsync();
+            if (!_ownsControl)
+            {
+                _status = StageLocale.Text("Titel beendet – warte auf Bühnensteuerung …", "Song finished – waiting for stage control …");
+                return;
+            }
+
+            var payload = $"{{\"queueEntryId\":\"{completedEntryId}\"}}";
+            using var request = CreateJsonPost($"{_server}/api/playback/complete", payload, true);
+            await request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                _status = $"{StageLocale.Text("Automatischer Wechsel fehlgeschlagen", "Automatic transition failed")} ({request.responseCode})";
+                return;
+            }
+
+            // Complete is idempotent on the server. Clearing the local playback
+            // identity makes consecutive requests for the same song reload too.
+            if (_loadedQueueEntryId == completedEntryId)
+            {
+                _loadedSongId = null;
+                _loadedQueueEntryId = null;
+                _loadedStartedAt = null;
+            }
+            await RefreshQueueAsync();
+        }
+        catch (Exception exception)
+        {
+            _status = $"{StageLocale.Text("Automatischer Wechsel fehlgeschlagen", "Automatic transition failed")}: {exception.Message}";
+        }
+        finally { _autoAdvanceRunning = false; }
     }
 
     private async Task PollReactionsAsync()

@@ -18,13 +18,14 @@ public sealed class QueueEntryDto
     public string id = "";
     public SongDto song = new();
     public string requestedBy = "";
+    public string startedAt = "";
 }
 
 [Serializable]
 public sealed class PlaybackStateDto
 {
     public bool isRunning;
-    public QueueEntryDto current;
+    public QueueEntryDto? current;
     public bool isPaused;
     public string position = "00:00:00";
     public long revision;

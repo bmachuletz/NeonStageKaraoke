@@ -19,12 +19,16 @@ public sealed class StageAudioEngine : MonoBehaviour
     private double _timelineAnchor;
     private double _pausedPosition;
     private bool _clockRunning;
+    private bool _playbackStarted;
+    private bool _completionRaised;
     private double _sampleClockCorrection;
     private readonly float[] _waveform = new float[256];
 
+    public event Action? PlaybackEnded;
     public string Status { get; private set; } = "Audio bereit";
     public bool IsPlaying => _master != null && _master.isPlaying;
     public bool HasClip => _master != null && _master.clip != null;
+    public bool HasEnded => _completionRaised;
     public double DurationSeconds => HasClip ? _master.clip.length : 0;
     public float MusicVolume
     {
@@ -109,7 +113,21 @@ public sealed class StageAudioEngine : MonoBehaviour
 
     private void Update()
     {
-        if (!_clockRunning || !HasClip || !_master.isPlaying || _master.clip.frequency <= 0) return;
+        if (!_clockRunning || !HasClip) return;
+        if (!_master.isPlaying)
+        {
+            if (!_playbackStarted || _completionRaised) return;
+            var endPosition = _timelineAnchor + Math.Max(0, AudioSettings.dspTime - _dspAnchor);
+            if (endPosition < DurationSeconds - .12) return;
+            _pausedPosition = DurationSeconds;
+            _clockRunning = false;
+            _completionRaised = true;
+            PlaybackEnded?.Invoke();
+            return;
+        }
+
+        _playbackStarted = true;
+        if (_master.clip.frequency <= 0) return;
         var dspPosition = _timelineAnchor + Math.Max(0, AudioSettings.dspTime - _dspAnchor);
         var samplePosition = (double)_master.timeSamples / _master.clip.frequency;
         var target = Math.Clamp(samplePosition - dspPosition, -.35, .35);
@@ -143,6 +161,8 @@ public sealed class StageAudioEngine : MonoBehaviour
         _pausedPosition = 0;
         _dspAnchor = dspStart;
         _clockRunning = true;
+        _playbackStarted = false;
+        _completionRaised = false;
         _sampleClockCorrection = 0;
         Status = _vocals.clip == null
             ? StageLocale.Text("Wiedergabe läuft (Master)", "Playback running (master)")
@@ -174,6 +194,7 @@ public sealed class StageAudioEngine : MonoBehaviour
 
     public void Resume()
     {
+        if (!HasClip || _completionRaised) return;
         _master.UnPause();
         _vocals.UnPause();
         _timelineAnchor = _pausedPosition;
@@ -192,6 +213,7 @@ public sealed class StageAudioEngine : MonoBehaviour
         _pausedPosition = position;
         _timelineAnchor = position;
         _dspAnchor = AudioSettings.dspTime;
+        _completionRaised = false;
         _sampleClockCorrection = 0;
     }
 
@@ -200,6 +222,8 @@ public sealed class StageAudioEngine : MonoBehaviour
         _master?.Stop();
         _vocals?.Stop();
         _clockRunning = false;
+        _playbackStarted = false;
+        _completionRaised = false;
         _pausedPosition = 0;
         _timelineAnchor = 0;
         _sampleClockCorrection = 0;
