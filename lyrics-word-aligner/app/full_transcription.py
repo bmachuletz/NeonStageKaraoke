@@ -4,6 +4,7 @@ import gc
 import json
 import os
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Callable
 
@@ -12,6 +13,7 @@ from .models import LrcLine
 from .transcript_match import compare_transcripts, normalize_words
 
 ProgressCallback = Callable[[int, str], None]
+SAMPLE_RATE = 16000
 
 
 def _release_memory() -> None:
@@ -27,6 +29,79 @@ def _release_memory() -> None:
                 pass
     except ImportError:
         pass
+
+
+def audio_chunk_windows(sample_count: int, *, chunk_seconds: float = 20.0,
+                        overlap_seconds: float = 2.0,
+                        sample_rate: int = SAMPLE_RATE) -> list[tuple[int, int, float, float]]:
+    """Create bounded ASR windows with non-overlapping ownership intervals."""
+    if sample_count <= 0:
+        return []
+    if chunk_seconds <= 0:
+        raise ValueError("LRC_TRANSCRIPTION_CHUNK_SECONDS muss größer als 0 sein")
+    if overlap_seconds < 0 or overlap_seconds >= chunk_seconds:
+        raise ValueError(
+            "LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS muss zwischen 0 und der Fensterlänge liegen")
+    chunk_samples = max(1, round(chunk_seconds * sample_rate))
+    overlap_samples = round(overlap_seconds * sample_rate)
+    step = max(1, chunk_samples - overlap_samples)
+    windows: list[tuple[int, int, float, float]] = []
+    start = 0
+    while start < sample_count:
+        end = min(sample_count, start + chunk_samples)
+        keep_start = 0.0 if start == 0 else (start + overlap_samples / 2) / sample_rate
+        keep_end = (sample_count / sample_rate if end == sample_count
+                    else (end - overlap_samples / 2) / sample_rate)
+        windows.append((start, end, keep_start, keep_end))
+        if end == sample_count:
+            break
+        start += step
+    return windows
+
+
+def plan_transcription_windows(sample_count: int, *, threshold_seconds: float = 300.0,
+                               chunk_seconds: float = 20.0,
+                               overlap_seconds: float = 2.0,
+                               sample_rate: int = SAMPLE_RATE
+                               ) -> tuple[list[tuple[int, int, float, float]], bool]:
+    """Keep normal tracks whole and chunk only unusually long recordings."""
+    if threshold_seconds <= 0:
+        raise ValueError("LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS muss größer als 0 sein")
+    duration = sample_count / sample_rate
+    if sample_count > 0 and duration <= threshold_seconds:
+        return [(0, sample_count, 0.0, duration)], False
+    return (audio_chunk_windows(
+        sample_count, chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
+        sample_rate=sample_rate), True)
+
+
+def keep_owned_words(words: list[dict], *, base_seconds: float,
+                     keep_start: float, keep_end: float) -> list[dict]:
+    """Offset chunk-local words and retain each overlap word exactly once."""
+    owned: list[dict] = []
+    for source in words:
+        start = float(source["start"]) + base_seconds
+        end = float(source.get("end", source["start"])) + base_seconds
+        midpoint = (start + end) / 2
+        if midpoint < keep_start or midpoint >= keep_end:
+            continue
+        owned.append({**source, "start": round(start, 3), "end": round(end, 3)})
+    return owned
+
+
+def _detected_language(requested: str, chunks: list[dict], full_text: str,
+                       language_code: Callable[[str | None, str | None], str]) -> str:
+    if requested != "auto":
+        return language_code(requested, full_text)
+    detected: list[str] = []
+    for chunk in chunks:
+        try:
+            detected.append(language_code(chunk.get("language"), chunk.get("text")))
+        except ValueError:
+            continue
+    if detected:
+        return Counter(detected).most_common(1)[0][0]
+    return language_code(None, full_text)
 
 
 def group_words_into_lines(words: list[dict], *, gap_seconds: float = 0.9,
@@ -95,6 +170,7 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
     from .separator import separate_stems
     from .stable_transcriber import transcribe_stable
     from .transcriber import QwenTranscriber, language_code
+    import numpy as np
 
     notify = progress or (lambda _percent, _message: None)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -125,17 +201,54 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
             audio_selection = {**audio_selection, "source": "vocals-original-blend",
                                "original_mix_ratio": mix_ratio}
 
-        notify(40, "Qwen3-ASR erkennt den vollständigen Gesangstext")
+        chunk_seconds = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_SECONDS", "20"))
+        chunk_overlap = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS", "2"))
+        chunk_threshold = float(os.getenv(
+            "LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS", "300"))
+        qwen_windows, chunked_transcription = plan_transcription_windows(
+            len(recognition_audio), threshold_seconds=chunk_threshold,
+            chunk_seconds=chunk_seconds, overlap_seconds=chunk_overlap)
+        if not qwen_windows:
+            raise ValueError("Die Audiospur ist leer.")
+        notify(40, (f"Langsong: Qwen3-ASR erkennt den Gesang in "
+                    f"{len(qwen_windows)} Speicherfenstern")
+               if chunked_transcription else
+               "Qwen3-ASR erkennt den vollständigen Gesangstext")
         requested_language = language.strip().lower()
         qwen_prompt = _prompt(stem, requested_language)
+        qwen_chunks: list[dict] = []
+        chunk_token_limit = int(os.getenv(
+            "LRC_TRANSCRIPTION_MAX_NEW_TOKENS" if chunked_transcription
+            else "LRC_ASR_MAX_NEW_TOKENS", "256" if chunked_transcription else "1024"))
         with QwenTranscriber(device) as qwen:
-            qwen_result = qwen.transcribe(recognition_audio, requested_language,
-                                          prompt=qwen_prompt)
+            for index, (sample_start, sample_end, keep_start, keep_end) in enumerate(qwen_windows):
+                notify(40 + round(12 * index / max(1, len(qwen_windows))),
+                       f"Qwen3-ASR: Audioblock {index + 1}/{len(qwen_windows)}")
+                chunk_audio = np.ascontiguousarray(
+                    recognition_audio[sample_start:sample_end], dtype=np.float32)
+                result = qwen.transcribe(
+                    chunk_audio, requested_language, prompt=qwen_prompt,
+                    max_new_tokens=chunk_token_limit)
+                text = str(result.get("text", "")).strip()
+                if text:
+                    qwen_chunks.append({
+                        **result,
+                        "text": text,
+                        "sample_start": sample_start,
+                        "sample_end": sample_end,
+                        "start": round(sample_start / SAMPLE_RATE, 3),
+                        "end": round(sample_end / SAMPLE_RATE, 3),
+                        "keep_start": round(keep_start, 3),
+                        "keep_end": round(keep_end, 3),
+                    })
+                del chunk_audio
+                _release_memory()
         _release_memory()
-        qwen_text = str(qwen_result.get("text", "")).strip()
+        qwen_text = " ".join(str(chunk["text"]) for chunk in qwen_chunks).strip()
         if not qwen_text:
             raise ValueError("Qwen3-ASR konnte keinen Gesangstext erkennen.")
-        detected_language = language_code(qwen_result.get("language"), qwen_text)
+        detected_language = _detected_language(
+            requested_language, qwen_chunks, qwen_text, language_code)
         notify(54, f"Gesangssprache: {detected_language}; Stable-ts large-v3 prüft Text und Zeiten")
 
         stable_result = transcribe_stable(
@@ -152,7 +265,7 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
 
         selected_source = "stable-ts-large-v3"
         selected_words = stable_words
-        forced_error = None
+        forced_errors: list[dict] = []
         qwen_word_count = len(normalize_words(qwen_text))
         stable_word_count = len(stable_words)
         # Prefer Qwen's more complete singing transcript unless Stable-ts found
@@ -164,15 +277,40 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
             float(comparison.get("similarity", 0.0)) < 0.65
         )
         if prefer_qwen:
-            notify(76, "Qwen Forced Aligner setzt Wortzeiten für den erkannten Volltext")
+            notify(76, "Qwen Forced Aligner setzt Wortzeiten blockweise")
             aligner = QwenWordAligner(device=device)
             try:
-                selected_words = aligner.align_text(
-                    recognition_audio, qwen_text, detected_language)
-                selected_source = "qwen3-asr+qwen3-forced-aligner"
-            except (RuntimeError, ValueError) as error:
-                forced_error = str(error)
-                selected_words = stable_words
+                aligned_words: list[dict] = []
+                for index, chunk in enumerate(qwen_chunks):
+                    notify(76 + round(12 * index / max(1, len(qwen_chunks))),
+                           f"Forced Alignment: Audioblock {index + 1}/{len(qwen_chunks)}")
+                    sample_start = int(chunk["sample_start"])
+                    sample_end = int(chunk["sample_end"])
+                    base_seconds = sample_start / SAMPLE_RATE
+                    chunk_audio = np.ascontiguousarray(
+                        recognition_audio[sample_start:sample_end], dtype=np.float32)
+                    try:
+                        local_words = aligner.align_text(
+                            chunk_audio, str(chunk["text"]), detected_language)
+                        aligned_words.extend(keep_owned_words(
+                            local_words, base_seconds=base_seconds,
+                            keep_start=float(chunk["keep_start"]),
+                            keep_end=float(chunk["keep_end"])))
+                    except (RuntimeError, ValueError) as error:
+                        forced_errors.append({"chunk": index + 1, "error": str(error)})
+                        aligned_words.extend([
+                            word for word in stable_words
+                            if float(chunk["keep_start"]) <=
+                            (float(word["start"]) + float(word["end"])) / 2 <
+                            float(chunk["keep_end"])
+                        ])
+                    finally:
+                        del chunk_audio
+                        _release_memory()
+                selected_words = aligned_words
+                selected_source = ("qwen3-asr+qwen3-forced-aligner-chunked"
+                                   if not forced_errors else
+                                   "qwen3-asr+qwen3-forced-aligner+stable-fallback")
             finally:
                 aligner.close()
                 _release_memory()
@@ -195,18 +333,28 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
         lrc_out.write_text(render_enhanced_lrc([], lines), encoding="utf-8")
         text_out.write_text("\n".join(line.text for line in lines) + "\n", encoding="utf-8")
         report = {
-            "version": 1,
+            "version": 2,
             "language": detected_language,
             "source": selected_source,
             "audio_selection": audio_selection,
-            "qwen": {**qwen_result, "prompt": qwen_prompt,
-                     "word_count": qwen_word_count},
+            "qwen": {
+                "model": qwen_chunks[0].get("model"),
+                "prompt": qwen_prompt,
+                "text": qwen_text,
+                "word_count": qwen_word_count,
+                "chunks": qwen_chunks,
+                "chunk_seconds": chunk_seconds,
+                "chunk_overlap_seconds": chunk_overlap,
+                "chunk_threshold_seconds": chunk_threshold,
+                "chunked": chunked_transcription,
+                "max_new_tokens_per_chunk": chunk_token_limit,
+            },
             "stable_ts": {**stable_result, "word_count": stable_word_count},
             "comparison": comparison,
-            "forced_alignment_error": forced_error,
+            "forced_alignment_errors": forced_errors,
             "line_count": len(lines),
             "word_count": sum(len(line.words) for line in lines),
-            "resource_policy": "isolated-process-sequential-models",
+            "resource_policy": "isolated-process-sequential-models-bounded-audio-chunks",
             "output_lrc": lrc_out.name,
             "output_text": text_out.name,
         }

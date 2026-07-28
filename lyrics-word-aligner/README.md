@@ -170,6 +170,13 @@ Stable-TS, and the forced aligner explicitly release allocator caches between
 stages; child-process exit then releases all remaining RAM and VRAM before the
 next queued job acquires the single processing slot.
 
+Songs up to `LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS` (300 seconds by
+default) retain the complete-song Qwen path. Only longer recordings are
+transcribed and forced-aligned in bounded windows. Their size and overlap are
+controlled by `LRC_TRANSCRIPTION_CHUNK_SECONDS` (20) and
+`LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS` (2); non-overlapping ownership
+intervals discard duplicate words from adjacent windows.
+
 The server/editor wrapper downloads this initial LRC and immediately submits it
 to the normal alignment pipeline. Run the same workflow from the command line:
 

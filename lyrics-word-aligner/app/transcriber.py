@@ -50,7 +50,8 @@ class QwenTranscriber:
         self.model = Qwen3ASRForConditionalGeneration.from_pretrained(
             self.model_id, dtype=self.dtype).to(device).eval()
 
-    def transcribe(self, audio: np.ndarray, language: str, prompt: str | None = None) -> dict:
+    def transcribe(self, audio: np.ndarray, language: str, prompt: str | None = None,
+                   *, max_new_tokens: int | None = None) -> dict:
         language_hint = None if language.strip().lower() == "auto" else LANGUAGE_NAMES.get(language, language)
         inputs = self.processor.apply_transcription_request(
             audio=np.ascontiguousarray(audio, dtype=np.float32),
@@ -58,7 +59,10 @@ class QwenTranscriber:
             prompt=prompt or None,
             sampling_rate=16000,
         ).to(self.model.device, self.model.dtype)
-        max_tokens = int(os.getenv("LRC_ASR_MAX_NEW_TOKENS", "1024"))
+        max_tokens = (max_new_tokens if max_new_tokens is not None
+                      else int(os.getenv("LRC_ASR_MAX_NEW_TOKENS", "1024")))
+        if max_tokens <= 0:
+            raise ValueError("max_new_tokens muss größer als 0 sein")
         with torch.inference_mode():
             output_ids = self.model.generate(**inputs, max_new_tokens=max_tokens, do_sample=False)
         generated = output_ids[:, inputs["input_ids"].shape[1]:]

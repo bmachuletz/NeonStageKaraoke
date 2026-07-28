@@ -37,6 +37,12 @@ services:
       # A quiet portion of the original mix restores backing/chorus vocals
       # which may be absent from a karaoke lead-vocal stem.
       LRC_TRANSCRIPTION_MIX_RATIO: ${LRC_TRANSCRIPTION_MIX_RATIO:-0.15}
+      # Normal tracks keep the complete-song path. Only unusually long tracks
+      # use bounded windows; ownership intervals deduplicate the overlaps.
+      LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS: ${LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS:-300}
+      LRC_TRANSCRIPTION_CHUNK_SECONDS: ${LRC_TRANSCRIPTION_CHUNK_SECONDS:-20}
+      LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS: ${LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS:-2}
+      LRC_TRANSCRIPTION_MAX_NEW_TOKENS: ${LRC_TRANSCRIPTION_MAX_NEW_TOKENS:-256}
       LRC_TRANSCRIPTION_LINE_GAP: ${LRC_TRANSCRIPTION_LINE_GAP:-0.9}
       LRC_TRANSCRIPTION_LINE_WORDS: ${LRC_TRANSCRIPTION_LINE_WORDS:-11}
       LRC_TRANSCRIPTION_LINE_CHARS: ${LRC_TRANSCRIPTION_LINE_CHARS:-64}
