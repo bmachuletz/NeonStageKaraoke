@@ -233,6 +233,10 @@ Align a library or one matching song:
 
 The editor exposes both operations under **Alignment**. Automatic results return to review and are never silently released to the stage.
 
+For a song with missing or unusable lyrics, select it and choose **Management → Recognize complete lyrics from audio…**. This queues an isolated GPU workflow that separates vocals, transcribes the complete sung text with Qwen3-ASR, checks text and acoustic timing with Stable-TS `large-v3`, creates monotonic word windows with Qwen Forced Aligner, and finally passes the result through the regular word/syllable alignment pipeline. Models load sequentially, and the worker subprocess exits before the next queued job starts so its CPU and CUDA allocations are returned to the operating system. Existing editor work is saved as a separate version first; generated output always returns as **In review**.
+
+Use **Alignment → Apply global lyrics shift…** for a uniform timing correction. Positive milliseconds move every line, word, and syllable later; negative values move all of them earlier. Neon Stage changes the actual segment coordinates rather than writing an LRC offset tag. The operation is one atomic undo step and is rejected if any segment would move before the audio start or beyond its end.
+
 Pipeline output can include enhanced LRC, `*.alignment.json`, vocal and instrumental FLAC stems, stem metadata, transcript verification, and candidate diagnostics. See [`lyrics-word-aligner/README.md`](lyrics-word-aligner/README.md).
 
 ## Command-line workflows
@@ -246,6 +250,7 @@ Pipeline output can include enhanced LRC, `*.alignment.json`, vocal and instrume
 | Build Android stage | `./scripts/linux/build-unity-stage-android.sh` |
 | Match library lyrics | `./scripts/linux/match-library-lrc.sh` |
 | Align library | `./scripts/linux/align-library.sh --force` |
+| Recognize complete lyrics | `./scripts/linux/recognize-song-lyrics.sh --audio '/library/Artist - Title.mp3'` |
 | Process requests | `./scripts/linux/process-wishlist.sh` |
 | Import a local MP3 folder | `./scripts/linux/process-mp3-folder.sh /path/to/mp3s` |
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |

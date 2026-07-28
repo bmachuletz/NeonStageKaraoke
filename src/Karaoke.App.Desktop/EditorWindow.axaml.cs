@@ -146,6 +146,33 @@ public partial class EditorWindow : Window
             await viewModel.StartAllSongsRealignmentAsync();
     }
 
+    private async void GlobalLyricsOffsetClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel { Document: not null } viewModel)
+        {
+            (DataContext as EditorViewModel)?.ReportTimelineStatus(EditorLocale.German
+                ? "Bitte zuerst einen Song mit Lyrics laden."
+                : "Load a song with lyrics first.");
+            return;
+        }
+        var offset = await new GlobalLyricsOffsetWindow().ShowDialog<int?>(this);
+        if (offset is { } milliseconds) viewModel.ShiftAllLyrics(milliseconds);
+    }
+
+    private async void RecognizeLyricsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel)
+        {
+            (DataContext as EditorViewModel)?.ReportTimelineStatus(EditorLocale.German
+                ? "Bitte zuerst einen Song auswählen."
+                : "Select a song first.");
+            return;
+        }
+        if (await new ConfirmLyricsRecognitionWindow(song.Title, song.Artist,
+                viewModel.Document is not null).ShowDialog<bool>(this))
+            await viewModel.StartCompleteLyricsRecognitionAsync();
+    }
+
     private async void ApproveSongClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is EditorViewModel viewModel) await viewModel.ApproveSelectedSongAsync();

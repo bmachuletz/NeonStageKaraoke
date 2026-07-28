@@ -36,6 +36,7 @@ builder.Services.AddSingleton<WishlistProcessingService>();
 builder.Services.AddSingleton<SongImportService>();
 builder.Services.AddSingleton<FolderImportService>();
 builder.Services.AddSingleton<SongRealignmentService>();
+builder.Services.AddSingleton<SongLyricsRecognitionService>();
 builder.Services.AddSingleton<SongPackageService>();
 builder.Services.AddSingleton<StageTimingDiagnosticsService>();
 builder.Services.AddSingleton<LyricsVersionRepository>();
@@ -108,6 +109,16 @@ app.MapGet("/api/admin/wishlist-processing", (WishlistProcessingService processi
 app.MapGet("/api/admin/song-import", (SongImportService imports) => Results.Ok(imports.GetStatus()));
 app.MapGet("/api/admin/folder-import", (FolderImportService imports) => Results.Ok(imports.GetStatus()));
 app.MapGet("/api/admin/song-realignment", (SongRealignmentService realignment) => Results.Ok(realignment.GetStatus()));
+app.MapGet("/api/admin/song-lyrics-recognition", (SongLyricsRecognitionService recognition) =>
+    Results.Ok(recognition.GetStatus()));
+app.MapPost("/api/admin/songs/{id:guid}/recognize-lyrics", async (
+    Guid id, SongLyricsRecognitionService recognition, CancellationToken ct) =>
+    await recognition.TryStartAsync(id, ct) switch
+    {
+        null => Results.NotFound(),
+        false => Results.Conflict("Es läuft bereits eine vollständige Lyrics-Erkennung."),
+        true => Results.Accepted(value: recognition.GetStatus())
+    });
 app.MapPost("/api/admin/songs/{id:guid}/realign", async (Guid id, SongRealignmentService realignment, CancellationToken ct) =>
     await realignment.TryStartAsync(id, ct) switch
     {

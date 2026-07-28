@@ -34,6 +34,12 @@ services:
       PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       LRC_ASR_PROMPT_MAX_CHARS: ${LRC_ASR_PROMPT_MAX_CHARS:-1600}
       LRC_STABLE_TS_PROMPT_MAX_CHARS: ${LRC_STABLE_TS_PROMPT_MAX_CHARS:-700}
+      # A quiet portion of the original mix restores backing/chorus vocals
+      # which may be absent from a karaoke lead-vocal stem.
+      LRC_TRANSCRIPTION_MIX_RATIO: ${LRC_TRANSCRIPTION_MIX_RATIO:-0.15}
+      LRC_TRANSCRIPTION_LINE_GAP: ${LRC_TRANSCRIPTION_LINE_GAP:-0.9}
+      LRC_TRANSCRIPTION_LINE_WORDS: ${LRC_TRANSCRIPTION_LINE_WORDS:-11}
+      LRC_TRANSCRIPTION_LINE_CHARS: ${LRC_TRANSCRIPTION_LINE_CHARS:-64}
       LRC_ASR_EXTRA_CONTEXT: ${LRC_ASR_EXTRA_CONTEXT:-}
       # Additive candidate selection always preserves the historical baseline
       # as fallback and requires a measurable improvement from alternatives.

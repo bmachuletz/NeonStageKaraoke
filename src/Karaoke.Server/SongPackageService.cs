@@ -24,7 +24,8 @@ internal sealed class SongPackageService(ServerSettingsService settings, Library
     private static readonly HashSet<string> AllowedSidecarSuffixes = new(StringComparer.OrdinalIgnoreCase)
     {
         ".lrc", ".pre-align.lrc", ".alignment.json", ".instrumental.ogg", ".instrumental.flac",
-        ".vocals.ogg", ".vocals.flac", ".visuals.json", ".cover.jpg", ".stems.json"
+        ".vocals.ogg", ".vocals.flac", ".visuals.json", ".cover.jpg", ".stems.json",
+        ".transcription.json"
     };
     private static readonly HashSet<string> AllowedMasterExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -261,7 +262,8 @@ internal sealed class SongPackageService(ServerSettingsService settings, Library
     {
         ".lrc" => "lyrics", ".instrumental.ogg" or ".instrumental.flac" => "instrumental",
         ".vocals.ogg" or ".vocals.flac" => "vocals", ".cover.jpg" => "cover",
-        ".alignment.json" => "alignment", ".visuals.json" => "visualization", _ => "sidecar"
+        ".alignment.json" => "alignment", ".visuals.json" => "visualization",
+        ".transcription.json" => "transcription", _ => "sidecar"
     };
 
     private static string ArchiveExtension(string suffix) => suffix.Length <= 32 &&

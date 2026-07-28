@@ -24,6 +24,7 @@
               <MenuItem Header="Wünsche und Downloads" Click="OpenWishlistConsoleClick" />
               <MenuItem Header="MP3-Ordner importieren …" Click="OpenFolderImportConsoleClick" />
               <MenuItem Header="UltraStar-Lyrics importieren …" Click="ImportUltraStarLyricsClick" />
+              <MenuItem Header="Lyrics vollständig aus Audio erkennen …" Click="RecognizeLyricsClick" />
               <MenuItem Header="Download-Provider konfigurieren …" Click="OpenDownloadProviderSettingsClick" />
               <MenuItem Header="Songpakete">
                 <MenuItem Header="Ausgewählten Song exportieren …" Click="ExportCurrentSongPackageClick" />
@@ -42,6 +43,8 @@
             <Button.Flyout><MenuFlyout>
               <MenuItem Header="Ausgewählten Song neu alignen" Click="RealignSongClick" />
               <MenuItem Header="Gesamte Bibliothek neu alignen …" Click="RealignAllSongsClick" />
+              <Separator />
+              <MenuItem Header="Globalen Lyrics-Versatz anwenden …" Click="GlobalLyricsOffsetClick" />
             </MenuFlyout></Button.Flyout>
           </Button>
           <Button Content="Speichern" Click="SaveDraftClick" ToolTip.Tip="Aktuellen Arbeitsstand lokal und auf dem Server sichern" />

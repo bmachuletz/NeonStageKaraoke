@@ -60,6 +60,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private string _wishProgressLabel = "Kein Auftrag aktiv";
     private Guid? _handledImportJob;
     private Guid? _handledRealignmentJob;
+    private Guid? _handledLyricsRecognitionJob;
     private readonly HashSet<Guid> _realignedSongsPendingReview = [];
     private bool _wishWorkerRunning;
     private string _adminWishQuery = string.Empty;
@@ -826,6 +827,48 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    public async Task StartCompleteLyricsRecognitionAsync(CancellationToken cancellationToken = default)
+    {
+        if (SelectedSong is not { } song)
+        {
+            Status = Localized("Bitte zuerst einen Song auswählen.", "Select a song first.");
+            return;
+        }
+        // Preserve the current manual state as an immutable version before the
+        // generated transcript becomes a separate review candidate.
+        if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
+            return;
+        ShowWishlistConsole();
+        _audio.Stop();
+        AppendConsole(Localized($"> Vollständige Lyrics aus Audio erkennen: {song.Title} · {song.Artist}",
+            $"> Recognize complete lyrics from audio: {song.Title} · {song.Artist}"));
+        try
+        {
+            using var response = await _http.PostAsync(
+                $"/api/admin/songs/{song.Id}/recognize-lyrics", null, cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            {
+                Status = Localized("Es läuft bereits eine vollständige Lyrics-Erkennung.",
+                    "A complete lyrics recognition job is already running.");
+                AppendConsole(Status);
+                return;
+            }
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+            _handledLyricsRecognitionJob = null;
+            Status = Localized(
+                $"Volltext-Erkennung für {song.Title} wurde in die GPU-Queue gestellt …",
+                $"Complete transcription for {song.Title} was queued for the GPU …");
+            await RefreshLyricsRecognitionStatusAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            Status = Localized("Vollständige Lyrics-Erkennung konnte nicht gestartet werden: ",
+                "Complete lyrics recognition could not be started: ") + exception.Message;
+            AppendConsole(Status);
+        }
+    }
+
     private async Task RefreshJobStatusAsync(CancellationToken cancellationToken = default)
     {
         try
@@ -844,7 +887,42 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         catch { /* Statuspolling darf den Editor niemals blockieren. */ }
         await RefreshImportStatusAsync(cancellationToken);
         await RefreshRealignmentStatusAsync(cancellationToken);
+        await RefreshLyricsRecognitionStatusAsync(cancellationToken);
         await RefreshFolderImportStatusAsync(cancellationToken);
+    }
+
+    private async Task RefreshLyricsRecognitionStatusAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var status = await _http.GetFromJsonAsync<EditorLyricsRecognitionStatus>(
+                "/api/admin/song-lyrics-recognition", cancellationToken);
+            if (status?.JobId is null) return;
+            if (status.IsRunning)
+            {
+                JobState = $"FULL LYRICS · {status.Percent}% · {status.Message}";
+                Status = status.Message;
+            }
+            foreach (var line in status.RecentOutput)
+                if (_seenConsoleOutput.Add("recognition:" + status.JobId + ":" + line)) AppendConsole(line);
+            if (status.IsRunning || _handledLyricsRecognitionJob == status.JobId) return;
+            _handledLyricsRecognitionJob = status.JobId;
+            if (status.ExitCode != 0)
+            {
+                Status = Localized(
+                    "Vollständige Lyrics-Erkennung fehlgeschlagen. Details stehen in der Konsole.",
+                    "Complete lyrics recognition failed. See the console for details.");
+                return;
+            }
+            await ReloadSongsAsync(cancellationToken);
+            if (status.SongId is { } songId && SelectedSong?.Id == songId)
+                await LoadRealignmentForReviewAsync(songId, cancellationToken);
+            else
+                Status = Localized(
+                    "Vollständig erkannte Lyrics stehen als neuer Review-Stand bereit.",
+                    "The completely recognized lyrics are available as a new review version.");
+        }
+        catch { /* Hintergrundstatus darf die Editorbedienung nicht blockieren. */ }
     }
 
     private async Task RefreshFolderImportStatusAsync(CancellationToken cancellationToken = default)
@@ -1613,6 +1691,52 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         RefreshEditor();
     }
 
+    public void ShiftAllLyrics(int milliseconds)
+    {
+        if (Document is null || SelectedSong is null)
+        {
+            Status = Localized("Bitte zuerst einen Song mit Lyrics laden.",
+                "Load a song with lyrics first.");
+            return;
+        }
+        if (milliseconds == 0)
+        {
+            Status = Localized("Der globale Versatz beträgt 0 ms; es wurde nichts verändert.",
+                "The global shift is 0 ms; nothing was changed.");
+            return;
+        }
+
+        var delta = TimeSpan.FromMilliseconds(milliseconds);
+        try
+        {
+            History.Execute(new EditSegmentForestCommand(Document.Lines,
+                Localized("Alle Lyrics zeitlich verschieben", "Shift all lyrics"),
+                () => TimelineEditing.ShiftDocument(Document, delta,
+                    TimeSpan.FromSeconds(SelectedSong.DurationSeconds))));
+        }
+        catch (InvalidOperationException exception)
+        {
+            Status = Localized(exception.Message, exception.Message switch
+            {
+                "Das Lyrics-Dokument enthält keine Zeilen." => "The lyrics document contains no lines.",
+                "Der globale Versatz würde Lyrics vor den Songanfang verschieben." =>
+                    "The global shift would move lyrics before the start of the song.",
+                "Der globale Versatz würde Lyrics hinter das Songende verschieben." =>
+                    "The global shift would move lyrics beyond the end of the song.",
+                _ => exception.Message
+            });
+            return;
+        }
+
+        // The audio/playhead remains on the same physical sample. Only the
+        // lyrics move relative to it, which makes the correction observable
+        // immediately in the live Stage preview.
+        RefreshEditor();
+        Status = Localized(
+            $"Alle Lyrics wurden um {milliseconds:+#;-#;0} ms verschoben. Rückgängig ist verfügbar.",
+            $"All lyrics were shifted by {milliseconds:+#;-#;0} ms. Undo is available.");
+    }
+
     public void ResizeSelected(bool startEdge, int milliseconds)
     {
         if (SelectedSegment is not { Type: LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable } segment) return;
@@ -2221,3 +2345,6 @@ public sealed record EditorImportStatus(bool IsRunning, Guid? JobId, string? Tit
 public sealed record EditorRealignmentStatus(bool IsRunning, Guid? JobId, Guid? SongId, string? SongTitle,
     int Percent, string Message, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt, int? ExitCode,
     IReadOnlyList<string> RecentOutput);
+public sealed record EditorLyricsRecognitionStatus(bool IsRunning, Guid? JobId, Guid? SongId,
+    string? SongTitle, int Percent, string Message, DateTimeOffset? StartedAt,
+    DateTimeOffset? FinishedAt, int? ExitCode, IReadOnlyList<string> RecentOutput);

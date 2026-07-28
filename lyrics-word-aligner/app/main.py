@@ -73,6 +73,40 @@ def _worker_command(job_id: str, audio_path: Path, lrc_path: Path, job_dir: Path
     return command
 
 
+def _transcription_worker_command(job_id: str, audio_path: Path, job_dir: Path,
+                                  language: str, separate: bool, device: str) -> list[str]:
+    command = [
+        sys.executable, "-m", "app.transcription_worker",
+        "--job-id", job_id, "--audio", str(audio_path), "--output", str(job_dir),
+        "--language", language, "--device", device,
+    ]
+    if separate:
+        command.append("--separate")
+    return command
+
+
+def _process_transcription_job(job_id: str, audio_path: Path, language: str,
+                               separate: bool, device: str) -> None:
+    job_dir = OUTPUT_ROOT / job_id
+    try:
+        _write_status(job_dir, state="queued", percent=1,
+                      message="Volltext-Job wartet auf den freien GPU-Slot")
+        with _PROCESS_LOCK:
+            _write_status(job_dir, state="processing", percent=2,
+                          message="Isolierter Volltext-Worker wird gestartet")
+            completed = subprocess.run(
+                _transcription_worker_command(
+                    job_id, audio_path, job_dir, language, separate, device),
+                check=False,
+            )
+            status = json.loads(_status_path(job_dir).read_text(encoding="utf-8"))
+            if completed.returncode != 0 and status.get("state") != "failed":
+                _write_status(job_dir, state="failed", percent=100,
+                              message=f"Transkriptions-Worker endete mit Code {completed.returncode}")
+    except Exception as exc:
+        _write_status(job_dir, state="failed", percent=100, message=str(exc), error=str(exc))
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     return (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
@@ -117,6 +151,35 @@ def create_job(
     }
     _write_status(job_dir, **status)
     background_tasks.add_task(_process_job, job_id, audio_path, lrc_path, language, separate, alignment_device)
+    return status
+
+
+@app.post("/api/transcription-jobs", status_code=202)
+def create_transcription_job(
+    background_tasks: BackgroundTasks,
+    audio: UploadFile = File(...),
+    language: str = Form("auto"),
+    separate: bool = Form(True),
+    alignment_device: str = Form("cuda"),
+):
+    if alignment_device not in {"cuda", "auto"}:
+        raise HTTPException(400, "Die Volltext-Erkennung muss auf cuda oder auto laufen.")
+    if language.strip().lower() not in {"auto", "de", "en", "fr", "es", "it", "pt", "ru", "ja", "ko", "zh", "yue"}:
+        raise HTTPException(400, "Die gewählte Sprache wird nicht unterstützt.")
+    job_id = next(tempfile._get_candidate_names())
+    job_dir = OUTPUT_ROOT / job_id
+    job_dir.mkdir(parents=True)
+    audio_path = job_dir / Path(audio.filename or "song.mp3").name
+    with audio_path.open("wb") as target:
+        shutil.copyfileobj(audio.file, target)
+    status = {
+        "job_id": job_id, "state": "queued", "percent": 0,
+        "message": "Audio hochgeladen; Volltext-Job wartet auf Verarbeitung",
+        "audio_name": audio_path.name, "job_type": "full-transcription",
+    }
+    _write_status(job_dir, **status)
+    background_tasks.add_task(
+        _process_transcription_job, job_id, audio_path, language, separate, alignment_device)
     return status
 
 

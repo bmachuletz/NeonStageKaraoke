@@ -68,6 +68,8 @@ publish/
 *.elrc
 *.lyrics.json
 *.alignment.json
+*.transcription.json
+*.transcribed.txt
 *.stems.json
 *.pre-align.lrc
 *.png

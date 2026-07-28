@@ -136,6 +136,47 @@ Output is written below `data/output/<job-id>/` and can include:
 Jobs run sequentially so several large models cannot exhaust a consumer GPU at
 the same time.
 
+## Recognize complete lyrics without an input transcript
+
+The full-transcription endpoint is intended for review projects whose audio is
+available but whose lyrics are missing or unusable:
+
+```bash
+curl -X POST http://127.0.0.1:8081/api/transcription-jobs \
+  -F 'audio=@Demo.mp3' \
+  -F 'language=auto' \
+  -F 'separate=true' \
+  -F 'alignment_device=cuda'
+```
+
+Poll `/api/jobs/JOB_ID` just like a regular alignment job. Output includes
+`*.transcribed.lrc`, a plain transcript, and `*.transcription.json`. The
+transcription is deliberately a candidate for manual review, not authoritative
+published lyrics.
+
+The worker runs these stages sequentially:
+
+1. karaoke vocal separation;
+2. Qwen3-ASR complete-text recognition;
+3. independent Stable-TS `large-v3` transcription in overlapping 30-second
+   windows;
+4. Qwen3 Forced Aligner word timing when the Qwen transcript is selected;
+5. monotonic, non-overlapping karaoke-line grouping.
+
+A small configurable portion of the original mix is blended into the analysis
+stem so backing and chorus vocals removed by the karaoke separator are still
+available to ASR. Each job runs in a child process. Separator, Qwen ASR,
+Stable-TS, and the forced aligner explicitly release allocator caches between
+stages; child-process exit then releases all remaining RAM and VRAM before the
+next queued job acquires the single processing slot.
+
+The server/editor wrapper downloads this initial LRC and immediately submits it
+to the normal alignment pipeline. Run the same workflow from the command line:
+
+```bash
+./scripts/linux/recognize-song-lyrics.sh --audio '/library/Artist - Title.mp3'
+```
+
 ## Test without source separation
 
 To verify forced alignment before downloading a large separation model:

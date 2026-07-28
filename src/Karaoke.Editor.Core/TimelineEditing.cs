@@ -44,6 +44,32 @@ public static class TimelineEditing
         }
     }
 
+    public static void ShiftDocument(LyricsEditorDocument document, TimeSpan delta,
+        TimeSpan? audioDuration = null)
+    {
+        if (document.Lines.Count == 0)
+            throw new InvalidOperationException("Das Lyrics-Dokument enthält keine Zeilen.");
+        if (delta == TimeSpan.Zero) return;
+        var segments = document.Segments.ToArray();
+        var earliest = segments.Min(segment => segment.Start) + delta;
+        var latest = segments.Max(segment => segment.End) + delta;
+        if (earliest < TimeSpan.Zero)
+            throw new InvalidOperationException("Der globale Versatz würde Lyrics vor den Songanfang verschieben.");
+        if (audioDuration is { } duration && duration > TimeSpan.Zero && latest > duration)
+            throw new InvalidOperationException("Der globale Versatz würde Lyrics hinter das Songende verschieben.");
+
+        foreach (var segment in segments)
+        {
+            segment.Start += delta;
+            segment.End += delta;
+            segment.IsManuallyAdjusted = true;
+            segment.Origin = SegmentOrigin.ManuallyAdjusted;
+            // A deliberate uniform correction does not invalidate individual
+            // review decisions. The original timing remains available in the
+            // immutable OriginalStart/OriginalEnd provenance fields.
+        }
+    }
+
     public static void MoveLineWithinNeighbors(LyricSegment line, TimeSpan delta,
         TimeSpan previousEnd, TimeSpan? nextStart)
     {

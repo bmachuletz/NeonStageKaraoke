@@ -69,6 +69,34 @@ Assert(forestHistory.Undo() && scalableWord.Start == TimeSpan.FromSeconds(10) &&
 Assert(forestHistory.Redo() && scalableWord.Start == TimeSpan.FromSeconds(10.1) && secondWord.Start == TimeSpan.FromSeconds(12.1),
     "Vorwärts wiederholt eine vollständige Mehrfachverschiebung.");
 
+var offsetLine = Segment("Global", LyricSegmentType.Line, 5, 8);
+var offsetWord = Segment("Global", LyricSegmentType.Word, 5.2, 7.8, offsetLine.Id);
+var offsetSyllable = Segment("Global", LyricSegmentType.Syllable, 5.2, 7.8, offsetWord.Id);
+offsetWord.Children.Add(offsetSyllable);
+offsetLine.Children.Add(offsetWord);
+var offsetDocument = new LyricsEditorDocument { SongId = Guid.NewGuid(), Lines = { offsetLine } };
+var offsetHistory = new CommandHistory();
+offsetHistory.Execute(new EditSegmentForestCommand(offsetDocument.Lines, "Global verschieben",
+    () => TimelineEditing.ShiftDocument(offsetDocument, TimeSpan.FromMilliseconds(-200),
+        TimeSpan.FromSeconds(20))));
+Assert(offsetLine.Start == TimeSpan.FromSeconds(4.8) && offsetWord.Start == TimeSpan.FromSeconds(5) &&
+       offsetSyllable.End == TimeSpan.FromSeconds(7.6),
+    "Ein globaler Versatz verschiebt Zeilen, Wörter und Silben um exakt denselben Betrag.");
+Assert(offsetHistory.Undo() && offsetLine.Start == TimeSpan.FromSeconds(5) &&
+       offsetSyllable.End == TimeSpan.FromSeconds(7.8),
+    "Der globale Lyrics-Versatz ist ein atomarer Undo-Schritt.");
+Assert(offsetHistory.Redo() && offsetWord.Start == TimeSpan.FromSeconds(5),
+    "Der globale Lyrics-Versatz kann vollständig wiederholt werden.");
+try
+{
+    TimelineEditing.ShiftDocument(offsetDocument, TimeSpan.FromSeconds(-10));
+    throw new InvalidOperationException("Test fehlgeschlagen: Negative Timings hätten abgewiesen werden müssen.");
+}
+catch (InvalidOperationException)
+{
+    Console.WriteLine("OK: Ein globaler Versatz darf keine Lyrics vor den Songanfang schieben.");
+}
+
 var syncDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
 var syncLine = Segment("Wir singen heute", LyricSegmentType.Line, 20, 26);
 var syncFirstWord = Segment("Wir", LyricSegmentType.Word, 20, 21, syncLine.Id);
