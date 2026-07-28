@@ -1,7 +1,9 @@
 import unittest
 
-from app.full_transcription import (audio_chunk_windows, group_words_into_lines,
-                                    keep_owned_words, plan_transcription_windows)
+from app.full_transcription import (_detected_language, audio_chunk_windows,
+                                    fallback_transcription_windows,
+                                    group_words_into_lines, keep_owned_words,
+                                    plan_transcription_windows)
 
 
 class FullTranscriptionTests(unittest.TestCase):
@@ -17,6 +19,31 @@ class FullTranscriptionTests(unittest.TestCase):
         self.assertTrue(chunked)
         self.assertGreater(len(windows), 1)
         self.assertTrue(all((end - start) <= 20 * 16000 for start, end, _, _ in windows))
+
+    def test_empty_whole_song_result_can_fall_back_to_bounded_windows(self):
+        windows = fallback_transcription_windows(
+            176 * 16000, initial_was_chunked=False,
+            chunk_seconds=20, overlap_seconds=2)
+        self.assertGreater(len(windows), 1)
+        self.assertTrue(all((end - start) <= 20 * 16000 for start, end, _, _ in windows))
+
+    def test_already_chunked_transcription_is_not_retried_forever(self):
+        self.assertEqual([], fallback_transcription_windows(
+            430 * 16000, initial_was_chunked=True,
+            chunk_seconds=20, overlap_seconds=2))
+
+    def test_auto_language_prefers_confident_text_over_wrong_model_label(self):
+        def resolve(reported, text):
+            if reported is None and "nicht" in (text or "").lower():
+                return "de"
+            if reported == "English":
+                return "en"
+            raise ValueError("unknown")
+
+        detected = _detected_language(
+            "auto", [{"language": "English", "text": "Ich kann das nicht glauben"}],
+            "Ich kann das nicht glauben", resolve)
+        self.assertEqual("de", detected)
 
     def test_long_audio_is_split_into_bounded_overlapping_windows(self):
         windows = audio_chunk_windows(65 * 16000, chunk_seconds=20, overlap_seconds=2)

@@ -75,6 +75,19 @@ def plan_transcription_windows(sample_count: int, *, threshold_seconds: float = 
         sample_rate=sample_rate), True)
 
 
+def fallback_transcription_windows(sample_count: int, *, initial_was_chunked: bool,
+                                   chunk_seconds: float = 20.0,
+                                   overlap_seconds: float = 2.0,
+                                   sample_rate: int = SAMPLE_RATE
+                                   ) -> list[tuple[int, int, float, float]]:
+    """Retry an empty whole-song result in bounded windows, but never retry chunks twice."""
+    if initial_was_chunked:
+        return []
+    return audio_chunk_windows(
+        sample_count, chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
+        sample_rate=sample_rate)
+
+
 def keep_owned_words(words: list[dict], *, base_seconds: float,
                      keep_start: float, keep_end: float) -> list[dict]:
     """Offset chunk-local words and retain each overlap word exactly once."""
@@ -96,9 +109,15 @@ def _detected_language(requested: str, chunks: list[dict], full_text: str,
     detected: list[str] = []
     for chunk in chunks:
         try:
-            detected.append(language_code(chunk.get("language"), chunk.get("text")))
+            # Qwen occasionally labels clearly German rap as English. Prefer a
+            # confident text-based result and retain the model label as fallback
+            # for languages our lightweight text heuristic cannot distinguish.
+            detected.append(language_code(None, chunk.get("text")))
         except ValueError:
-            continue
+            try:
+                detected.append(language_code(chunk.get("language"), chunk.get("text")))
+            except ValueError:
+                continue
     if detected:
         return Counter(detected).most_common(1)[0][0]
     return language_code(None, full_text)
@@ -169,7 +188,7 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
     from .candidate_selection import blend_audio
     from .separator import separate_stems
     from .stable_transcriber import transcribe_stable
-    from .transcriber import QwenTranscriber, language_code
+    from .transcriber import QwenTranscriber, language_code, merge_transcript_chunks
     import numpy as np
 
     notify = progress or (lambda _percent, _message: None)
@@ -216,22 +235,23 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
                "Qwen3-ASR erkennt den vollständigen Gesangstext")
         requested_language = language.strip().lower()
         qwen_prompt = _prompt(stem, requested_language)
-        qwen_chunks: list[dict] = []
         chunk_token_limit = int(os.getenv(
             "LRC_TRANSCRIPTION_MAX_NEW_TOKENS" if chunked_transcription
             else "LRC_ASR_MAX_NEW_TOKENS", "256" if chunked_transcription else "1024"))
-        with QwenTranscriber(device) as qwen:
-            for index, (sample_start, sample_end, keep_start, keep_end) in enumerate(qwen_windows):
-                notify(40 + round(12 * index / max(1, len(qwen_windows))),
-                       f"Qwen3-ASR: Audioblock {index + 1}/{len(qwen_windows)}")
+
+        def transcribe_windows(qwen: QwenTranscriber, windows, *, token_limit: int) -> list[dict]:
+            chunks: list[dict] = []
+            for index, (sample_start, sample_end, keep_start, keep_end) in enumerate(windows):
+                notify(40 + round(12 * index / max(1, len(windows))),
+                       f"Qwen3-ASR: Audioblock {index + 1}/{len(windows)}")
                 chunk_audio = np.ascontiguousarray(
                     recognition_audio[sample_start:sample_end], dtype=np.float32)
                 result = qwen.transcribe(
                     chunk_audio, requested_language, prompt=qwen_prompt,
-                    max_new_tokens=chunk_token_limit)
+                    max_new_tokens=token_limit)
                 text = str(result.get("text", "")).strip()
                 if text:
-                    qwen_chunks.append({
+                    chunks.append({
                         **result,
                         "text": text,
                         "sample_start": sample_start,
@@ -243,8 +263,26 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
                     })
                 del chunk_audio
                 _release_memory()
+            return chunks
+
+        with QwenTranscriber(device) as qwen:
+            qwen_chunks = transcribe_windows(
+                qwen, qwen_windows, token_limit=chunk_token_limit)
+            retry_windows = fallback_transcription_windows(
+                len(recognition_audio), initial_was_chunked=chunked_transcription,
+                chunk_seconds=chunk_seconds, overlap_seconds=chunk_overlap)
+            if not qwen_chunks and retry_windows:
+                notify(42, ("Qwen3-ASR lieferte für den Gesamttrack keinen Text; "
+                            f"erneuter Versuch in {len(retry_windows)} Audioblöcken"))
+                qwen_windows = retry_windows
+                chunked_transcription = True
+                chunk_token_limit = int(os.getenv(
+                    "LRC_TRANSCRIPTION_MAX_NEW_TOKENS", "256"))
+                qwen_chunks = transcribe_windows(
+                    qwen, qwen_windows, token_limit=chunk_token_limit)
         _release_memory()
-        qwen_text = " ".join(str(chunk["text"]) for chunk in qwen_chunks).strip()
+        qwen_text = merge_transcript_chunks(
+            [str(chunk["text"]) for chunk in qwen_chunks])
         if not qwen_text:
             raise ValueError("Qwen3-ASR konnte keinen Gesangstext erkennen.")
         detected_language = _detected_language(

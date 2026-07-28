@@ -39,7 +39,8 @@ from .vocal_activity import (detect_vocal_activity, repair_anchor_context,
 from .completeness import (apply_completeness_gate, apply_targeted_gap_results,
                            assess_lyric_completeness)
 from .gap_recovery import recover_vocal_gap_lines
-from .full_transcription import plan_transcription_windows
+from .full_transcription import (fallback_transcription_windows,
+                                 plan_transcription_windows)
 from .timestamp_calibration import calibrate_source_timestamps
 
 ProgressCallback = Callable[[int, str], None]
@@ -66,7 +67,7 @@ def _release_stage_gpu_memory() -> None:
 
 def _transcribe_for_verification(session: QwenTranscriber, audio, language: str,
                                  prompt: str | None) -> dict:
-    """Run ordinary songs whole and bound long-song ASR memory by audio windows."""
+    """Run ordinary songs whole, retry empty results, and bound long-song ASR memory."""
     threshold = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS", "300"))
     chunk_seconds = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_SECONDS", "20"))
     overlap_seconds = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS", "2"))
@@ -75,20 +76,33 @@ def _transcribe_for_verification(session: QwenTranscriber, audio, language: str,
         overlap_seconds=overlap_seconds)
     if not windows:
         raise ValueError("Die ASR-Prüfung erhielt eine leere Audiospur.")
+
+    def transcribe_windows(source_windows, *, token_limit: int) -> list[dict]:
+        recognized: list[dict] = []
+        for sample_start, sample_end, _keep_start, _keep_end in source_windows:
+            chunk = audio[sample_start:sample_end]
+            try:
+                result = session.transcribe(
+                    chunk, language, prompt=prompt, max_new_tokens=token_limit)
+                if str(result.get("text", "")).strip():
+                    recognized.append(result)
+            finally:
+                del chunk
+                _release_stage_gpu_memory()
+        return recognized
+
     token_limit = int(os.getenv(
         "LRC_TRANSCRIPTION_MAX_NEW_TOKENS" if chunked else "LRC_ASR_MAX_NEW_TOKENS",
         "256" if chunked else "1024"))
-    results: list[dict] = []
-    for sample_start, sample_end, _keep_start, _keep_end in windows:
-        chunk = audio[sample_start:sample_end]
-        try:
-            result = session.transcribe(
-                chunk, language, prompt=prompt, max_new_tokens=token_limit)
-            if str(result.get("text", "")).strip():
-                results.append(result)
-        finally:
-            del chunk
-            _release_stage_gpu_memory()
+    results = transcribe_windows(windows, token_limit=token_limit)
+    retry_windows = fallback_transcription_windows(
+        len(audio), initial_was_chunked=chunked, chunk_seconds=chunk_seconds,
+        overlap_seconds=overlap_seconds)
+    if not results and retry_windows:
+        windows = retry_windows
+        chunked = True
+        token_limit = int(os.getenv("LRC_TRANSCRIPTION_MAX_NEW_TOKENS", "256"))
+        results = transcribe_windows(windows, token_limit=token_limit)
     if not results:
         raise ValueError("Qwen-ASR konnte in der Vocalspur keinen Text erkennen.")
     languages = [str(result.get("language", "")).strip()
