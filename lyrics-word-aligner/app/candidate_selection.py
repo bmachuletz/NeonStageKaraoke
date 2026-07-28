@@ -158,3 +158,58 @@ def select_alignment_candidate(
         "minimum_improvement": config.minimum_improvement,
         "candidates": diagnostics,
     }
+
+
+def select_stage_stem_candidate(
+    candidate_ids: set[str],
+    diagnostics: dict,
+    *,
+    baseline_id: str = "existing-pipeline",
+    minimum_improvement: float = 0.05,
+) -> tuple[str, dict]:
+    """Choose a real separator pair for playback from ASR diagnostics.
+
+    Alignment may deliberately use a vocal/original blend. Such a blend is not
+    a controllable karaoke stem and must never be exported to Stage. This helper
+    considers only candidates for which the caller owns both the vocal and the
+    complementary instrumental output.
+    """
+    if baseline_id not in candidate_ids:
+        raise ValueError("Der bisherige Separator muss als Stem-Fallback vorhanden sein")
+    if minimum_improvement < 0 or minimum_improvement > 1:
+        raise ValueError("Die minimale Stem-Verbesserung muss zwischen 0 und 1 liegen")
+
+    successful = {
+        str(item.get("id")): item
+        for item in diagnostics.get("candidates", [])
+        if item.get("status") == "success" and item.get("id") in candidate_ids
+    }
+    baseline = successful.get(baseline_id)
+    baseline_score = float(baseline["score"]) if baseline is not None else None
+    alternatives = [item for key, item in successful.items() if key != baseline_id]
+    if not alternatives:
+        return baseline_id, {
+            "enabled": True,
+            "selected_candidate": baseline_id,
+            "reason": "no-successful-separator-alternative",
+            "baseline_score": baseline_score,
+            "minimum_improvement": minimum_improvement,
+        }
+
+    winner = max(alternatives, key=lambda item: float(item["score"]))
+    winner_score = float(winner["score"])
+    if baseline_score is None or winner_score >= baseline_score + minimum_improvement:
+        selected = str(winner["id"])
+        reason = ("baseline-evaluation-failed" if baseline_score is None
+                  else "separator-clearly-better")
+    else:
+        selected = baseline_id
+        reason = "minimum-improvement-not-reached"
+    return selected, {
+        "enabled": True,
+        "selected_candidate": selected,
+        "reason": reason,
+        "baseline_score": baseline_score,
+        "alternative_score": winner_score,
+        "minimum_improvement": minimum_improvement,
+    }

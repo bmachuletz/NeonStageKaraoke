@@ -296,6 +296,11 @@ LRC_ALIGNMENT_ALTERNATIVE_MODEL=model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt
 
 # Preserve temporary candidate WAV files for diagnostics.
 LRC_ALIGNMENT_KEEP_CANDIDATES=false
+
+# When a real alternative separator improves lyric recognition clearly, export
+# its complementary vocal/instrumental pair for Editor and Stage as well.
+LRC_STAGE_STEM_AUTO_SELECT=true
+LRC_STAGE_STEM_MIN_IMPROVEMENT=0.05
 ```
 
 Candidate scores use lyric coverage, matched-word share, and transcript
@@ -303,6 +308,12 @@ similarity. Their weights are configured with
 `LRC_ALIGNMENT_WEIGHT_COVERAGE`, `LRC_ALIGNMENT_WEIGHT_MATCHING`, and
 `LRC_ALIGNMENT_WEIGHT_SIMILARITY`. Failures in optional candidates do not fail
 the job; the baseline remains available.
+
+Original-mix blends are analysis-only. They can improve timestamps, but are
+never exported as controllable karaoke audio. Playback stem selection is
+restricted to complete, sample-aligned vocal/instrumental pairs from a real
+separator model and is recorded in `stage_stem_selection` and the stem
+manifest.
 
 ## Missing lyrics and repeated sections
 

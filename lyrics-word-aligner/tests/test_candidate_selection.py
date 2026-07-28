@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from app.candidate_selection import (AudioAlignmentCandidate, CandidateSelectionConfig,
-                                     blend_audio, select_alignment_candidate)
+                                     blend_audio, select_alignment_candidate,
+                                     select_stage_stem_candidate)
 
 
 def candidate(name: str, value: float = 0.0, *, legacy: bool = False):
@@ -67,6 +68,34 @@ def test_failed_optional_candidate_does_not_abort():
         [candidate("legacy", legacy=True), candidate("other")], evaluate, config())
     assert selected.id == "legacy"
     assert diagnostics["candidates"][1]["status"] == "failed"
+
+
+def test_stage_stems_use_better_real_separator_but_not_alignment_blend():
+    diagnostics = {
+        "candidates": [
+            {"id": "existing-pipeline", "status": "success", "score": .12},
+            {"id": "vocals-original-0.10", "status": "success", "score": .82},
+            {"id": "alternative-separator", "status": "success", "score": .76},
+        ]
+    }
+    selected, result = select_stage_stem_candidate(
+        {"existing-pipeline", "alternative-separator"}, diagnostics)
+    assert selected == "alternative-separator"
+    assert result["reason"] == "separator-clearly-better"
+
+
+def test_stage_stems_keep_baseline_when_separator_gain_is_too_small():
+    diagnostics = {
+        "candidates": [
+            {"id": "existing-pipeline", "status": "success", "score": .72},
+            {"id": "alternative-separator", "status": "success", "score": .75},
+        ]
+    }
+    selected, result = select_stage_stem_candidate(
+        {"existing-pipeline", "alternative-separator"}, diagnostics,
+        minimum_improvement=.05)
+    assert selected == "existing-pipeline"
+    assert result["reason"] == "minimum-improvement-not-reached"
 
 
 def test_all_evaluations_fail_with_complete_legacy_fallback():

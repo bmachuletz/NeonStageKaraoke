@@ -55,11 +55,14 @@ services:
       LRC_ALIGNMENT_BLEND_RATIOS: ${LRC_ALIGNMENT_BLEND_RATIOS:-0.10}
       LRC_ALIGNMENT_MIN_IMPROVEMENT: ${LRC_ALIGNMENT_MIN_IMPROVEMENT:-0.01}
       LRC_ALIGNMENT_CANDIDATE_ORIGINAL: ${LRC_ALIGNMENT_CANDIDATE_ORIGINAL:-false}
-      # The alternative separator preserves more backing/chorus vocals for
-      # analysis. Exported controllable stems still use the karaoke model.
+      # The alternative separator preserves more backing/chorus vocals. It may
+      # also supply the exported sample-aligned stem pair when ASR measures a
+      # clear improvement over the karaoke model.
       LRC_ALIGNMENT_CANDIDATE_ALTERNATIVE: ${LRC_ALIGNMENT_CANDIDATE_ALTERNATIVE:-true}
       LRC_ALIGNMENT_ALTERNATIVE_MODEL: ${LRC_ALIGNMENT_ALTERNATIVE_MODEL:-model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt}
       LRC_ALIGNMENT_KEEP_CANDIDATES: ${LRC_ALIGNMENT_KEEP_CANDIDATES:-false}
+      LRC_STAGE_STEM_AUTO_SELECT: ${LRC_STAGE_STEM_AUTO_SELECT:-true}
+      LRC_STAGE_STEM_MIN_IMPROVEMENT: ${LRC_STAGE_STEM_MIN_IMPROVEMENT:-0.05}
     deploy:
       resources:
         reservations:

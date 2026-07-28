@@ -13,7 +13,8 @@ from .aligner import QwenWordAligner
 from .audio import ffmpeg_to_flac, ffmpeg_to_mono16k, load_audio, select_alignment_audio
 from .asr_prompt import build_asr_prompt
 from .candidate_selection import (AudioAlignmentCandidate, CandidateSelectionConfig,
-                                  blend_audio, select_alignment_candidate)
+                                  blend_audio, select_alignment_candidate,
+                                  select_stage_stem_candidate)
 from .ctc_aligner import realign_heuristic_lines, realign_overlapping_line_pairs
 from .easy_aligner import realign_with_easyaligner
 from .consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains, reconcile_acoustic_boundaries,
@@ -153,6 +154,8 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "stable_ts": stable_prompt_summary,
     }
     stem_outputs: dict[str, str] = {}
+    stage_stem_selection: dict = {"enabled": False, "reason": "separator-disabled"}
+    stage_separator_model: str | None = None
     with tempfile.TemporaryDirectory(prefix="lyrics-align-") as temp:
         temp_dir = Path(temp)
         instrumental_audio = None
@@ -162,10 +165,12 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             source = separated.vocals
             vocals_out = output_dir / f"{stem}.vocals.flac"
             instrumental_out = output_dir / f"{stem}.instrumental.flac"
-            ffmpeg_to_flac(separated.instrumental, instrumental_out)
             stem_outputs = {
                 "vocals": vocals_out.name,
                 "instrumental": instrumental_out.name,
+            }
+            stage_stem_candidates = {
+                "existing-pipeline": (separated, KARAOKE_MODEL),
             }
             notify(48, "Vocal-Separation abgeschlossen")
         else:
@@ -240,6 +245,8 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                             load_audio(alternative_wav), "alternative-separator",
                             metadata={"model": alternative_model},
                         ))
+                        stage_stem_candidates["alternative-separator"] = (
+                            alternative, alternative_model)
                     except Exception as error:
                         candidate_generation_errors.append({
                             "id": "alternative-separator", "status": "failed",
@@ -265,6 +272,26 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             candidate_selection["generation_errors"] = candidate_generation_errors
             alignment_audio = {**alignment_audio, "selected_candidate": selected_candidate.id,
                                "selected_candidate_type": selected_candidate.type}
+            if separator:
+                auto_select_stage_stems = os.getenv(
+                    "LRC_STAGE_STEM_AUTO_SELECT", "true").strip().lower() in {
+                        "1", "true", "yes", "on"
+                    }
+                if auto_select_stage_stems:
+                    selected_stage_stem, stage_stem_selection = select_stage_stem_candidate(
+                        set(stage_stem_candidates), candidate_selection,
+                        minimum_improvement=float(os.getenv(
+                            "LRC_STAGE_STEM_MIN_IMPROVEMENT", "0.05")),
+                    )
+                else:
+                    selected_stage_stem = "existing-pipeline"
+                    stage_stem_selection = {
+                        "enabled": False,
+                        "selected_candidate": selected_stage_stem,
+                        "reason": "feature-disabled",
+                    }
+                stage_stems, stage_separator_model = stage_stem_candidates[selected_stage_stem]
+                stage_stem_selection["separator_model"] = stage_separator_model
             if candidate_config.keep_candidate_files:
                 for candidate in candidates:
                     sf.write(output_dir / f"{stem}.alignment-candidate-{candidate.id}.wav",
@@ -272,6 +299,14 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         else:
             candidate_selection = {"enabled": False, "selected_candidate": "existing-pipeline",
                                    "reason": "feature-disabled", "candidates": []}
+            if separator:
+                stage_stems, stage_separator_model = stage_stem_candidates["existing-pipeline"]
+                stage_stem_selection = {
+                    "enabled": False,
+                    "selected_candidate": "existing-pipeline",
+                    "reason": "alignment-candidates-disabled",
+                    "separator_model": stage_separator_model,
+                }
         vocal_activity = detect_vocal_activity(audio)
         enable_anchor_context = os.getenv("LRC_EXPERIMENTAL_ANCHOR_CONTEXT", "false").strip().lower() in {
             "1", "true", "yes", "on"
@@ -674,7 +709,11 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             detected_starts = [float(word["start"]) for line in lines for word in line.words]
             first_vocal_start = min(detected_starts) if detected_starts else None
             mute_before = max(0.0, first_vocal_start - 0.35) if first_vocal_start is not None else None
-            ffmpeg_to_flac(separated.vocals, vocals_out, mute_before=mute_before)
+            # Export both halves of the same separator result. The alignment
+            # winner may be an original-mix blend, but that is intentionally
+            # never exposed as a karaoke stem.
+            ffmpeg_to_flac(stage_stems.instrumental, instrumental_out)
+            ffmpeg_to_flac(stage_stems.vocals, vocals_out, mute_before=mute_before)
         notify(90, "Alignment wird geprüft")
 
     summary = validate(lines, cfg, repaired_lines=repaired_timings)
@@ -706,6 +745,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "separation": "uvr-karaoke" if separator else "none",
         "alignment_audio": alignment_audio,
         "alignment_candidate_selection": candidate_selection,
+        "stage_stem_selection": stage_stem_selection,
         "output_lrc": lrc_out.name,
         "stems": stem_outputs,
         "syllable_alignment": syllable_summary,
@@ -744,7 +784,8 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         stems_report_out.write_text(json.dumps({
             "version": 1,
             "source": audio_path.name,
-            "separator_model": KARAOKE_MODEL,
+            "separator_model": stage_separator_model or KARAOKE_MODEL,
+            "selection": stage_stem_selection,
             "format": "flac",
             "sample_aligned": True,
             "first_vocal_start": first_vocal_start,
