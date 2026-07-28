@@ -3,8 +3,8 @@ import re
 from pathlib import Path
 from .models import LrcLine
 
-TIME_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]")
-WORD_TIME_RE = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d{1,3})?(?:,\d{1,3}:\d{2}(?:[.:]\d{1,3})?)?>")
+TIME_RE = re.compile(r"\[(\d{1,3}):(\d{2})(?:[.:](\d+))?\]")
+WORD_TIME_RE = re.compile(r"<\d{1,3}:\d{2}(?:[.:]\d+)?(?:,\d{1,3}:\d{2}(?:[.:]\d+)?)?>")
 METADATA_RE = re.compile(r"^\[(ar|al|ti|au|by|offset|re|ve|length):", re.I)
 
 

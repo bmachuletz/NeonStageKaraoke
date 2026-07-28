@@ -180,7 +180,8 @@ def _stable_prompt(song_name: str, language: str) -> str:
 
 
 def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
-        device: str, progress: ProgressCallback | None = None) -> dict:
+        device: str, canonical_path: Path | None = None,
+        progress: ProgressCallback | None = None) -> dict:
     # Heavy CUDA modules stay out of the long-lived API process and unit-test
     # import path. They are loaded only inside the isolated worker subprocess.
     from .aligner import QwenWordAligner
@@ -356,19 +357,51 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
         if not selected_words:
             raise ValueError("Die Volltext-Erkennung lieferte keine belastbaren Wortzeiten.")
         notify(90, "Erkannte Wörter werden zu kollisionsfreien Karaoke-Zeilen gruppiert")
-        lines = group_words_into_lines(
+        acoustic_lines = group_words_into_lines(
             selected_words,
             gap_seconds=float(os.getenv("LRC_TRANSCRIPTION_LINE_GAP", "0.9")),
             maximum_words=int(os.getenv("LRC_TRANSCRIPTION_LINE_WORDS", "11")),
             maximum_characters=int(os.getenv("LRC_TRANSCRIPTION_LINE_CHARS", "64")),
         )
-        if not lines:
+        if not acoustic_lines:
             raise ValueError("Aus der Transkription konnten keine Lyrics-Zeilen erzeugt werden.")
+
+        headers: list[str] = []
+        lines = acoustic_lines
+        canonical_transfer: dict = {
+            "enabled": canonical_path is not None,
+            "applied": False,
+            "reason": "keine kanonischen Lyrics übergeben",
+        }
+        if canonical_path is not None:
+            from .canonical_lyrics import transfer_canonical_lines
+            from .lrc import parse_lrc
+
+            try:
+                canonical_headers, canonical_lines = parse_lrc(canonical_path)
+                headers, lines, transfer_report = transfer_canonical_lines(
+                    canonical_headers, canonical_lines, selected_words,
+                    minimum_coverage=float(os.getenv(
+                        "LRC_CANONICAL_TRANSFER_MIN_COVERAGE", "0.55")))
+                canonical_transfer = {
+                    "enabled": True,
+                    "applied": True,
+                    **transfer_report,
+                }
+                notify(92, (f"Kanonische Lyrics übernommen: "
+                            f"{transfer_report['mapping_coverage']:.1%} Wortanker"))
+            except ValueError as error:
+                canonical_transfer = {
+                    "enabled": True,
+                    "applied": False,
+                    "reason": str(error),
+                }
+                notify(92, "Kanonische Lyrics passen nicht sicher; akustischer Text bleibt erhalten")
 
         lrc_out = output_dir / f"{stem}.transcribed.lrc"
         report_out = output_dir / f"{stem}.transcription.json"
         text_out = output_dir / f"{stem}.transcribed.txt"
-        lrc_out.write_text(render_enhanced_lrc([], lines), encoding="utf-8")
+        lrc_out.write_text(render_enhanced_lrc(headers, lines), encoding="utf-8")
         text_out.write_text("\n".join(line.text for line in lines) + "\n", encoding="utf-8")
         report = {
             "version": 2,
@@ -390,8 +423,10 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
             "stable_ts": {**stable_result, "word_count": stable_word_count},
             "comparison": comparison,
             "forced_alignment_errors": forced_errors,
+            "canonical_transfer": canonical_transfer,
+            "acoustic_line_count": len(acoustic_lines),
             "line_count": len(lines),
-            "word_count": sum(len(line.words) for line in lines),
+            "word_count": sum(len(normalize_words(line.text)) for line in lines),
             "resource_policy": "isolated-process-sequential-models-bounded-audio-chunks",
             "output_lrc": lrc_out.name,
             "output_text": text_out.name,

@@ -74,7 +74,8 @@ def _worker_command(job_id: str, audio_path: Path, lrc_path: Path, job_dir: Path
 
 
 def _transcription_worker_command(job_id: str, audio_path: Path, job_dir: Path,
-                                  language: str, separate: bool, device: str) -> list[str]:
+                                  language: str, separate: bool, device: str,
+                                  canonical_path: Path | None = None) -> list[str]:
     command = [
         sys.executable, "-m", "app.transcription_worker",
         "--job-id", job_id, "--audio", str(audio_path), "--output", str(job_dir),
@@ -82,11 +83,14 @@ def _transcription_worker_command(job_id: str, audio_path: Path, job_dir: Path,
     ]
     if separate:
         command.append("--separate")
+    if canonical_path is not None:
+        command.extend(["--canonical", str(canonical_path)])
     return command
 
 
 def _process_transcription_job(job_id: str, audio_path: Path, language: str,
-                               separate: bool, device: str) -> None:
+                               separate: bool, device: str,
+                               canonical_path: Path | None = None) -> None:
     job_dir = OUTPUT_ROOT / job_id
     try:
         _write_status(job_dir, state="queued", percent=1,
@@ -96,7 +100,8 @@ def _process_transcription_job(job_id: str, audio_path: Path, language: str,
                           message="Isolierter Volltext-Worker wird gestartet")
             completed = subprocess.run(
                 _transcription_worker_command(
-                    job_id, audio_path, job_dir, language, separate, device),
+                    job_id, audio_path, job_dir, language, separate, device,
+                    canonical_path),
                 check=False,
             )
             status = json.loads(_status_path(job_dir).read_text(encoding="utf-8"))
@@ -158,6 +163,7 @@ def create_job(
 def create_transcription_job(
     background_tasks: BackgroundTasks,
     audio: UploadFile = File(...),
+    lyrics: UploadFile | None = File(None),
     language: str = Form("auto"),
     separate: bool = Form(True),
     alignment_device: str = Form("cuda"),
@@ -166,20 +172,29 @@ def create_transcription_job(
         raise HTTPException(400, "Die Volltext-Erkennung muss auf cuda oder auto laufen.")
     if language.strip().lower() not in {"auto", "de", "en", "fr", "es", "it", "pt", "ru", "ja", "ko", "zh", "yue"}:
         raise HTTPException(400, "Die gewählte Sprache wird nicht unterstützt.")
+    if lyrics is not None and not (lyrics.filename or "").lower().endswith(".lrc"):
+        raise HTTPException(400, "Die kanonischen Lyrics müssen eine .lrc-Datei sein.")
     job_id = next(tempfile._get_candidate_names())
     job_dir = OUTPUT_ROOT / job_id
     job_dir.mkdir(parents=True)
     audio_path = job_dir / Path(audio.filename or "song.mp3").name
     with audio_path.open("wb") as target:
         shutil.copyfileobj(audio.file, target)
+    canonical_path = None
+    if lyrics is not None:
+        canonical_path = job_dir / "canonical.lrc"
+        with canonical_path.open("wb") as target:
+            shutil.copyfileobj(lyrics.file, target)
     status = {
         "job_id": job_id, "state": "queued", "percent": 0,
         "message": "Audio hochgeladen; Volltext-Job wartet auf Verarbeitung",
         "audio_name": audio_path.name, "job_type": "full-transcription",
+        "canonical_lyrics_name": Path(lyrics.filename).name if lyrics and lyrics.filename else None,
     }
     _write_status(job_dir, **status)
     background_tasks.add_task(
-        _process_transcription_job, job_id, audio_path, language, separate, alignment_device)
+        _process_transcription_job, job_id, audio_path, language, separate,
+        alignment_device, canonical_path)
     return status
 
 

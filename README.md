@@ -250,7 +250,7 @@ Pipeline output can include enhanced LRC, `*.alignment.json`, vocal and instrume
 | Build Android stage | `./scripts/linux/build-unity-stage-android.sh` |
 | Match library lyrics | `./scripts/linux/match-library-lrc.sh` |
 | Align library | `./scripts/linux/align-library.sh --force` |
-| Recognize complete lyrics | `./scripts/linux/recognize-song-lyrics.sh --audio '/library/Artist - Title.mp3'` |
+| Recognize complete lyrics | `./scripts/linux/recognize-song-lyrics.sh --audio '/library/Artist - Title.mp3'` (retains matching LRCLIB/editor spelling on the acoustic timing scaffold) |
 | Process requests | `./scripts/linux/process-wishlist.sh` |
 | Import a local MP3 folder | `./scripts/linux/process-mp3-folder.sh /path/to/mp3s` |
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |

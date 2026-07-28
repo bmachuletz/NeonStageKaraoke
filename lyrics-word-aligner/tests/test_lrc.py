@@ -7,6 +7,15 @@ from app.models import LrcLine
 
 
 class LrcParsingTests(unittest.TestCase):
+    def test_accepts_editor_timespan_precision_beyond_milliseconds(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "precise.lrc"
+            path.write_text("[00:10.4100000]Exakte Zeile\n", encoding="utf-8")
+            _headers, lines = parse_lrc(path)
+        self.assertEqual(1, len(lines))
+        self.assertAlmostEqual(10.41, lines[0].timestamp, places=6)
+        self.assertEqual("Exakte Zeile", lines[0].text)
+
     def test_plain_lrclib_lyrics_are_preserved_as_untimed_lines(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "song.lrc"

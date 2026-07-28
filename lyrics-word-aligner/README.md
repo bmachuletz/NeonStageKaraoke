@@ -190,7 +190,15 @@ cannot reintroduce the full-track GPU allocation or reject a healthy vocal stem
 solely because whole-track decoding returned no text.
 
 The server/editor wrapper downloads this initial LRC and immediately submits it
-to the normal alignment pipeline. Run the same workflow from the command line:
+to the normal alignment pipeline. If the song already has LRCLIB or manually
+edited lyrics, their exact spelling, capitalization, punctuation, and line
+structure are retained. A global phonetic transcript match transfers the
+full-recognition word scaffold to those canonical lines before the regular
+word/syllable alignment runs. If fewer than 55% of canonical words can be
+mapped, the workflow safely falls back to the acoustic transcript instead of
+forcing unrelated lyrics onto the song. Override this guard with
+`LRC_CANONICAL_TRANSFER_MIN_COVERAGE` when needed. Run the same workflow from
+the command line:
 
 ```bash
 ./scripts/linux/recognize-song-lyrics.sh --audio '/library/Artist - Title.mp3'

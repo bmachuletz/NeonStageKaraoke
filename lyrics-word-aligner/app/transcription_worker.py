@@ -23,12 +23,13 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--language", required=True)
     parser.add_argument("--device", required=True)
+    parser.add_argument("--canonical", type=Path)
     parser.add_argument("--separate", action="store_true")
     args = parser.parse_args()
     try:
         result = run(
             args.audio, args.output, language=args.language, separate=args.separate,
-            device=args.device,
+            device=args.device, canonical_path=args.canonical,
             progress=lambda percent, message: _write_status(
                 args.output, state="processing", percent=percent, message=message),
         )

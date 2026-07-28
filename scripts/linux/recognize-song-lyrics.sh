@@ -27,10 +27,22 @@ done
 curl -fsS "$aligner_url/health" >/dev/null || { echo "Aligner is unavailable: $aligner_url" >&2; exit 1; }
 
 base=${audio%.*}
+work_dir=$(mktemp -d)
+trap 'rm -rf -- "$work_dir"' EXIT
+canonical_lrc=""
+if [[ -s "$base.lrc" ]]; then
+  canonical_lrc="$work_dir/canonical.lrc"
+  install -m 0600 "$base.lrc" "$canonical_lrc"
+elif [[ -s "$base.pre-align.lrc" ]]; then
+  canonical_lrc="$work_dir/canonical.lrc"
+  install -m 0600 "$base.pre-align.lrc" "$canonical_lrc"
+fi
+
 echo "[2%] Uploading audio for complete lyrics recognition"
-response=$(curl -fsS -X POST "$aligner_url/api/transcription-jobs" \
-  -F "audio=@$audio" -F "language=$language" -F "separate=true" \
+upload=(-F "audio=@$audio" -F "language=$language" -F "separate=true" \
   -F "alignment_device=cuda")
+[[ -z "$canonical_lrc" ]] || upload+=(-F "lyrics=@$canonical_lrc;filename=$(basename "$base").lrc")
+response=$(curl -fsS -X POST "$aligner_url/api/transcription-jobs" "${upload[@]}")
 job_id=$(jq -er '.job_id' <<<"$response")
 
 while :; do
@@ -64,9 +76,15 @@ download_output() {
 
 output_lrc=$(jq -r '.output_lrc' <<<"$status")
 output_report=$(jq -r '.output_report' <<<"$status")
-download_output "$output_lrc" "$base.pre-align.lrc"
-download_output "$output_lrc" "$base.lrc"
+result_lrc="$work_dir/result.lrc"
+download_output "$output_lrc" "$result_lrc"
 download_output "$output_report" "$base.transcription.json"
+install -m 0644 "$result_lrc" "$base.pre-align.lrc"
+install -m 0644 "$result_lrc" "$base.lrc"
+if [[ $(jq -r '.canonical_transfer.applied // false' <<<"$status") == true ]]; then
+  coverage=$(jq -r '.canonical_transfer.mapping_coverage' <<<"$status")
+  echo "[54%] Canonical spelling and line structure retained (coverage: $coverage)"
+fi
 
 echo "[55%] Complete transcript stored; starting the regular alignment pipeline"
 "$repo_root/scripts/linux/align-library.sh" --force --library "$(dirname "$audio")" \
