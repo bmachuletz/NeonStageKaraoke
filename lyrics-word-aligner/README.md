@@ -177,6 +177,12 @@ controlled by `LRC_TRANSCRIPTION_CHUNK_SECONDS` (20) and
 `LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS` (2); non-overlapping ownership
 intervals discard duplicate words from adjacent windows.
 
+The same long-song boundary also applies to the regular pipeline's independent
+Qwen transcript verification and audio-candidate comparison. Adjacent text
+chunks are merged by their shared word sequence before LRCLIB lyrics are
+compared, so the post-transcription alignment pass cannot reintroduce the
+full-track GPU allocation.
+
 The server/editor wrapper downloads this initial LRC and immediately submits it
 to the normal alignment pipeline. Run the same workflow from the command line:
 

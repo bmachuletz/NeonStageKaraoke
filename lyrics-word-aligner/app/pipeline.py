@@ -4,6 +4,7 @@ import os
 import tempfile
 import gc
 import soundfile as sf
+from collections import Counter
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -29,7 +30,7 @@ from .repetition_anchors import (apply_local_timestamp, apply_repetition_anchors
                                  apply_transition_words, local_repetition_requests,
                                  refine_stretched_repetition_anchors, transition_requests)
 from .syllables import enrich_lines_with_syllables
-from .transcriber import QwenTranscriber, language_code, transcribe
+from .transcriber import QwenTranscriber, language_code, merge_transcript_chunks
 from .transcript_match import compare_transcripts
 from .validator import validate
 from .chorus_anchors import apply_trusted_chorus_anchors, recover_missing_initial_chorus
@@ -38,6 +39,7 @@ from .vocal_activity import (detect_vocal_activity, repair_anchor_context,
 from .completeness import (apply_completeness_gate, apply_targeted_gap_results,
                            assess_lyric_completeness)
 from .gap_recovery import recover_vocal_gap_lines
+from .full_transcription import plan_transcription_windows
 from .timestamp_calibration import calibrate_source_timestamps
 
 ProgressCallback = Callable[[int, str], None]
@@ -60,6 +62,49 @@ def _release_stage_gpu_memory() -> None:
                 pass
     except ImportError:
         pass
+
+
+def _transcribe_for_verification(session: QwenTranscriber, audio, language: str,
+                                 prompt: str | None) -> dict:
+    """Run ordinary songs whole and bound long-song ASR memory by audio windows."""
+    threshold = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS", "300"))
+    chunk_seconds = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_SECONDS", "20"))
+    overlap_seconds = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS", "2"))
+    windows, chunked = plan_transcription_windows(
+        len(audio), threshold_seconds=threshold, chunk_seconds=chunk_seconds,
+        overlap_seconds=overlap_seconds)
+    if not windows:
+        raise ValueError("Die ASR-Prüfung erhielt eine leere Audiospur.")
+    token_limit = int(os.getenv(
+        "LRC_TRANSCRIPTION_MAX_NEW_TOKENS" if chunked else "LRC_ASR_MAX_NEW_TOKENS",
+        "256" if chunked else "1024"))
+    results: list[dict] = []
+    for sample_start, sample_end, _keep_start, _keep_end in windows:
+        chunk = audio[sample_start:sample_end]
+        try:
+            result = session.transcribe(
+                chunk, language, prompt=prompt, max_new_tokens=token_limit)
+            if str(result.get("text", "")).strip():
+                results.append(result)
+        finally:
+            del chunk
+            _release_stage_gpu_memory()
+    if not results:
+        raise ValueError("Qwen-ASR konnte in der Vocalspur keinen Text erkennen.")
+    languages = [str(result.get("language", "")).strip()
+                 for result in results if str(result.get("language", "")).strip()]
+    return {
+        "model": results[0].get("model"),
+        "language": Counter(languages).most_common(1)[0][0] if languages else None,
+        "text": merge_transcript_chunks([str(result["text"]) for result in results]),
+        "chunked": chunked,
+        "chunks": len(windows),
+        "nonempty_chunks": len(results),
+        "chunk_threshold_seconds": threshold,
+        "chunk_seconds": chunk_seconds if chunked else len(audio) / 16000,
+        "chunk_overlap_seconds": overlap_seconds if chunked else 0,
+        "max_new_tokens_per_chunk": token_limit,
+    }
 
 
 def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, separator: bool, device: str,
@@ -192,8 +237,8 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
 
             with QwenTranscriber(device) as candidate_transcriber:
                 def evaluate_candidate(candidate: AudioAlignmentCandidate) -> dict:
-                    candidate_asr = candidate_transcriber.transcribe(
-                        candidate.audio, language, prompt=qwen_prompt)
+                    candidate_asr = _transcribe_for_verification(
+                        candidate_transcriber, candidate.audio, language, qwen_prompt)
                     return {**candidate_asr,
                             "comparison": compare_transcripts(
                                 expected_text, candidate_asr["text"], min_repetitions=2)}
@@ -201,6 +246,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 selected_candidate, selected_candidate_transcript, candidate_selection = (
                     select_alignment_candidate(candidates, evaluate_candidate, candidate_config)
                 )
+            _release_stage_gpu_memory()
             audio = selected_candidate.audio
             candidate_selection["generation_errors"] = candidate_generation_errors
             alignment_audio = {**alignment_audio, "selected_candidate": selected_candidate.id,
@@ -222,8 +268,13 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         if (selected_candidate_transcript is not None or auto_language or
                 os.getenv("LRC_ASR_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}):
             notify(55, "Vocalspur wird unabhängig durch Qwen ASR transkribiert")
-            asr = selected_candidate_transcript or transcribe(
-                audio, language, device, prompt=qwen_prompt)
+            if selected_candidate_transcript is not None:
+                asr = selected_candidate_transcript
+            else:
+                with QwenTranscriber(device) as verification_transcriber:
+                    asr = _transcribe_for_verification(
+                        verification_transcriber, audio, language, qwen_prompt)
+                _release_stage_gpu_memory()
             if auto_language:
                 language = language_code(asr.get("language"), expected_text)
                 cfg = replace(cfg, language=language)

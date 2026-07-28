@@ -14,6 +14,30 @@ LANGUAGE_NAMES = {"de": "German", "en": "English", "fr": "French", "es": "Spanis
                   "ko": "Korean", "zh": "Chinese", "yue": "Cantonese"}
 
 
+def merge_transcript_chunks(texts: list[str], *, maximum_overlap_words: int = 24) -> str:
+    """Merge overlapping ASR text chunks without repeating their shared tail."""
+    merged: list[str] = []
+
+    def normalized(token: str) -> str:
+        return re.sub(r"[^\w']+", "", token.casefold(), flags=re.UNICODE)
+
+    for text in texts:
+        incoming = text.strip().split()
+        if not incoming:
+            continue
+        overlap = 0
+        maximum = min(maximum_overlap_words, len(merged), len(incoming))
+        merged_normalized = [normalized(token) for token in merged]
+        incoming_normalized = [normalized(token) for token in incoming]
+        for size in range(maximum, 0, -1):
+            if (merged_normalized[-size:] == incoming_normalized[:size]
+                    and all(merged_normalized[-size:])):
+                overlap = size
+                break
+        merged.extend(incoming[overlap:])
+    return " ".join(merged)
+
+
 def language_code(value: str | None, fallback_text: str | None = None) -> str:
     normalized = (value or "").strip().lower()
     reverse = {name.lower(): code for code, name in LANGUAGE_NAMES.items()}

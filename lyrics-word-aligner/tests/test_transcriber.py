@@ -1,9 +1,23 @@
 import unittest
 
-from app.transcriber import language_code
+from app.transcriber import language_code, merge_transcript_chunks
 
 
 class TranscriberLanguageTests(unittest.TestCase):
+    def test_merges_word_overlap_between_asr_chunks(self):
+        self.assertEqual(
+            "we sing tonight together now",
+            merge_transcript_chunks([
+                "we sing tonight", "tonight together", "together now"
+            ]),
+        )
+
+    def test_keeps_non_overlapping_chunk_text(self):
+        self.assertEqual(
+            "first phrase second phrase",
+            merge_transcript_chunks(["first phrase", "second phrase"]),
+        )
+
     def test_maps_model_language_name_to_aligner_code(self):
         self.assertEqual("en", language_code("English"))
         self.assertEqual("de", language_code("German"))
