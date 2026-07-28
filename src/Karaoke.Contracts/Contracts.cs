@@ -1,14 +1,19 @@
 namespace Karaoke.Contracts;
 
 public enum SongReviewStatus { InReview, Approved }
+public enum SongLibraryCategory { KaraokeReady, WithoutLyrics }
 public sealed record SongDto(Guid Id, string Title, string Artist, string Album, double DurationSeconds,
     bool HasLyrics, bool IsQueued = false, bool HasCover = false,
     SongReviewStatus ReviewStatus = SongReviewStatus.InReview,
-    bool HasInstrumental = false, bool HasVocals = false)
+    bool HasInstrumental = false, bool HasVocals = false,
+    SongLibraryCategory LibraryCategory = SongLibraryCategory.KaraokeReady)
 {
-    public string ReviewStatusLabel => ReviewStatus == SongReviewStatus.Approved ? "Freigegeben" : "In Review";
+    public string ReviewStatusLabel => LibraryCategory == SongLibraryCategory.WithoutLyrics
+        ? "Ohne Lyrics / Without Lyrics"
+        : ReviewStatus == SongReviewStatus.Approved ? "Freigegeben" : "In Review";
 }
 public sealed record ChangeSongReviewStatusRequest(SongReviewStatus Status);
+public sealed record ImportLyricsSourceRequest(string Lyrics);
 public sealed record DeleteSongResultDto(Guid SongId, int DeletedFiles);
 public sealed record PagedResultDto<T>(IReadOnlyList<T> Items, int Page, int PageSize, int TotalCount)
 {
@@ -81,7 +86,9 @@ public sealed record SpotifyTrackDto(
     public bool HasPrice => Price is not null;
 }
 public sealed record AddWishRequest(SpotifyTrackDto Track, string RequestedBy);
-public sealed record WishDto(Guid Id, SpotifyTrackDto Track, string RequestedBy, DateTimeOffset RequestedAt, string Status);
+public sealed record WishDto(Guid Id, SpotifyTrackDto Track, string RequestedBy, DateTimeOffset RequestedAt,
+    string Status, bool HasAudioCandidate = false);
+public sealed record WishAudioCandidateRequest(string AudioPath, string Status);
 public sealed record FolderImportRequest(string SourcePath, bool Recursive = true);
 public sealed record FolderImportStatus(
     bool IsRunning,

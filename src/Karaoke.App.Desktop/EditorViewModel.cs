@@ -124,7 +124,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     public ObservableCollection<SpotifyTrackDto> AdminWishSearchResults { get; } = [];
     public ObservableCollection<string> ConsoleLines { get; } = [];
     public ObservableCollection<EditorLyricsVersionItem> LyricsVersions { get; } = [];
-    public IReadOnlyList<string> SongStatusFilters { get; } = ["Alle", "In Review", "Freigegeben"];
+    public IReadOnlyList<string> SongStatusFilters { get; } = ["Alle", "In Review", "Freigegeben", "Ohne Lyrics / Without Lyrics"];
     public Uri ServerAddress { get; }
     public CommandHistory History { get; } = new();
     public SongDto? SelectedSong { get => _selectedSong; set => Set(ref _selectedSong, value); }
@@ -290,10 +290,10 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             var songs = await _http.GetFromJsonAsync<IReadOnlyList<SongDto>>("/api/songs?take=500&includeUnreleased=true", cancellationToken) ?? [];
-            foreach (var song in songs.Where(song => song.HasLyrics).OrderBy(song => song.Artist).ThenBy(song => song.Title))
+            foreach (var song in songs.OrderBy(song => song.Artist).ThenBy(song => song.Title))
                 Songs.Add(song);
             ApplySongFilter();
-            Status = $"{Songs.Count} Songs mit Lyrics geladen";
+            Status = $"{Songs.Count} Songprojekte geladen";
             await LoadWishEventsAsync(cancellationToken);
             _ = RunChangeFeedAsync(_changeFeedCancellation.Token);
         }
@@ -565,7 +565,12 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 if (!incomingIds.Contains(Wishes[index].Wish.Id)) Wishes.RemoveAt(index);
             foreach (var wish in incoming)
             {
-                if (Wishes.Any(existing => existing.Wish.Id == wish.Wish.Id)) continue;
+                var existingIndex = Wishes.ToList().FindIndex(existing => existing.Wish.Id == wish.Wish.Id);
+                if (existingIndex >= 0)
+                {
+                    if (Wishes[existingIndex] != wish) Wishes[existingIndex] = wish;
+                    continue;
+                }
                 var index = 0;
                 while (index < Wishes.Count && Wishes[index].Wish.RequestedAt > wish.Wish.RequestedAt) index++;
                 Wishes.Insert(index, wish);
@@ -618,6 +623,55 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             await RefreshJobStatusAsync(cancellationToken);
         }
         catch (Exception exception) { AppendConsole("Einzelwunsch konnte nicht gestartet werden: " + exception.Message); }
+    }
+
+    public async Task<bool> RemoveWishAsync(EditorWishItem item, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var token = Uri.EscapeDataString(item.Event.InviteToken);
+            using var response = await _http.DeleteAsync($"/api/wishlist/{item.Wish.Id}?eventToken={token}", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+            Wishes.Remove(item);
+            JobState = $"{Wishes.Count} Wünsche aus {WishEvents.Count} Sessions";
+            AppendConsole(Localized($"Wunsch entfernt: {item.Title}", $"Request removed: {item.Title}"));
+            return true;
+        }
+        catch (Exception exception)
+        {
+            AppendConsole(Localized("Wunsch konnte nicht entfernt werden: ", "Could not remove request: ") + exception.Message);
+            return false;
+        }
+    }
+
+    public async Task<bool> AdoptWishAudioAsync(EditorWishItem item, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _http.PostAsync(
+                $"/api/admin/events/{item.Event.Id}/wishlist/{item.Wish.Id}/adopt-audio", null, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+            var song = await response.Content.ReadFromJsonAsync<SongDto>(cancellationToken: cancellationToken)
+                       ?? throw new InvalidOperationException(Localized("Der Server hat kein Songprojekt bestätigt.",
+                           "The server did not confirm a song project."));
+            Wishes.Remove(item);
+            if (Songs.All(existing => existing.Id != song.Id)) Songs.Add(song);
+            else ReplaceSong(song);
+            ApplySongFilter();
+            Status = Localized(
+                $"{song.Title} wurde als ‚Ohne Lyrics‘ übernommen. Lyrics importieren und anschließend neu alignen.",
+                $"{song.Title} was adopted as ‘Without Lyrics’. Import lyrics, then run alignment.");
+            AppendConsole(Status);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            AppendConsole(Localized("Audiofund konnte nicht übernommen werden: ",
+                "Could not adopt audio candidate: ") + exception.Message);
+            return false;
+        }
     }
 
     public async Task SearchAdminWishesAsync(CancellationToken cancellationToken = default)
@@ -914,7 +968,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         var songs = await _http.GetFromJsonAsync<IReadOnlyList<SongDto>>("/api/songs?take=500&includeUnreleased=true", cancellationToken) ?? [];
         var selectedId = SelectedSong?.Id;
         Songs.Clear();
-        foreach (var song in songs.Where(song => song.HasLyrics).OrderBy(song => song.Artist).ThenBy(song => song.Title)) Songs.Add(song);
+        foreach (var song in songs.OrderBy(song => song.Artist).ThenBy(song => song.Title)) Songs.Add(song);
         ApplySongFilter();
         SelectedSong = Songs.FirstOrDefault(song => song.Id == selectedId);
     }
@@ -922,7 +976,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private async Task MergeNewSongsAsync(CancellationToken cancellationToken)
     {
         var songs = await _http.GetFromJsonAsync<IReadOnlyList<SongDto>>("/api/songs?take=500&includeUnreleased=true", cancellationToken) ?? [];
-        foreach (var song in songs.Where(song => song.HasLyrics && Songs.All(existing => existing.Id != song.Id)))
+        foreach (var song in songs.Where(song => Songs.All(existing => existing.Id != song.Id)))
         {
             var songIndex = 0;
             while (songIndex < Songs.Count && CompareSongs(Songs[songIndex], song) <= 0) songIndex++;
@@ -999,8 +1053,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         var needle = SongFilter.Trim();
         var matchesStatus = SongStatusFilter switch
         {
-            "In Review" => song.ReviewStatus == SongReviewStatus.InReview,
-            "Freigegeben" => song.ReviewStatus == SongReviewStatus.Approved,
+            "In Review" => song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
+                           song.ReviewStatus == SongReviewStatus.InReview,
+            "Freigegeben" => song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
+                             song.ReviewStatus == SongReviewStatus.Approved,
+            "Ohne Lyrics / Without Lyrics" => song.LibraryCategory == SongLibraryCategory.WithoutLyrics,
             _ => true
         };
         return matchesStatus && (needle.Length == 0 || song.Title.Contains(needle, StringComparison.CurrentCultureIgnoreCase) ||
@@ -1011,6 +1068,14 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     public async Task ApproveSelectedSongAsync(CancellationToken cancellationToken = default)
     {
         if (SelectedSong is null) return;
+        if (SelectedSong.LibraryCategory == SongLibraryCategory.WithoutLyrics ||
+            !SelectedSong.HasLyrics || !SelectedSong.HasInstrumental || !SelectedSong.HasVocals)
+        {
+            Status = Localized(
+                "Freigabe noch nicht möglich: Lyrics importieren und den Song anschließend neu alignen, damit beide Stems vorliegen.",
+                "Release is not available yet: import lyrics, then realign the song so both stems are available.");
+            return;
+        }
         if (Document is null) { Status = "Freigabe nicht möglich: Lyrics konnten nicht geladen werden."; return; }
         var openSegments = Document.Segments.Count(segment => segment.RequiresReview);
         var timingConflicts = TimelineEditing.ValidateHierarchy(Document).Count +
@@ -1131,8 +1196,10 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             _hasVocalStem = stems?.HasVocals == true;
             HasInstrumentalStem = stems?.HasInstrumental == true;
             if (!HasInstrumentalStem) InstrumentalEnabled = false;
-            var currentSource = await _http.GetFromJsonAsync<LyricsDto>(
-                $"/api/admin/songs/{song.Id}/lyrics/source", ct);
+            LyricsDto? currentSource = null;
+            using (var sourceResponse = await _http.GetAsync($"/api/admin/songs/{song.Id}/lyrics/source", ct))
+                if (sourceResponse.IsSuccessStatusCode)
+                    currentSource = await sourceResponse.Content.ReadFromJsonAsync<LyricsDto>(cancellationToken: ct);
             var currentSourceFingerprint = currentSource is null
                 ? null
                 : JsonSerializer.Serialize(currentSource, JsonOptions);
@@ -1179,9 +1246,14 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             }
             else
             {
-                var lyrics = loadFreshAlignment
-                    ? currentSource
-                    : await _http.GetFromJsonAsync<LyricsDto>($"/api/songs/{song.Id}/lyrics", ct);
+                LyricsDto? lyrics = currentSource;
+                if (!loadFreshAlignment)
+                {
+                    using var lyricsResponse = await _http.GetAsync($"/api/songs/{song.Id}/lyrics", ct);
+                    lyrics = lyricsResponse.IsSuccessStatusCode
+                        ? await lyricsResponse.Content.ReadFromJsonAsync<LyricsDto>(cancellationToken: ct)
+                        : null;
+                }
                 Document = lyrics is null ? null : LyricsDocumentImporter.Import(lyrics);
                 _loadedSourceFingerprint = currentSourceFingerprint;
                 _serverVersionId = null;
@@ -1197,15 +1269,17 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 ? "Neues GPU-Alignment als Review-Stand geladen"
                 : "Alignment bereit zur Prüfung";
             await RefreshLyricsVersionsAsync(ct, reportErrors: false);
-            if (Document is not null)
+            // Auch ein ausdrücklich übernommener Song ohne Lyrics braucht im
+            // Editor sofort eine Waveform. Bis Stems existieren, ist der
+            // Originalsong die stabile Bearbeitungsspur.
             {
-                Status = "Vocal-Waveform wird vorbereitet …";
+                Status = Document is null ? "Original-Waveform wird vorbereitet …" : "Vocal-Waveform wird vorbereitet …";
                 var vocals = new Uri(ServerAddress, $"/api/songs/{song.Id}/stems/vocals?format=flac");
                 var instrumental = new Uri(ServerAddress, $"/api/songs/{song.Id}/stems/instrumental?format=flac");
                 var original = new Uri(ServerAddress, $"/api/songs/{song.Id}/audio");
                 try
                 {
-                    if (!_hasVocalStem) throw new InvalidOperationException("Keine Vocalspur vorhanden.");
+                    if (Document is null || !_hasVocalStem) throw new InvalidOperationException("Keine Vocalspur vorhanden.");
                     Status = "Vocalspur wird lokal für sample-stabiles Editing vorbereitet …";
                     _localVocalUri = await _audioCache.GetAsync(song.Id, "vocals", vocals, ct);
                     if (HasInstrumentalStem)
@@ -1220,7 +1294,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                     Waveform = await _waveforms.LoadAsync(song.Id, _localOriginalUri, ct, "original");
                     _selectedPlaybackUri = _localOriginalUri;
                 }
-                Status = "Alignment und Vocal-Waveform bereit zur Prüfung";
+                Status = Document is null
+                    ? "Song ohne Lyrics geladen · Original-Waveform bereit · Lyrics importieren und danach neu alignen"
+                    : "Alignment und Vocal-Waveform bereit zur Prüfung";
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -1940,7 +2016,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 
     public void ReportTimelineStatus(string status) => Status = status;
 
-    public void ImportUltraStarLyrics(UltraStarLyricsImport imported)
+    public async Task ImportUltraStarLyricsAsync(UltraStarLyricsImport imported,
+        CancellationToken cancellationToken = default)
     {
         if (SelectedSong is not { } song)
             throw new InvalidOperationException(EditorLocale.German
@@ -1948,6 +2025,12 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 : "Select a song first.");
         var replacement = imported.ToEditorDocument(song.Id);
         var previous = Document;
+        using (var response = await _http.PutAsJsonAsync($"/api/admin/songs/{song.Id}/lyrics/import-source",
+                   new ImportLyricsSourceRequest(imported.ToEnhancedLrc()), cancellationToken))
+        {
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+        }
         _audio.Stop();
         _visualClockSuspended = false;
         LoopEnabled = false;
@@ -1971,8 +2054,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(ReviewSummary));
         SaveLocalRecoverySnapshot();
         Status = EditorLocale.German
-            ? $"UltraStar-Lyrics als neuer ungespeicherter Arbeitsstand importiert · {replacement.Lines.Count} Zeilen · Rückgängig möglich"
-            : $"UltraStar lyrics imported as a new unsaved working state · {replacement.Lines.Count} lines · Undo is available";
+            ? $"UltraStar-Lyrics als neuer ungespeicherter Arbeitsstand importiert · {replacement.Lines.Count} Zeilen · Rückgängig möglich · bei fehlenden Stems anschließend neu alignen"
+            : $"UltraStar lyrics imported as a new unsaved working state · {replacement.Lines.Count} lines · Undo is available · run alignment next if stems are missing";
     }
 
     private LyricSegment? FindLine(LyricSegment segment) => Document?.Lines.FirstOrDefault(line =>
@@ -2089,6 +2172,11 @@ public sealed record EditorWishItem(KaraokeEventDto Event, WishDto Wish)
 {
     public string Title => Wish.Track.Title;
     public string Details => $"{Wish.Track.SourceLabel} · {Wish.Track.Artist} · {Wish.RequestedBy} · {Wish.Status}";
+    public bool IsProcessing =>
+        Wish.Status.Contains("werden verarbeitet", StringComparison.OrdinalIgnoreCase) ||
+        Wish.Status.Contains("processing", StringComparison.OrdinalIgnoreCase);
+    public bool CanAdopt => Wish.HasAudioCandidate && !IsProcessing;
+    public bool CanRemove => !IsProcessing;
 }
 
 public sealed record EditorLyricsVersionItem(LyricsVersionSummaryDto Version, bool IsCurrent)

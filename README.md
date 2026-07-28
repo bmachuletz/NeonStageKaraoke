@@ -284,7 +284,9 @@ Songs, lyrics, cover art, generated stems, local databases, service credentials,
 
 A stage-ready library entry requires audio, lyrics, instrumental, and vocal stems. Automatically aligned material enters **In review**. Only an explicitly **Released** editor version is available to the stage.
 
-The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and copies only technically complete projects into the library. Spotify and the optional Qobuz integration supply catalog metadata for request imports; neither is treated as a lyrics source. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB.
+If request processing downloaded valid audio but could not obtain or align suitable lyrics, the request stays open and the editor exposes two explicit admin actions. **Remove** discards the request. **Adopt** keeps the audio as an unreleased **Without lyrics** project, which can be found through the matching editor status filter. Imported lyrics become the source for a later per-song alignment. The project moves into the regular **In review** category only after usable lyrics and both instrumental and vocal stems exist; incomplete projects can never enter the guest library, queue, or stage.
+
+The editor exposes the same folder workflow under **Management → Import MP3 folder**. It reads ID3 metadata, prefers adjacent or embedded lyrics, falls back to LRCLIB, runs GPU stem separation and word/syllable alignment, and automatically admits only technically complete projects. The explicit **Adopt** action above is the sole incomplete-project exception and remains stage-blocked. Spotify and the optional Qobuz integration supply catalog metadata for request imports; neither is treated as a lyrics source. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB.
 
 ### Import UltraStar Deluxe lyrics
 

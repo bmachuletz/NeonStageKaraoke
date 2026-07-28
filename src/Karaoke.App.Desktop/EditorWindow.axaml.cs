@@ -286,7 +286,7 @@ public partial class EditorWindow : Window
             var replacing = viewModel.Document is { Lines.Count: > 0 };
             if (!await new ConfirmUltraStarImportWindow(imported, viewModel.SelectedSong, replacing)
                     .ShowDialog<bool>(this)) return;
-            viewModel.ImportUltraStarLyrics(imported);
+            await viewModel.ImportUltraStarLyricsAsync(imported);
         }
         catch (UltraStarFormatException exception)
         {
@@ -366,6 +366,18 @@ public partial class EditorWindow : Window
     {
         if (DataContext is EditorViewModel viewModel && sender is Button { Tag: EditorWishItem item })
             await viewModel.StartWishProcessingAsync(item);
+    }
+    private async void RemoveWishClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel || sender is not Button { Tag: EditorWishItem item }) return;
+        if (await new ConfirmWishActionWindow(item, adopt: false).ShowDialog<bool>(this))
+            await viewModel.RemoveWishAsync(item);
+    }
+    private async void AdoptWishAudioClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel || sender is not Button { Tag: EditorWishItem item }) return;
+        if (await new ConfirmWishActionWindow(item, adopt: true).ShowDialog<bool>(this))
+            await viewModel.AdoptWishAudioAsync(item);
     }
     private async void SearchAdminWishesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {

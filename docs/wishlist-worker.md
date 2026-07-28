@@ -13,8 +13,12 @@ Er verarbeitet die ältesten Wünsche zuerst und führt pro Titel diese Schritte
 6. Entfernen ausschließlich des vollständig erzeugten und akzeptierten Wunsches
 7. Bibliotheks-Reindex, damit Server und Bühne den Titel sofort sehen
 
-Ein Wunsch bleibt bei jedem Teilfehler oder abgelehnten Alignment in der Liste. Eine Prozesssperre verhindert
-doppelte parallele Downloads durch manuelle, cron- oder systemd-Aufrufe.
+Ein Wunsch bleibt bei jedem Teilfehler oder abgelehnten Alignment in der Liste. Wenn der Download bereits
+eine gültige Audiodatei geliefert hat, speichert der Server diesen Fund intern am Wunsch; der lokale Dateipfad
+wird nicht an Clients übertragen. Im Editor kann der Admin den fehlgeschlagenen Wunsch anschließend löschen
+oder den Fund ausdrücklich als unveröffentlichtes Projekt **Ohne Lyrics / Without Lyrics** übernehmen. Erst
+nach Lyrics-Import, erneutem Alignment, beiden Stems und Review wird daraus ein für die Stage freigebbarer Song.
+Eine Prozesssperre verhindert doppelte parallele Downloads durch manuelle, cron- oder systemd-Aufrufe.
 
 ## Einrichten
 

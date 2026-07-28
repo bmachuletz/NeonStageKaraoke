@@ -226,6 +226,33 @@ app.MapPost("/api/events/{eventId:guid}/wishlist/{wishId:guid}/process", async (
     return processing.TryStart(karaokeEvent, 1, 1, wishId)
         ? Results.Accepted(value: processing.GetStatus()) : Results.Conflict(processing.GetStatus());
 });
+app.MapPut("/api/admin/wishlist/{wishId:guid}/audio-candidate", async (
+    Guid wishId, string? eventToken, WishAudioCandidateRequest request, HttpContext context,
+    EventRepository events, WishlistRepository wishes, CancellationToken ct) =>
+{
+    if (!CanTransmitAdminSecrets(context)) return Results.StatusCode(StatusCodes.Status403Forbidden);
+    if (string.IsNullOrWhiteSpace(request.AudioPath)) return Results.BadRequest("Der Pfad zur Audiodatei fehlt.");
+    var eventId = await events.ResolveIdAsync(eventToken, ct);
+    if (eventId is null) return Results.NotFound();
+    return await wishes.SetAudioCandidateAsync(eventId.Value, wishId, Path.GetFullPath(request.AudioPath), request.Status, ct)
+        ? Results.NoContent() : Results.NotFound();
+});
+app.MapPost("/api/admin/events/{eventId:guid}/wishlist/{wishId:guid}/adopt-audio", async (
+    Guid eventId, Guid wishId, WishlistRepository wishes, LibraryRepository library, CancellationToken ct) =>
+{
+    var candidate = await wishes.GetAudioCandidateAsync(eventId, wishId, ct);
+    if (candidate is null) return Results.NotFound("Für diesen Wunsch liegt kein übernehmbarer Audiofund vor.");
+    try
+    {
+        var song = await library.AdoptWithoutLyricsAsync(candidate.Value.AudioPath, candidate.Value.Wish.Track,
+            wishId, ct);
+        if (!await wishes.RemoveAsync(eventId, wishId, ct))
+            return Results.Problem("Audio wurde übernommen, der Wunsch konnte jedoch nicht entfernt werden.");
+        return Results.Ok(song);
+    }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+    catch (InvalidOperationException exception) { return Results.Conflict(exception.Message); }
+});
 app.MapGet("/api/events/{token}/qr", async (string token, HttpRequest request, EventRepository events, CancellationToken ct) =>
 {
     if (await events.GetByTokenAsync(token, ct) is null) return Results.NotFound();
@@ -271,6 +298,13 @@ app.MapGet("/api/songs/{id:guid}", async (Guid id, LibraryRepository repo, Cance
 app.MapPut("/api/admin/songs/{id:guid}/review-status", async (Guid id, ChangeSongReviewStatusRequest request,
     LibraryRepository repo, CancellationToken ct) =>
     await repo.SetReviewStatusAsync(id, request.Status, ct) is { } song ? Results.Ok(song) : Results.BadRequest("Lyrics sowie Instrumental- und Vocalspur sind erforderlich."));
+app.MapPut("/api/admin/songs/{id:guid}/lyrics/import-source", async (Guid id, ImportLyricsSourceRequest request,
+    LibraryRepository repo, CancellationToken ct) =>
+{
+    try { return await repo.WriteImportedLyricsSourceAsync(id, request.Lyrics, ct) ? Results.NoContent() : Results.NotFound(); }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+    catch (InvalidOperationException exception) { return Results.Conflict(exception.Message); }
+});
 app.MapDelete("/api/admin/songs/{id:guid}", async (Guid id, LibraryRepository repo, CancellationToken ct) =>
     await repo.DeleteSongAsync(id, ct) is { } result ? Results.Ok(result) : Results.NotFound());
 app.MapGet("/api/songs/{id:guid}/lyrics", async (Guid id, LibraryRepository repo, LyricsVersionRepository versions, CancellationToken ct) =>

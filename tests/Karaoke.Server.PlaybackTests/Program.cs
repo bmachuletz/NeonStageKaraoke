@@ -2,10 +2,13 @@ using Karaoke.Contracts;
 using Karaoke.Server;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Text.Json;
 
 var databasePath = Path.Combine(Path.GetTempPath(), $"neon-stage-playback-{Guid.NewGuid():N}.db");
+string? adoptionLibraryPath = null;
+string? adoptionDatabasePath = null;
 try
 {
     var options = Options.Create(new KaraokeOptions { DatabasePath = databasePath });
@@ -183,6 +186,48 @@ try
     Assert(savedWishes.Count == 1 && savedWishes[0].RequestedBy == "Carla", "Doppelte Spotify-Wünsche werden nur einmal gespeichert.");
     Assert(savedWishes[0].Track.SpotifyUrl == wishedTrack.SpotifyUrl, "Der öffentliche Spotify-Link wird mit dem Wunsch gespeichert.");
 
+    adoptionLibraryPath = Path.Combine(Path.GetTempPath(), $"neon-stage-adoption-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(adoptionLibraryPath);
+    var candidateAudio = Path.Combine(adoptionLibraryPath, "Audio Candidate.wav");
+    WriteTestWave(candidateAudio);
+    Assert(await wishlist.SetAudioCandidateAsync(EventRepository.DefaultEventId, savedWishes[0].Id,
+            candidateAudio, "Audio gefunden · Lyrics-Alignment fehlgeschlagen", default),
+        "Ein fehlgeschlagenes Alignment merkt sich den vorhandenen Audiofund beim Wunsch.");
+    var candidateWish = (await wishlist.GetAsync(EventRepository.DefaultEventId, default)).Single();
+    Assert(candidateWish.HasAudioCandidate && candidateWish.Status.Contains("fehlgeschlagen", StringComparison.Ordinal),
+        "Der Client erhält Übernehmbarkeit und Fehlerstatus, aber keinen lokalen Dateipfad.");
+    var adoptionOptions = Options.Create(new KaraokeOptions
+        { DatabasePath = adoptionDatabasePath = Path.Combine(Path.GetTempPath(), $"neon-stage-adoption-{Guid.NewGuid():N}.db"), LibraryPath = adoptionLibraryPath });
+    var adoptionLibrary = new LibraryRepository(adoptionOptions, NullLogger<LibraryRepository>.Instance,
+        new TestHubContext(), new ChangeFeedService());
+    var adopted = await adoptionLibrary.AdoptWithoutLyricsAsync(candidateAudio, wishedTrack,
+        savedWishes[0].Id, default);
+    Assert(adopted.LibraryCategory == SongLibraryCategory.WithoutLyrics && !adopted.HasLyrics &&
+           adopted.ReviewStatus == SongReviewStatus.InReview,
+        "Ein bestätigter Audiofund wird ausschließlich als unveröffentlichtes Projekt ‚Ohne Lyrics‘ indexiert.");
+    Assert(await adoptionLibrary.SetReviewStatusAsync(adopted.Id, SongReviewStatus.Approved, default) is null,
+        "Ein Song ohne Lyrics und Stems kann nicht versehentlich für die Stage freigegeben werden.");
+    Assert(await adoptionLibrary.WriteImportedLyricsSourceAsync(adopted.Id,
+            "[00:01.000]<00:01.000,00:02.000>Demo", default),
+        "Nachträglich importierte Lyrics werden als Quelle für das nächste Alignment gespeichert.");
+    await adoptionLibrary.TryReindexAsync(default);
+    var stillIncomplete = await adoptionLibrary.GetAsync(adopted.Id, default);
+    Assert(stillIncomplete?.LibraryCategory == SongLibraryCategory.WithoutLyrics && !stillIncomplete.HasLyrics,
+        "Lyrics allein machen den Song ohne erzeugte Instrumental- und Vocalspuren noch nicht stagefähig.");
+    var candidateBasePath = Path.Combine(Path.GetDirectoryName(candidateAudio)!,
+        Path.GetFileNameWithoutExtension(candidateAudio));
+    await File.WriteAllBytesAsync(candidateBasePath + ".instrumental.ogg", [1]);
+    await File.WriteAllBytesAsync(candidateBasePath + ".vocals.ogg", [1]);
+    await adoptionLibrary.TryReindexAsync(default);
+    var completedAdoption = await adoptionLibrary.GetAsync(adopted.Id, default);
+    Assert(completedAdoption?.LibraryCategory == SongLibraryCategory.KaraokeReady &&
+           completedAdoption.HasLyrics && completedAdoption.HasInstrumental && completedAdoption.HasVocals,
+        "Nach Lyrics-Import und erfolgreicher Stem-Erzeugung wechselt das Projekt automatisch in die reguläre Review-Kategorie.");
+    Assert(await wishlist.RemoveAsync(EventRepository.DefaultEventId, savedWishes[0].Id, default) &&
+           (await wishlist.GetAsync(EventRepository.DefaultEventId, default)).Count == 0,
+        "Ein nicht verarbeiteter oder fehlgeschlagener Wunsch kann endgültig entfernt werden.");
+    await adoptionLibrary.DeleteSongAsync(adopted.Id, default);
+
     var party = await events.CreateAsync(new("Geburtstag", DateTimeOffset.UtcNow.AddDays(7)), default);
     await wishlist.AddAsync(party.Id, new(wishedTrack, "Eva"), default);
     var partyWishes = await wishlist.GetAsync(party.Id, default);
@@ -261,6 +306,9 @@ finally
     var qobuzPath = Path.Combine(Path.GetDirectoryName(databasePath)!,
         Path.GetFileNameWithoutExtension(databasePath) + ".qobuz-plugin.json");
     if (File.Exists(qobuzPath)) File.Delete(qobuzPath);
+    if (adoptionLibraryPath is not null && Directory.Exists(adoptionLibraryPath))
+        Directory.Delete(adoptionLibraryPath, recursive: true);
+    if (adoptionDatabasePath is not null && File.Exists(adoptionDatabasePath)) File.Delete(adoptionDatabasePath);
 }
 
 static void Assert(bool condition, string message)
@@ -290,6 +338,21 @@ static async Task<SongDto> SeedSongAsync(string databasePath, string title)
     command.Parameters.AddWithValue("$duration", song.DurationSeconds);
     await command.ExecuteNonQueryAsync();
     return song;
+}
+
+static void WriteTestWave(string path)
+{
+    const int sampleRate = 8000;
+    const short channels = 1;
+    const short bits = 16;
+    var dataSize = sampleRate * channels * (bits / 8);
+    using var stream = File.Create(path);
+    using var writer = new BinaryWriter(stream);
+    writer.Write("RIFF"u8.ToArray()); writer.Write(36 + dataSize); writer.Write("WAVE"u8.ToArray());
+    writer.Write("fmt "u8.ToArray()); writer.Write(16); writer.Write((short)1); writer.Write(channels);
+    writer.Write(sampleRate); writer.Write(sampleRate * channels * (bits / 8));
+    writer.Write((short)(channels * (bits / 8))); writer.Write(bits);
+    writer.Write("data"u8.ToArray()); writer.Write(dataSize); writer.Write(new byte[dataSize]);
 }
 
 sealed class TestHubContext : IHubContext<KaraokeHub>

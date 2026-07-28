@@ -20,12 +20,12 @@ public sealed class WishlistRepository(IOptions<KaraokeOptions> options, EventRe
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,trackJson,requestedBy,requestedAt,status FROM event_wishes WHERE eventId=$eventId ORDER BY requestedAt DESC";
+        command.CommandText = "SELECT id,trackJson,requestedBy,requestedAt,status,audioCandidatePath FROM event_wishes WHERE eventId=$eventId ORDER BY requestedAt DESC";
         command.Parameters.AddWithValue("$eventId", eventId.ToString());
         await using var reader = await command.ExecuteReaderAsync(ct);
         var result = new List<WishDto>();
         while (await reader.ReadAsync(ct))
-            result.Add(new(Guid.Parse(reader.GetString(0)), JsonSerializer.Deserialize<SpotifyTrackDto>(reader.GetString(1))!, reader.GetString(2), DateTimeOffset.Parse(reader.GetString(3)), reader.GetString(4)));
+            result.Add(Read(reader));
         return result;
     }
 
@@ -35,12 +35,12 @@ public sealed class WishlistRepository(IOptions<KaraokeOptions> options, EventRe
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
         var existing = connection.CreateCommand();
-        existing.CommandText = "SELECT id,trackJson,requestedBy,requestedAt,status FROM event_wishes WHERE eventId=$eventId AND spotifyId=$spotifyId";
+        existing.CommandText = "SELECT id,trackJson,requestedBy,requestedAt,status,audioCandidatePath FROM event_wishes WHERE eventId=$eventId AND spotifyId=$spotifyId";
         existing.Parameters.AddWithValue("$eventId", eventId.ToString());
         existing.Parameters.AddWithValue("$spotifyId", request.Track.Id);
         await using (var reader = await existing.ExecuteReaderAsync(ct))
             if (await reader.ReadAsync(ct))
-                return new(Guid.Parse(reader.GetString(0)), JsonSerializer.Deserialize<SpotifyTrackDto>(reader.GetString(1))!, reader.GetString(2), DateTimeOffset.Parse(reader.GetString(3)), reader.GetString(4));
+                return Read(reader);
 
         var wish = new WishDto(Guid.NewGuid(), request.Track, string.IsNullOrWhiteSpace(request.RequestedBy) ? "Gast" : request.RequestedBy.Trim(), DateTimeOffset.UtcNow, "Gewünscht");
         var insert = connection.CreateCommand();
@@ -67,4 +67,39 @@ public sealed class WishlistRepository(IOptions<KaraokeOptions> options, EventRe
         if (removed) changes.Publish("wishlist-changed");
         return removed;
     }
+
+    public async Task<bool> SetAudioCandidateAsync(Guid eventId, Guid id, string audioPath, string status,
+        CancellationToken ct)
+    {
+        await InitializeAsync(ct);
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+        var command = connection.CreateCommand();
+        command.CommandText = "UPDATE event_wishes SET audioCandidatePath=$path,status=$status WHERE id=$id AND eventId=$eventId";
+        command.Parameters.AddWithValue("$path", audioPath);
+        command.Parameters.AddWithValue("$status", string.IsNullOrWhiteSpace(status) ? "Audio gefunden" : status.Trim());
+        command.Parameters.AddWithValue("$id", id.ToString());
+        command.Parameters.AddWithValue("$eventId", eventId.ToString());
+        var updated = await command.ExecuteNonQueryAsync(ct) == 1;
+        if (updated) changes.Publish("wishlist-changed");
+        return updated;
+    }
+
+    public async Task<(WishDto Wish, string AudioPath)?> GetAudioCandidateAsync(Guid eventId, Guid id,
+        CancellationToken ct)
+    {
+        await InitializeAsync(ct);
+        await using var connection = new SqliteConnection(_connectionString);
+        await connection.OpenAsync(ct);
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT id,trackJson,requestedBy,requestedAt,status,audioCandidatePath FROM event_wishes WHERE id=$id AND eventId=$eventId AND audioCandidatePath IS NOT NULL";
+        command.Parameters.AddWithValue("$id", id.ToString());
+        command.Parameters.AddWithValue("$eventId", eventId.ToString());
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        return await reader.ReadAsync(ct) ? (Read(reader), reader.GetString(5)) : null;
+    }
+
+    private static WishDto Read(SqliteDataReader reader) => new(Guid.Parse(reader.GetString(0)),
+        JsonSerializer.Deserialize<SpotifyTrackDto>(reader.GetString(1))!, reader.GetString(2),
+        DateTimeOffset.Parse(reader.GetString(3)), reader.GetString(4), !reader.IsDBNull(5));
 }

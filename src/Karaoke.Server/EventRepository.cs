@@ -33,7 +33,7 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
                 CREATE UNIQUE INDEX IF NOT EXISTS ix_karaoke_events_active ON karaoke_events(isActive) WHERE isActive=1;
                 CREATE TABLE IF NOT EXISTS event_wishes(
                     id TEXT PRIMARY KEY,eventId TEXT NOT NULL,spotifyId TEXT NOT NULL,trackJson TEXT NOT NULL,
-                    requestedBy TEXT NOT NULL,requestedAt TEXT NOT NULL,status TEXT NOT NULL,
+                    requestedBy TEXT NOT NULL,requestedAt TEXT NOT NULL,status TEXT NOT NULL,audioCandidatePath TEXT,
                     UNIQUE(eventId,spotifyId),FOREIGN KEY(eventId) REFERENCES karaoke_events(id)
                 );
                 """;
@@ -42,6 +42,7 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
             await command.ExecuteNonQueryAsync(ct);
             await EnsureQueueEventColumnAsync(connection, ct);
+            await EnsureWishColumnsAsync(connection, ct);
             await MigrateWishesAsync(connection, ct);
         }
         finally { _mutex.Release(); }
@@ -213,6 +214,19 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
         var drop = connection.CreateCommand();
         drop.CommandText = "DROP TABLE wishes";
         await drop.ExecuteNonQueryAsync(ct);
+    }
+
+    private static async Task EnsureWishColumnsAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        var pragma = connection.CreateCommand();
+        pragma.CommandText = "PRAGMA table_info(event_wishes)";
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var reader = await pragma.ExecuteReaderAsync(ct))
+            while (await reader.ReadAsync(ct)) columns.Add(reader.GetString(1));
+        if (columns.Contains("audioCandidatePath")) return;
+        var alter = connection.CreateCommand();
+        alter.CommandText = "ALTER TABLE event_wishes ADD COLUMN audioCandidatePath TEXT";
+        await alter.ExecuteNonQueryAsync(ct);
     }
 
     private static KaraokeEventDto Read(SqliteDataReader reader) => new(Guid.Parse(reader.GetString(0)), reader.GetString(1),

@@ -88,6 +88,8 @@ while IFS= read -r wish; do
   ((max_wishes == 0 || processed + failed < max_wishes)) || break
   wish_id=$(jq -r '.id' <<<"$wish")
   wish_event_token=$(jq -r '._eventToken // empty' <<<"$wish")
+  wish_event_query=""
+  [[ -z "$wish_event_token" ]] || wish_event_query="?eventToken=$(printf '%s' "$wish_event_token" | jq -sRr @uri)"
   spotify_id=$(jq -r '.track.id' <<<"$wish")
   spotify_url=$(jq -r '.track.spotifyUrl // empty' <<<"$wish")
   catalog_source=$(jq -r '.track.sourceLabel // (if .track.source == 1 then "qobuz" else "spotify" end)' <<<"$wish" | tr '[:upper:]' '[:lower:]')
@@ -145,15 +147,28 @@ while IFS= read -r wish; do
   install -m 0644 "$downloaded" "$destination"
   rm -rf -- "$staging"
 
+  report_audio_candidate() {
+    local candidate_status=$1
+    local payload
+    payload=$(jq -cn --arg audioPath "$destination" --arg status "$candidate_status" \
+      '{audioPath:$audioPath,status:$status}')
+    curl -fsS -X PUT -H 'Content-Type: application/json' --data "$payload" \
+      "$server_url/api/admin/wishlist/$wish_id/audio-candidate$wish_event_query" >/dev/null ||
+      echo "Hinweis: Audiofund-Status konnte nicht am Server gespeichert werden." >&2
+  }
+  report_audio_candidate "Audio gefunden · Lyrics werden verarbeitet"
+
   echo "LRCLIB-Matching: $destination"
   if ! dotnet run --project "$repo_root/LrcMatcher/LrcMatcher.csproj" --no-build -- \
       "$destination" --plain-fallback --max-duration-difference 5 --aligner-url "$aligner_url"; then
+    report_audio_candidate "Audio gefunden · Lyrics-Matching fehlgeschlagen"
     echo "LRC-Matching fehlgeschlagen; Wunsch bleibt erhalten." >&2
     ((failed+=1))
     continue
   fi
   lrc="${destination%.*}.lrc"
   if [[ ! -s "$lrc" ]]; then
+    report_audio_candidate "Audio gefunden · keine geeigneten Lyrics"
     echo "Kein sicherer synchronisierter LRC-Treffer; Wunsch bleibt erhalten." >&2
     ((failed+=1))
     continue
@@ -162,11 +177,12 @@ while IFS= read -r wish; do
   echo "GPU-Wort-/Silbenalignment: $destination"
   if ! "$repo_root/scripts/linux/align-library.sh" --force \
       --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url"; then
+    report_audio_candidate "Audio gefunden · Lyrics-Alignment fehlgeschlagen"
     echo "Alignment fehlgeschlagen; Wunsch bleibt erhalten." >&2
     ((failed+=1))
     continue
   fi
-  [[ -s "${destination%.*}.alignment.json" ]] || { echo "Alignment-Sidecar fehlt; Wunsch bleibt erhalten." >&2; ((failed+=1)); continue; }
+  [[ -s "${destination%.*}.alignment.json" ]] || { report_audio_candidate "Audio gefunden · Alignment unvollständig"; echo "Alignment-Sidecar fehlt; Wunsch bleibt erhalten." >&2; ((failed+=1)); continue; }
   publishable=$(jq -r '.quality.publishable // false' "${destination%.*}.alignment.json")
   quality_score=$(jq -r '.quality.score // 0' "${destination%.*}.alignment.json")
   quality_grade=$(jq -r '.quality.grade // "unbekannt"' "${destination%.*}.alignment.json")
@@ -178,7 +194,7 @@ while IFS= read -r wish; do
   for required in "${destination%.*}.pre-align.lrc" \
       "${destination%.*}.instrumental.ogg" "${destination%.*}.vocals.ogg" \
       "${destination%.*}.visuals.json"; do
-    [[ -s "$required" ]] || { echo "Erforderliche Bibliotheksdatei fehlt: $required" >&2; ((failed+=1)); continue 2; }
+    [[ -s "$required" ]] || { report_audio_candidate "Audio gefunden · Karaoke-Artefakte unvollständig"; echo "Erforderliche Bibliotheksdatei fehlt: $required" >&2; ((failed+=1)); continue 2; }
   done
 
   # Keep the immutable matcher/import lyrics. They are required for a clean
@@ -187,8 +203,6 @@ while IFS= read -r wish; do
   rm -f -- "${destination%.*}.instrumental.flac" \
     "${destination%.*}.vocals.flac" "${destination%.*}.stems.json"
 
-  wish_event_query=""
-  [[ -z "$wish_event_token" ]] || wish_event_query="?eventToken=$(printf '%s' "$wish_event_token" | jq -sRr @uri)"
   curl -fsS -X DELETE "$server_url/api/wishlist/$wish_id$wish_event_query" >/dev/null
   ((processed+=1))
   echo "Komplett importiert und aus der Wunschliste entfernt: $title"

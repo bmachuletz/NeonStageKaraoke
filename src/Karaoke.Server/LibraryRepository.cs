@@ -62,6 +62,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 ,reviewStatus TEXT NOT NULL DEFAULT 'InReview'
                 ,hasInstrumental INTEGER NOT NULL DEFAULT 0
                 ,hasVocals INTEGER NOT NULL DEFAULT 0
+                ,libraryCategory TEXT NOT NULL DEFAULT 'KaraokeReady'
             );
             CREATE INDEX IF NOT EXISTS ix_songs_search ON songs(title, artist, album, fileName);
             CREATE INDEX IF NOT EXISTS ix_songs_path ON songs(path);
@@ -155,26 +156,34 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 var fileInfo = new FileInfo(fullPath);
                 var modified = fileInfo.LastWriteTimeUtc.Ticks;
                 var lrcPath = FindLyricsPath(fullPath);
-                if (lrcPath is null || !HasUsableLyrics(lrcPath))
-                    continue;
+                var hasUsableLyrics = lrcPath is not null && HasUsableLyrics(lrcPath);
                 var hasInstrumental = StemExists(fullPath, "instrumental");
                 var hasVocals = StemExists(fullPath, "vocals");
+                var completeProject = hasUsableLyrics && hasInstrumental && hasVocals;
+                var adoption = ReadWithoutLyricsMarker(fullPath);
                 // Ein Song ist erst ein bearbeitbares Bibliotheksprojekt, wenn
                 // Text und beide getrennten Arbeits-/Stage-Spuren vorhanden sind.
-                if (!hasInstrumental || !hasVocals)
-                    continue;
+                // Die einzige Ausnahme ist ein ausdrücklich vom Admin
+                // übernommener Audiofund. Er bleibt bis zur Nachbearbeitung
+                // strikt unveröffentlicht und von der Stage ausgeschlossen.
+                if (!completeProject && adoption is null) continue;
+                var category = completeProject
+                    ? SongLibraryCategory.KaraokeReady
+                    : SongLibraryCategory.WithoutLyrics;
+                var indexedLrcPath = completeProject ? lrcPath : null;
                 foundPaths.Add(fullPath);
                 indexedFiles.TryGetValue(fullPath, out var existing);
                 var lyricsChanged = existing is not null &&
-                    (!StringComparer.OrdinalIgnoreCase.Equals(existing.LrcPath, lrcPath) ||
-                     existing.HasLyrics != (lrcPath is not null));
+                    (!StringComparer.OrdinalIgnoreCase.Equals(existing.LrcPath, indexedLrcPath) ||
+                     existing.HasLyrics != completeProject);
 
                 if (existing is not null && existing.Modified == modified && existing.Size == fileInfo.Length &&
-                    existing.HasCover >= 0 && existing.HasInstrumental == hasInstrumental && existing.HasVocals == hasVocals)
+                    existing.HasCover >= 0 && existing.HasInstrumental == hasInstrumental &&
+                    existing.HasVocals == hasVocals && existing.LibraryCategory == category)
                 {
                     if (lyricsChanged)
                     {
-                        await UpdateLyricsAsync(fullPath, lrcPath, cancellationToken);
+                        await UpdateLyricsAsync(fullPath, indexedLrcPath, category, cancellationToken);
                         IncrementStatus(status => status with { UpdatedFiles = status.UpdatedFiles + 1 });
                     }
                     continue;
@@ -186,17 +195,18 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                     fullPath,
                     Path.GetRelativePath(root, fullPath),
                     Path.GetFileName(fullPath),
-                    tagFile.Tag.Title ?? Path.GetFileNameWithoutExtension(fullPath),
-                    tagFile.Tag.FirstPerformer ?? string.Empty,
-                    tagFile.Tag.Album ?? string.Empty,
+                    adoption?.Title ?? tagFile.Tag.Title ?? Path.GetFileNameWithoutExtension(fullPath),
+                    adoption?.Artist ?? tagFile.Tag.FirstPerformer ?? string.Empty,
+                    adoption?.Album ?? tagFile.Tag.Album ?? string.Empty,
                     tagFile.Properties.Duration.TotalSeconds,
                     Path.GetExtension(fullPath).TrimStart('.').ToUpperInvariant(),
                     fileInfo.Length,
                     modified,
-                    lrcPath,
+                    indexedLrcPath,
                     CoverSidecarPath(fullPath) is not null || tagFile.Tag.Pictures.Length > 0,
                     hasInstrumental,
                     hasVocals,
+                    category,
                     cancellationToken);
 
                 IncrementStatus(status => existing is null
@@ -223,7 +233,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT path, modified, size, lrcPath, hasLyrics, hasCover,hasInstrumental,hasVocals FROM songs";
+        command.CommandText = "SELECT path, modified, size, lrcPath, hasLyrics, hasCover,hasInstrumental,hasVocals,libraryCategory FROM songs";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new Dictionary<string, IndexedFile>(StringComparer.OrdinalIgnoreCase);
         while (await reader.ReadAsync(cancellationToken))
@@ -233,7 +243,9 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 reader.GetInt64(2),
                 reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.GetInt32(4) == 1,
-                reader.GetInt32(5), reader.GetInt32(6) == 1, reader.GetInt32(7) == 1);
+                reader.GetInt32(5), reader.GetInt32(6) == 1, reader.GetInt32(7) == 1,
+                Enum.TryParse<SongLibraryCategory>(reader.GetString(8), out var category)
+                    ? category : SongLibraryCategory.KaraokeReady);
         }
         return result;
     }
@@ -241,21 +253,22 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
     private async Task UpsertAsync(Guid id, string path, string relativePath, string fileName,
         string title, string artist, string album, double duration, string format, long size,
         long modified, string? lrcPath, bool hasCover, bool hasInstrumental, bool hasVocals,
+        SongLibraryCategory category,
         CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO songs(id,path,title,artist,album,duration,hasLyrics,modified,relativePath,fileName,audioFormat,size,lrcPath,lastIndexed,searchTitle,searchArtist,searchAlbum,searchFileName,hasCover,reviewStatus,hasInstrumental,hasVocals)
-            VALUES($id,$path,$title,$artist,$album,$duration,$hasLyrics,$modified,$relativePath,$fileName,$format,$size,$lrcPath,$lastIndexed,$searchTitle,$searchArtist,$searchAlbum,$searchFileName,$hasCover,'InReview',$hasInstrumental,$hasVocals)
+            INSERT INTO songs(id,path,title,artist,album,duration,hasLyrics,modified,relativePath,fileName,audioFormat,size,lrcPath,lastIndexed,searchTitle,searchArtist,searchAlbum,searchFileName,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory)
+            VALUES($id,$path,$title,$artist,$album,$duration,$hasLyrics,$modified,$relativePath,$fileName,$format,$size,$lrcPath,$lastIndexed,$searchTitle,$searchArtist,$searchAlbum,$searchFileName,$hasCover,'InReview',$hasInstrumental,$hasVocals,$category)
             ON CONFLICT(path) DO UPDATE SET
                 title=$title, artist=$artist, album=$album, duration=$duration,
                 hasLyrics=$hasLyrics, modified=$modified, relativePath=$relativePath,
                 fileName=$fileName, audioFormat=$format, size=$size, lrcPath=$lrcPath,
                 lastIndexed=$lastIndexed, searchTitle=$searchTitle, searchArtist=$searchArtist,
                 searchAlbum=$searchAlbum, searchFileName=$searchFileName, hasCover=$hasCover,
-                hasInstrumental=$hasInstrumental, hasVocals=$hasVocals
+                hasInstrumental=$hasInstrumental, hasVocals=$hasVocals, libraryCategory=$category
             """;
         command.Parameters.AddWithValue("$id", id.ToString());
         command.Parameters.AddWithValue("$path", path);
@@ -278,17 +291,20 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         command.Parameters.AddWithValue("$hasCover", hasCover ? 1 : 0);
         command.Parameters.AddWithValue("$hasInstrumental", hasInstrumental ? 1 : 0);
         command.Parameters.AddWithValue("$hasVocals", hasVocals ? 1 : 0);
+        command.Parameters.AddWithValue("$category", category.ToString());
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    private async Task UpdateLyricsAsync(string path, string? lrcPath, CancellationToken cancellationToken)
+    private async Task UpdateLyricsAsync(string path, string? lrcPath, SongLibraryCategory category,
+        CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "UPDATE songs SET hasLyrics=$hasLyrics,lrcPath=$lrcPath,lastIndexed=$lastIndexed WHERE path=$path";
+        command.CommandText = "UPDATE songs SET hasLyrics=$hasLyrics,lrcPath=$lrcPath,libraryCategory=$category,lastIndexed=$lastIndexed WHERE path=$path";
         command.Parameters.AddWithValue("$hasLyrics", lrcPath is null ? 0 : 1);
         command.Parameters.AddWithValue("$lrcPath", (object?)lrcPath ?? DBNull.Value);
+        command.Parameters.AddWithValue("$category", category.ToString());
         command.Parameters.AddWithValue("$lastIndexed", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$path", path);
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -347,7 +363,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         var totalCount = Convert.ToInt32(await countCommand.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
 
         var command = connection.CreateCommand();
-        command.CommandText = $"SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals FROM songs WHERE {where} ORDER BY {order} LIMIT $take OFFSET $skip";
+        command.CommandText = $"SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory FROM songs WHERE {where} ORDER BY {order} LIMIT $take OFFSET $skip";
         command.Parameters.AddWithValue("$take", pageSize);
         command.Parameters.AddWithValue("$skip", (page - 1) * pageSize);
         AddSearchParameters(command, terms, normalizedQuery, includeRankingParameters: terms.Length > 0);
@@ -377,7 +393,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        var columns = "id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals";
+        var columns = "id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory";
         var release = includeUnreleased ? "1=1" : "reviewStatus='Approved'";
         command.CommandText = string.IsNullOrWhiteSpace(term)
             ? $"SELECT {columns} FROM songs WHERE {release} ORDER BY artist,title LIMIT $take OFFSET $skip"
@@ -398,7 +414,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals FROM songs WHERE hasLyrics=1 AND reviewStatus='Approved' ORDER BY lastIndexed DESC LIMIT $take";
+        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory FROM songs WHERE hasLyrics=1 AND reviewStatus='Approved' ORDER BY lastIndexed DESC LIMIT $take";
         command.Parameters.AddWithValue("$take", Math.Clamp(take, 1, 30));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var songs = new List<SongDto>();
@@ -412,12 +428,72 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         return result.Song;
     }
 
+    public async Task<SongDto> AdoptWithoutLyricsAsync(string audioPath, SpotifyTrackDto track, Guid wishId,
+        CancellationToken cancellationToken)
+    {
+        var root = Path.GetFullPath(_options.LibraryPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var fullPath = Path.GetFullPath(audioPath);
+        if (!fullPath.StartsWith(root, StringComparison.Ordinal) || !File.Exists(fullPath) ||
+            !SupportedExtensions.Contains(Path.GetExtension(fullPath)))
+            throw new ArgumentException("Der Audiofund liegt nicht als unterstützte Datei in der Bibliothek.");
+        EnsureNoSymbolicPath(root.TrimEnd(Path.DirectorySeparatorChar), fullPath);
+
+        var markerPath = WithoutLyricsMarkerPath(fullPath);
+        var marker = new WithoutLyricsMarker(
+            string.IsNullOrWhiteSpace(track.Title) ? Path.GetFileNameWithoutExtension(fullPath) : track.Title.Trim(),
+            track.Artist.Trim(), track.Album.Trim(), track.SourceUrl ?? track.SpotifyUrl, wishId, DateTimeOffset.UtcNow);
+        var temporary = markerPath + "." + Guid.NewGuid().ToString("N") + ".partial";
+        try
+        {
+            await File.WriteAllTextAsync(temporary,
+                JsonSerializer.Serialize(marker, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }),
+                new UTF8Encoding(false), cancellationToken);
+            File.Move(temporary, markerPath, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+
+        if (!await TryReindexAsync(cancellationToken))
+            throw new InvalidOperationException("Der Bibliotheksindex wird gerade aktualisiert. Übernahme bitte erneut versuchen.");
+        return await GetAsync(StableId(fullPath), cancellationToken)
+               ?? throw new InvalidOperationException("Der Audiofund konnte nicht in den Bibliotheksindex übernommen werden.");
+    }
+
+    public async Task<bool> WriteImportedLyricsSourceAsync(Guid id, string lyrics,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(lyrics)) throw new ArgumentException("Die importierten Lyrics sind leer.");
+        var indexed = await SearchByIdAsync(id, cancellationToken);
+        if (indexed.Path is null) return false;
+        var root = Path.GetFullPath(_options.LibraryPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var audioPath = Path.GetFullPath(indexed.Path);
+        if (!audioPath.StartsWith(root, StringComparison.Ordinal))
+            throw new InvalidOperationException("Song liegt außerhalb der konfigurierten Bibliothek.");
+        EnsureNoSymbolicPath(root.TrimEnd(Path.DirectorySeparatorChar), audioPath);
+        var target = Path.ChangeExtension(audioPath, ".lrc");
+        var temporary = target + "." + Guid.NewGuid().ToString("N") + ".partial";
+        try
+        {
+            await File.WriteAllTextAsync(temporary, lyrics.Trim() + Environment.NewLine,
+                new UTF8Encoding(false), cancellationToken);
+            File.Move(temporary, target, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+        changes.Publish("library-changed");
+        return true;
+    }
+
     public async Task<SongDto?> SetReviewStatusAsync(Guid id, SongReviewStatus status, CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "UPDATE songs SET reviewStatus=$status WHERE id=$id AND hasLyrics=1 AND hasInstrumental=1 AND hasVocals=1";
+        command.CommandText = "UPDATE songs SET reviewStatus=$status WHERE id=$id AND hasLyrics=1 AND hasInstrumental=1 AND hasVocals=1 AND libraryCategory='KaraokeReady'";
         command.Parameters.AddWithValue("$id", id.ToString());
         command.Parameters.AddWithValue("$status", status.ToString());
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return null;
@@ -672,11 +748,11 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,path FROM songs WHERE id=$id";
+        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory,path FROM songs WHERE id=$id";
         command.Parameters.AddWithValue("$id", id.ToString());
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
-            ? (ReadSong(reader), reader.GetString(10))
+            ? (ReadSong(reader), reader.GetString(11))
             : (null, null);
     }
 
@@ -684,7 +760,9 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         Guid.Parse(reader.GetString(0)), reader.GetString(1), reader.GetString(2), reader.GetString(3),
         reader.GetDouble(4), reader.GetInt32(5) == 1, false, reader.GetInt32(6) == 1,
         Enum.TryParse<SongReviewStatus>(reader.GetString(7), out var status) ? status : SongReviewStatus.InReview,
-        reader.GetInt32(8) == 1, reader.GetInt32(9) == 1);
+        reader.GetInt32(8) == 1, reader.GetInt32(9) == 1,
+        Enum.TryParse<SongLibraryCategory>(reader.GetString(10), out var category)
+            ? category : SongLibraryCategory.KaraokeReady);
 
     private static async Task MigrateExistingSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -703,7 +781,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
             ["hasCover"] = "INTEGER NOT NULL DEFAULT -1",
             ["reviewStatus"] = "TEXT NOT NULL DEFAULT 'InReview'",
             ["hasInstrumental"] = "INTEGER NOT NULL DEFAULT 0",
-            ["hasVocals"] = "INTEGER NOT NULL DEFAULT 0"
+            ["hasVocals"] = "INTEGER NOT NULL DEFAULT 0",
+            ["libraryCategory"] = "TEXT NOT NULL DEFAULT 'KaraokeReady'"
         };
         var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pragma = connection.CreateCommand();
@@ -782,6 +861,36 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         return File.Exists(path) ? path : null;
     }
 
+    private static string WithoutLyricsMarkerPath(string audioPath) => Path.Combine(
+        Path.GetDirectoryName(audioPath)!, Path.GetFileNameWithoutExtension(audioPath) + ".without-lyrics.json");
+
+    private static WithoutLyricsMarker? ReadWithoutLyricsMarker(string audioPath)
+    {
+        var path = WithoutLyricsMarkerPath(audioPath);
+        if (!File.Exists(path)) return null;
+        try
+        {
+            return JsonSerializer.Deserialize<WithoutLyricsMarker>(File.ReadAllText(path),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static void EnsureNoSymbolicPath(string root, string path)
+    {
+        var relative = Path.GetRelativePath(root, path);
+        var current = root;
+        foreach (var part in relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            current = Path.Combine(current, part);
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0)
+                throw new ArgumentException("Der Audiofund darf nicht über einen symbolischen Link eingebunden werden.");
+        }
+    }
+
     private static bool HasUsableLyrics(string lrcPath)
     {
         try
@@ -833,5 +942,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
     }
 
     private sealed record IndexedFile(long Modified, long Size, string? LrcPath, bool HasLyrics, int HasCover,
-        bool HasInstrumental, bool HasVocals);
+        bool HasInstrumental, bool HasVocals, SongLibraryCategory LibraryCategory);
+    private sealed record WithoutLyricsMarker(string Title, string Artist, string Album, string? SourceUrl,
+        Guid WishId, DateTimeOffset AdoptedAt);
 }
