@@ -333,6 +333,28 @@ Assert(ultraStarDocument.Segments.All(segment => segment.Origin == SegmentOrigin
 Assert(ultraStar.ToEnhancedLrc().Contains("<00:01.000,00:01.500>Hello", StringComparison.Ordinal),
     "Der Server kann UltraStar-Timing verlustarm als Enhanced LRC an die Pipeline übergeben.");
 
+var exportedEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditorDocument
+{
+    SongId = Guid.Parse("24f786c3-38a7-46bf-ac04-843328aa3124"),
+    Lines =
+    [
+        new LyricSegment
+        {
+            Id = Guid.NewGuid(), Type = LyricSegmentType.Line,
+            Start = TimeSpan.FromSeconds(61.25), End = TimeSpan.FromSeconds(63), Text = "Sing loud",
+            Children =
+            [
+                new LyricSegment { Id = Guid.NewGuid(), Type = LyricSegmentType.Word,
+                    Start = TimeSpan.FromSeconds(61.25), End = TimeSpan.FromSeconds(61.8), Text = "Sing" },
+                new LyricSegment { Id = Guid.NewGuid(), Type = LyricSegmentType.Word,
+                    Start = TimeSpan.FromSeconds(62.1), End = TimeSpan.FromSeconds(63), Text = "loud" }
+            ]
+        }
+    ]
+});
+Assert(exportedEditorLrc == "[01:01.250]<01:01.250,01:01.800>Sing <01:02.100,01:03.000>loud" + Environment.NewLine,
+    "Editor revisions should export their exact word windows as enhanced LRC");
+
 const string absoluteUltraStar = """
 #TITLE:Absolute Demo
 #ARTIST:Example Artist

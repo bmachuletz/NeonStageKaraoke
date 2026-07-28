@@ -5,9 +5,12 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 aligner_url="${LRC_ALIGNER_URL:-http://127.0.0.1:8081}"
 audio=""
 language="auto"
+canonical_source=""
+output_dir=""
+reindex=1
 
 usage() {
-  echo "Usage: $0 --audio FILE [--url URL] [--language auto|de|en|...]"
+  echo "Usage: $0 --audio FILE [--url URL] [--language auto|de|en|...] [--canonical FILE] [--output-dir DIR] [--no-reindex]"
 }
 
 while (($#)); do
@@ -15,27 +18,40 @@ while (($#)); do
     --audio) audio=${2:?Audio file missing}; shift 2 ;;
     --url) aligner_url=${2:?URL missing}; shift 2 ;;
     --language) language=${2:?Language missing}; shift 2 ;;
+    --canonical) canonical_source=${2:?Canonical lyrics file missing}; shift 2 ;;
+    --output-dir) output_dir=${2:?Output directory missing}; shift 2 ;;
+    --no-reindex) reindex=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-for command in curl jq install; do
+for command in curl jq install realpath; do
   command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }
 done
 [[ -n "$audio" && -f "$audio" ]] || { echo "Audio file not found: $audio" >&2; exit 1; }
+[[ -z "$canonical_source" || -f "$canonical_source" ]] || { echo "Canonical lyrics file not found: $canonical_source" >&2; exit 1; }
 curl -fsS "$aligner_url/health" >/dev/null || { echo "Aligner is unavailable: $aligner_url" >&2; exit 1; }
 
 base=${audio%.*}
 work_dir=$(mktemp -d)
 trap 'rm -rf -- "$work_dir"' EXIT
 canonical_lrc=""
-if [[ -s "$base.lrc" ]]; then
+if [[ -n "$canonical_source" ]]; then
+  canonical_lrc="$work_dir/canonical.lrc"
+  install -m 0600 "$canonical_source" "$canonical_lrc"
+elif [[ -s "$base.lrc" ]]; then
   canonical_lrc="$work_dir/canonical.lrc"
   install -m 0600 "$base.lrc" "$canonical_lrc"
 elif [[ -s "$base.pre-align.lrc" ]]; then
   canonical_lrc="$work_dir/canonical.lrc"
   install -m 0600 "$base.pre-align.lrc" "$canonical_lrc"
+fi
+destination_base="$base"
+if [[ -n "$output_dir" ]]; then
+  mkdir -p "$output_dir"
+  output_dir=$(realpath "$output_dir")
+  destination_base="$output_dir/$(basename "$base")"
 fi
 
 echo "[2%] Uploading audio for complete lyrics recognition"
@@ -78,15 +94,20 @@ output_lrc=$(jq -r '.output_lrc' <<<"$status")
 output_report=$(jq -r '.output_report' <<<"$status")
 result_lrc="$work_dir/result.lrc"
 download_output "$output_lrc" "$result_lrc"
-download_output "$output_report" "$base.transcription.json"
-install -m 0644 "$result_lrc" "$base.pre-align.lrc"
-install -m 0644 "$result_lrc" "$base.lrc"
+download_output "$output_report" "$destination_base.transcription.json"
+if [[ -z "$output_dir" ]]; then
+  install -m 0644 "$result_lrc" "$base.pre-align.lrc"
+  install -m 0644 "$result_lrc" "$base.lrc"
+fi
 if [[ $(jq -r '.canonical_transfer.applied // false' <<<"$status") == true ]]; then
   coverage=$(jq -r '.canonical_transfer.mapping_coverage' <<<"$status")
   echo "[54%] Canonical spelling and line structure retained (coverage: $coverage)"
 fi
 
 echo "[55%] Complete transcript stored; starting the regular alignment pipeline"
-"$repo_root/scripts/linux/align-library.sh" --force --library "$(dirname "$audio")" \
-  --match "$(basename "$audio")" --url "$aligner_url" --language "$language"
+alignment_args=(--force --library "$(dirname "$audio")" --match "$(basename "$audio")" \
+  --url "$aligner_url" --language "$language" --lyrics-source "$result_lrc")
+[[ -z "$output_dir" ]] || alignment_args+=(--output-dir "$output_dir")
+((reindex != 0)) || alignment_args+=(--no-reindex)
+"$repo_root/scripts/linux/align-library.sh" "${alignment_args[@]}"
 echo "[100%] Complete lyrics recognition and alignment finished"

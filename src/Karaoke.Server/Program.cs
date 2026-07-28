@@ -119,8 +119,9 @@ app.MapPost("/api/admin/songs/{id:guid}/recognize-lyrics", async (
         false => Results.Conflict("Es läuft bereits eine vollständige Lyrics-Erkennung."),
         true => Results.Accepted(value: recognition.GetStatus())
     });
-app.MapPost("/api/admin/songs/{id:guid}/realign", async (Guid id, SongRealignmentService realignment, CancellationToken ct) =>
-    await realignment.TryStartAsync(id, ct) switch
+app.MapPost("/api/admin/songs/{id:guid}/realign", async (Guid id, SongRealignmentRequest? request,
+    SongRealignmentService realignment, CancellationToken ct) =>
+    await realignment.TryStartAsync(id, request, ct) switch
     {
         null => Results.NotFound(),
         false => Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung."),

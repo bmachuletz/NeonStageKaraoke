@@ -686,7 +686,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
             : lyrics;
     }
 
-    private static async Task<LyricsDto> AddSyllableAlignmentAsync(
+    internal static async Task<LyricsDto> AddSyllableAlignmentAsync(
         LyricsDto lyrics, string alignmentPath, CancellationToken cancellationToken)
     {
         try

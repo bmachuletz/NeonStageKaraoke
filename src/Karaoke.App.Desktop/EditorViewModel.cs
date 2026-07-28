@@ -777,12 +777,20 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             Status = "Bitte zuerst einen Song auswählen.";
             return;
         }
+        if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
+        {
+            AppendConsole("Der aktuelle Editor-Stand konnte nicht als Alignment-Basis gespeichert werden.");
+            return;
+        }
         ConsoleVisible = true;
         _audio.Stop();
-        AppendConsole($"> GPU-Neuausrichtung: {song.Title} · {song.Artist}");
+        AppendConsole($"> Duales GPU-Alignment: {song.Title} · {song.Artist}");
+        AppendConsole("  1. letzter gespeicherter Editor-Stand");
+        AppendConsole("  2. ursprüngliche LRCLIB-Lyrics + Volltranskript-Timing");
         try
         {
-            using var response = await _http.PostAsync($"/api/admin/songs/{song.Id}/realign", null, cancellationToken);
+            using var response = await _http.PostAsJsonAsync($"/api/admin/songs/{song.Id}/realign",
+                new SongRealignmentRequest(_serverVersionId), cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
             {
                 AppendConsole("Es läuft bereits eine GPU-Neuausrichtung. Es wird kein zweiter Song gestartet.");
@@ -791,7 +799,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledRealignmentJob = null;
-            Status = $"GPU-Alignment für {song.Title} läuft im Hintergrund …";
+            Status = $"Zwei GPU-Alignment-Varianten für {song.Title} laufen im Hintergrund …";
             await RefreshRealignmentStatusAsync(cancellationToken);
         }
         catch (Exception exception)
@@ -2322,6 +2330,14 @@ public sealed record EditorLyricsVersionItem(LyricsVersionSummaryDto Version, bo
     public string CurrentLabel => IsCurrent
         ? (EditorLocale.German ? "AKTUELLER ARBEITSSTAND" : "CURRENT WORKING VERSION")
         : string.Empty;
+    public string VariantLabel => Version.AnalysisRunId switch
+    {
+        { } value when value.Contains(":editor-basis:", StringComparison.Ordinal) =>
+            EditorLocale.German ? "VARIANTE · LETZTER EDITOR-STAND" : "VARIANT · LATEST EDITOR VERSION",
+        { } value when value.Contains(":lrclib-full-transcript", StringComparison.Ordinal) =>
+            EditorLocale.German ? "VARIANTE · LRCLIB + VOLLTRANSKRIPT" : "VARIANT · LRCLIB + FULL TRANSCRIPT",
+        _ => string.Empty
+    };
     public bool CanDelete => Version.Status != LyricsVersionStatus.Published;
     public string DeleteHint => CanDelete
         ? (EditorLocale.German ? "Diesen archivierten Stand löschen" : "Delete this archived version")

@@ -36,6 +36,29 @@ internal sealed class LyricsAlignmentVersionService(
         return version;
     }
 
+    public async Task<LyricsVersionDto> SnapshotFileAsync(Guid songId, string lrcPath, string alignmentPath,
+        string analysisRunId, string modelVersion, CancellationToken cancellationToken)
+    {
+        var song = await library.GetAsync(songId, cancellationToken)
+                   ?? throw new InvalidOperationException($"Song {songId} wurde nicht gefunden.");
+        if (!File.Exists(lrcPath))
+            throw new InvalidOperationException($"Alignment-Ausgabe fehlt: {lrcPath}");
+        var source = await File.ReadAllLinesAsync(lrcPath, cancellationToken);
+        var lyrics = LrcParser.Parse(songId, source, TimeSpan.FromSeconds(song.DurationSeconds));
+        if (File.Exists(alignmentPath))
+            lyrics = await LibraryRepository.AddSyllableAlignmentAsync(
+                lyrics, alignmentPath, cancellationToken);
+        if (lyrics.Lines.Count == 0)
+            throw new InvalidOperationException("Die Alignment-Ausgabe enthält keine lesbaren Lyrics.");
+        var document = LyricsDocumentImporter.Import(lyrics, analysisRunId, modelVersion);
+        var json = JsonSerializer.Serialize(document, JsonOptions);
+        var version = await versions.CreateAsync(songId,
+            new CreateLyricsVersionRequest(json, analysisRunId, LyricsVersionStatus.InReview),
+            cancellationToken);
+        changes.Publish("lyrics-version-changed");
+        return version;
+    }
+
     public async Task<IReadOnlyDictionary<Guid, string?>> CaptureSourceFingerprintsAsync(
         CancellationToken cancellationToken)
     {

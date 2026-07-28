@@ -7,9 +7,12 @@ language="auto"
 force=0
 separate=true
 match=""
+lyrics_source=""
+output_dir=""
+reindex=1
 
 usage() {
-  echo "Verwendung: $0 [--force] [--library PFAD] [--url URL] [--language SPRACHE] [--no-separate] [--match TEXT]"
+  echo "Verwendung: $0 [--force] [--library PFAD] [--url URL] [--language SPRACHE] [--no-separate] [--match TEXT] [--lyrics-source DATEI] [--output-dir PFAD] [--no-reindex]"
 }
 
 while (($#)); do
@@ -20,15 +23,27 @@ while (($#)); do
     --language) language=${2:?Sprache fehlt}; shift 2 ;;
     --no-separate) separate=false; shift ;;
     --match) match=${2:?Suchtext fehlt}; shift 2 ;;
+    --lyrics-source) lyrics_source=${2:?Lyrics-Datei fehlt}; shift 2 ;;
+    --output-dir) output_dir=${2:?Ausgabeordner fehlt}; shift 2 ;;
+    --no-reindex) reindex=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
-for command in curl jq find install; do
+for command in curl jq find install realpath; do
   command -v "$command" >/dev/null || { echo "Fehlendes Programm: $command" >&2; exit 1; }
 done
 [[ -d "$library" ]] || { echo "Bibliothek nicht gefunden: $library" >&2; exit 1; }
+[[ -z "$lyrics_source" || -f "$lyrics_source" ]] || { echo "Lyrics-Quelle nicht gefunden: $lyrics_source" >&2; exit 1; }
+if [[ -n "$lyrics_source" && -z "$match" ]]; then
+  echo "--lyrics-source erfordert --match, damit die Quelle genau einem Song zugeordnet wird." >&2
+  exit 2
+fi
+if [[ -n "$output_dir" ]]; then
+  mkdir -p "$output_dir"
+  output_dir=$(realpath "$output_dir")
+fi
 curl -fsS "$aligner_url/health" >/dev/null || {
   echo "Aligner ist unter $aligner_url nicht erreichbar." >&2
   echo "Start: (cd lyrics-word-aligner && docker compose up -d)" >&2
@@ -61,7 +76,11 @@ while IFS= read -r -d '' audio; do
   [[ -f "$base.pre-align.lrc" ]] || install -m 0644 "$lrc" "$base.pre-align.lrc"
   # The immutable matcher/import source is always authoritative.  Reusing an
   # enhanced output LRC as input compounds timing errors on every later run.
-  input_lrc="$base.pre-align.lrc"
+  input_lrc=${lyrics_source:-"$base.pre-align.lrc"}
+  destination_base="$base"
+  if [[ -n "$output_dir" ]]; then
+    destination_base="$output_dir/$(basename "$base")"
+  fi
 
   if ((force == 0)) && grep -Eq '<[0-9]{1,3}:[0-9]{2}([.:][0-9]{1,3})?,[0-9]{1,3}:[0-9]{2}([.:][0-9]{1,3})?>' "$lrc"; then
     if [[ "$separate" == false || ( -f "$base.vocals.flac" && -f "$base.instrumental.flac" ) ]]; then
@@ -136,16 +155,16 @@ while IFS= read -r -d '' audio; do
   output_lrc=$(jq -er '.output_lrc | strings | select(length > 0)' <<<"$status") || output_lrc=""
   output_report=$(jq -er '.output_report | strings | select(length > 0)' <<<"$status") || output_report=""
   download_failed=0
-  download "$output_lrc" "$lrc" || download_failed=1
-  download "$output_report" "$base.alignment.json" || download_failed=1
+  download "$output_lrc" "$destination_base.lrc" || download_failed=1
+  download "$output_report" "$destination_base.alignment.json" || download_failed=1
 
   if [[ "$separate" == true ]]; then
     vocals=$(jq -r '.stems.vocals // empty' <<<"$status")
     instrumental=$(jq -r '.stems.instrumental // empty' <<<"$status")
     manifest=$(jq -r '.stems_manifest // empty' <<<"$status")
-    [[ -z "$vocals" ]] || download "$vocals" "$base.vocals.flac" || download_failed=1
-    [[ -z "$instrumental" ]] || download "$instrumental" "$base.instrumental.flac" || download_failed=1
-    [[ -z "$manifest" ]] || download "$manifest" "$base.stems.json" || download_failed=1
+    [[ -z "$vocals" ]] || download "$vocals" "$destination_base.vocals.flac" || download_failed=1
+    [[ -z "$instrumental" ]] || download "$instrumental" "$destination_base.instrumental.flac" || download_failed=1
+    [[ -z "$manifest" ]] || download "$manifest" "$destination_base.stems.json" || download_failed=1
   fi
 
   if ((download_failed != 0)); then
@@ -155,8 +174,8 @@ while IFS= read -r -d '' audio; do
   fi
 
   for stem_kind in vocals instrumental; do
-    stem_flac="$base.$stem_kind.flac"
-    stem_ogg="$base.$stem_kind.ogg"
+    stem_flac="$destination_base.$stem_kind.flac"
+    stem_ogg="$destination_base.$stem_kind.ogg"
     if [[ -f "$stem_flac" && ( ! -f "$stem_ogg" || "$stem_flac" -nt "$stem_ogg" ) ]]; then
       ffmpeg -nostdin -hide_banner -loglevel error -y -i "$stem_flac" -map_metadata -1 \
         -c:a libvorbis -q:a 6 "$stem_ogg" || {
@@ -169,8 +188,8 @@ while IFS= read -r -d '' audio; do
   encoding_checks=$(mktemp)
   echo '[]' >"$encoding_checks"
   for stem_kind in vocals instrumental; do
-    stem_flac="$base.$stem_kind.flac"
-    stem_ogg="$base.$stem_kind.ogg"
+    stem_flac="$destination_base.$stem_kind.flac"
+    stem_ogg="$destination_base.$stem_kind.ogg"
     [[ -f "$stem_flac" && -f "$stem_ogg" ]] || continue
     check=$(mktemp)
     if ! python3 "$(dirname "$0")/../../lyrics-word-aligner/scripts/verify_audio_encoding.py" \
@@ -182,10 +201,10 @@ while IFS= read -r -d '' audio; do
     mv "$encoding_checks.next" "$encoding_checks"
     rm -f "$check"
   done
-  if [[ -s "$base.alignment.json" ]]; then
+  if [[ -s "$destination_base.alignment.json" ]]; then
     report_temp=$(mktemp)
     jq --slurpfile checks "$encoding_checks" '.encoding_validation = $checks[0]' \
-      "$base.alignment.json" >"$report_temp" && install -m 0644 "$report_temp" "$base.alignment.json"
+      "$destination_base.alignment.json" >"$report_temp" && install -m 0644 "$report_temp" "$destination_base.alignment.json"
     rm -f "$report_temp"
   fi
   rm -f "$encoding_checks"
@@ -195,9 +214,9 @@ while IFS= read -r -d '' audio; do
     continue
   fi
 
-  if [[ -f "$base.instrumental.flac" ]]; then
+  if [[ -f "$destination_base.instrumental.flac" ]]; then
     python3 "$(dirname "$0")/../../lyrics-word-aligner/scripts/analyze_visuals.py" \
-      "$base.instrumental.flac" "$base.visuals.json" ||
+      "$destination_base.instrumental.flac" "$destination_base.visuals.json" ||
       echo "Warnung: Visualisierungsanalyse fehlgeschlagen: $audio" >&2
   fi
   ((processed+=1))
@@ -210,7 +229,7 @@ done < <(find "$library" -type f \( -iname '*.mp3' -o -iname '*.m4a' -o -iname '
 
 echo
 echo "Abgeschlossen: $processed verarbeitet, $skipped übersprungen, $failed fehlgeschlagen."
-if ((processed > 0)); then
+if ((processed > 0 && reindex != 0)); then
   server_url=${NEONSTAGE_SERVER_URL:-http://127.0.0.1:5274}
   if curl -fsS -X POST "$server_url/api/library/reindex" >/dev/null; then
     echo "Server-Bibliothek aktualisiert: $server_url"

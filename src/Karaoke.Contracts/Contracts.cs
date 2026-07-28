@@ -172,6 +172,8 @@ public sealed record CreateLyricsVersionRequest(string DocumentJson, string? Ana
 public sealed record UpdateLyricsVersionRequest(long ExpectedRevision, string DocumentJson,
     LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false);
 public sealed record ChangeLyricsVersionStatusRequest(long ExpectedRevision, bool AllowTimingConflicts = false);
+public sealed record SongRealignmentRequest(Guid? SourceVersionId = null,
+    bool IncludeEditorBasis = true, bool IncludeOriginalLyrics = true);
 public sealed record SongPackageExportRequest(IReadOnlyList<Guid> SongIds);
 public sealed record ImportedSongPackageDto(Guid SongId, string Title, string Artist,
     SongReviewStatus ReviewStatus, int ImportedFiles, int ImportedLyricsVersions);
