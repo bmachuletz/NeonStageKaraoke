@@ -3,6 +3,7 @@ from __future__ import annotations
 import gc
 import math
 import os
+import statistics
 
 import numpy as np
 
@@ -148,11 +149,17 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
         for operation in comparison.get("operations", [])
         if operation["type"] in accepted_operations
     }
+    timing_by_expected = {
+        int(operation["expected_index"]): operation
+        for operation in comparison.get("operations", [])
+        if operation["type"] in {"match", "approximate", "replace"}
+        and "expected_index" in operation and "recognized_index" in operation
+    }
     expected_cursor = attempted = accepted_lines = accepted_words = 0
     diagnostics = []
     for line_index, line in enumerate(lines):
         tokens = normalize_words(line.text)
-        indices = range(expected_cursor, expected_cursor + len(tokens))
+        indices = list(range(expected_cursor, expected_cursor + len(tokens)))
         expected_cursor += len(tokens)
         replaceable_sources = HEURISTIC_SOURCES | {
             "asr-repetition-anchor", "asr-repetition-activity",
@@ -169,6 +176,30 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
         available = [(offset, by_expected[index]) for offset, index in enumerate(indices)
                      if index in by_expected]
         complete = len(available) == len(tokens)
+        replacement_timing_consensus = False
+        if not complete and not allow_unanchored:
+            timing_available = [(offset, timing_by_expected[index])
+                                for offset, index in enumerate(indices)
+                                if index in timing_by_expected]
+            replacement_count = sum(operation["type"] == "replace"
+                                    for _offset, operation in timing_available)
+            timing_indices = [int(operation["recognized_index"])
+                              for _offset, operation in timing_available]
+            probabilities = [float(recognized[index][1].get("probability", 0.0))
+                             for index in timing_indices if 0 <= index < len(recognized)]
+            replacement_timing_consensus = (
+                len(timing_available) == len(tokens)
+                and replacement_count <= max(2, math.ceil(len(tokens) * 0.25))
+                and len(available) >= math.ceil(len(tokens) * 0.7)
+                and timing_indices
+                and timing_indices == list(range(timing_indices[0],
+                                                  timing_indices[0] + len(tokens)))
+                and len(probabilities) == len(tokens)
+                and statistics.median(probabilities) >= 0.55
+            )
+            if replacement_timing_consensus:
+                available = timing_available
+                complete = True
         if not line.words and not complete:
             diagnostics.append({"line": line_index + 1, "status": "incomplete-unanchored-line",
                                 "matched_words": len(available), "required_words": len(tokens)})
@@ -186,6 +217,23 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
             continue
         replacements = [recognized[index][1] for index in recognized_indices]
         replacements = [dict(word) for word in replacements]
+        if (replacement_timing_consensus and line.words and line.source_timestamp is not None
+                and replacements):
+            durations = [float(word["end"]) - float(word["start"]) for word in replacements]
+            median_duration = statistics.median(durations)
+            first_duration = durations[0]
+            source = float(line.source_timestamp)
+            # Whisper occasionally assigns the entire pre-phrase lead-in to
+            # the first token. Keep the independently aligned onset in that
+            # very specific outlier case while retaining the stable boundaries
+            # that resolved the misheard chorus later in the same line.
+            if (float(replacements[0]["start"]) < source - 0.35
+                    and first_duration > max(1.0, median_duration * 3.5)):
+                old = line.words[0]
+                replacements[0]["start"] = max(source, float(old["start"]))
+                replacements[0]["end"] = (float(replacements[1]["start"])
+                                            if len(replacements) > 1 else float(old["end"]))
+                replacements[0]["stable_ts_leadin_outlier_rejected"] = True
         if allow_unanchored:
             for word in replacements:
                 if float(word["end"]) <= float(word["start"]):
@@ -253,11 +301,15 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
             word["timing_source"] = "stable-ts-whisper"
             word["stable_ts_probability"] = replacement["probability"]
             word["stable_ts_match"] = operation["type"]
+            if replacement.get("stable_ts_leadin_outlier_rejected"):
+                word["stable_ts_leadin_outlier_rejected"] = True
         line.timestamp = float(line.words[0]["start"])
         accepted_lines += 1
         accepted_words += len(available)
         diagnostics.append({"line": line_index + 1,
-                            "status": "accepted" if complete else "accepted-partial",
+                            "status": ("accepted-replacement-timing-consensus"
+                                       if replacement_timing_consensus else
+                                       "accepted" if complete else "accepted-partial"),
                             "words": len(available), "line_words": len(line.words)})
     return {"method": "stable-ts-complete-line-v1", "attempted_lines": attempted,
             "accepted_lines": accepted_lines, "accepted_words": accepted_words,

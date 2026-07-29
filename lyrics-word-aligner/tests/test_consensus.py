@@ -23,7 +23,7 @@ class ConsensusTests(unittest.TestCase):
         result = extend_final_word_sustains(lines, [(40.3, 41.28)])
 
         self.assertEqual(1, result["adjusted_words"])
-        self.assertEqual(41.48, lines[0].words[-1]["end"])
+        self.assertEqual(41.28, lines[0].words[-1]["end"])
         self.assertEqual(40.96, lines[0].words[-1]["acoustic_end"])
 
     def test_sustain_never_reaches_next_line(self):
@@ -52,6 +52,19 @@ class ConsensusTests(unittest.TestCase):
 
         self.assertEqual(0, result["adjusted_words"])
         self.assertEqual(88.328, lines[0].words[-1]["end"])
+
+    def test_extends_internal_held_word_only_when_activity_ends_before_next_word(self):
+        line = LrcLine(1.0, "zieh lang weiter", "", words=[
+            {"word": "zieh", "start": 1.0, "end": 1.25, "timing_source": "qwen-forced"},
+            {"word": "lang", "start": 1.3, "end": 1.7, "timing_source": "qwen-forced"},
+            {"word": "weiter", "start": 2.5, "end": 2.9, "timing_source": "qwen-forced"},
+        ])
+
+        result = extend_final_word_sustains([line], [(1.25, 2.1)])
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertEqual(2.1, line.words[1]["end"])
+        self.assertEqual(1.7, line.words[1]["acoustic_end"])
 
     def test_display_floor_preserves_acoustic_measurement(self):
         line = LrcLine(1.0, "a", "", words=[

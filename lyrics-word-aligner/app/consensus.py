@@ -7,6 +7,7 @@ ACOUSTIC_SOURCES = {None, "qwen-forced", "ctc-phoneme-alignment",
                     "sofa-singing-alignment",
                     "easyaligner-global",
                     "stable-ts-whisper",
+                    "targeted-deleted-fragment-qwen",
                     "asr-repetition-anchor", "asr-repetition-activity",
                     "transition-block-qwen"}
 ACOUSTIC_SOURCES.add("ctc-overlap-reanalysis")
@@ -14,45 +15,56 @@ VERIFIED_ACOUSTIC_SOURCES = ACOUSTIC_SOURCES - {None}
 
 
 def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, float]],
-                               *, release_padding: float = 0.2,
+                               *, release_padding: float = 0.0,
                                maximum_extension: float = 1.2) -> dict:
-    """Keep a held final word active through its measured vocal decay.
+    """Keep a held word active through its measured vocal decay.
 
     ASR models generally timestamp the lexical core and often cut a sung vowel
-    before its audible release.  Extend only the last word of a line, only into
-    measured vocal activity, and never into the next lyric onset.
+    before its audible release. Extend line endings and unambiguous internal
+    words followed by a pause, only into measured activity, never into the next
+    lyric onset.
     """
     adjustments = []
     for index, line in enumerate(lines):
         if not line.words:
             continue
-        word = line.words[-1]
-        if word.get("timing_source") not in VERIFIED_ACOUSTIC_SOURCES:
-            continue
-        start, end = float(word["start"]), float(word["end"])
-        # A region which continues far beyond the word is usually a following
-        # phrase inside one uninterrupted activity cluster, not this word's
-        # release. Only accept a locally ending region; otherwise every line
-        # end in a continuously sung passage would be stretched.
-        candidates = [(begin, stop) for begin, stop in vocal_activity
-                      if begin <= end + 0.1 and end + 0.06 < stop <= end + maximum_extension
-                      and stop >= start]
-        if not candidates:
-            continue
-        activity_end = max(stop for _begin, stop in candidates)
-        target = min(end + maximum_extension, activity_end + release_padding)
-        if index + 1 < len(lines) and lines[index + 1].words:
-            target = min(target, float(lines[index + 1].words[0]["start"]) - 0.12)
-        if target - end < 0.08:
-            continue
-        word["acoustic_end"] = round(end, 3)
-        word["end"] = round(target, 3)
-        word["sustain_activity_end"] = round(activity_end, 3)
-        word["sustain_extension_ms"] = round((target - end) * 1000)
-        adjustments.append({"line": index + 1, "word": word.get("word", ""),
-                            "from": round(end, 3), "to": round(target, 3),
-                            "activity_end": round(activity_end, 3)})
-    return {"method": "vocal-activity-sustain-release-v1",
+        for word_index, word in enumerate(line.words):
+            if word.get("timing_source") not in VERIFIED_ACOUSTIC_SOURCES:
+                continue
+            start, end = float(word["start"]), float(word["end"])
+            next_start = None
+            if word_index + 1 < len(line.words):
+                next_start = float(line.words[word_index + 1]["start"])
+            elif index + 1 < len(lines) and lines[index + 1].words:
+                next_start = float(lines[index + 1].words[0]["start"])
+            internal = word_index + 1 < len(line.words)
+            if internal and next_start is not None and next_start - end < 0.18:
+                continue
+            # A region which continues far beyond the word is usually a later
+            # phrase inside one uninterrupted cluster. Internal words therefore
+            # need a locally ending island; line endings retain the established
+            # boundary cap because backing-vocal tails may touch the next line.
+            candidates = [(begin, stop) for begin, stop in vocal_activity
+                          if begin <= end + 0.1 and end + 0.06 < stop <= end + maximum_extension
+                          and stop >= start
+                          and (not internal or next_start is None or stop <= next_start + 0.08)]
+            if not candidates:
+                continue
+            activity_end = max(stop for _begin, stop in candidates)
+            target = min(end + maximum_extension, activity_end + release_padding)
+            if next_start is not None:
+                target = min(target, next_start - 0.12)
+            if target - end < 0.08:
+                continue
+            word["acoustic_end"] = round(end, 3)
+            word["end"] = round(target, 3)
+            word["sustain_activity_end"] = round(activity_end, 3)
+            word["sustain_extension_ms"] = round((target - end) * 1000)
+            adjustments.append({"line": index + 1, "word_index": word_index + 1,
+                                "word": word.get("word", ""),
+                                "from": round(end, 3), "to": round(target, 3),
+                                "activity_end": round(activity_end, 3)})
+    return {"method": "vocal-activity-sustain-release-v3",
             "adjusted_words": len(adjustments), "release_padding_ms": round(release_padding * 1000),
             "adjustments": adjustments}
 

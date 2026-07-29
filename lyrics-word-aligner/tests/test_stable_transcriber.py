@@ -162,6 +162,76 @@ class StableTranscriptAlignmentTests(unittest.TestCase):
         self.assertTrue(all(word["timing_source"] == "stable-ts-whisper"
                             for word in lines[0].words))
 
+    def test_uses_complete_majority_timing_without_replacing_misheard_lyrics(self):
+        text = "Einem Volk das aufschreit und verkündet Wir ham die Scheiße satt"
+        canonical = text.split()
+        recognized_text = "Einem Volk das aufschreit und verkündet der auf die Scheiße satt"
+        stable_words = [
+            {"word": word, "start": 54.8 + index * .4, "end": 55.1 + index * .4,
+             "probability": .15 if word == "der" else .8}
+            for index, word in enumerate(recognized_text.split())
+        ]
+        line = LrcLine(54.4, text, "", source_timestamp=54.4, words=[
+            {"word": word, "start": 54.8 + index * .25, "end": 55 + index * .25,
+             "timing_source": "vocal-activity-repair"}
+            for index, word in enumerate(canonical)
+        ])
+
+        result = realign_with_stable_words(
+            [line], stable_words, compare_transcripts(text, recognized_text))
+
+        self.assertEqual("accepted-replacement-timing-consensus",
+                         result["line_diagnostics"][0]["status"])
+        self.assertEqual(canonical, [word["word"] for word in line.words])
+        self.assertEqual(stable_words[6]["start"], line.words[6]["start"])
+        self.assertEqual("replace", line.words[6]["stable_ts_match"])
+
+    def test_does_not_use_replacement_consensus_across_inserted_asr_word(self):
+        text = "wir ham die Scheiße satt"
+        recognized_text = "wir haben die Scheiße es satt"
+        line = LrcLine(10.0, text, "", source_timestamp=10.0, words=[
+            {"word": word, "start": 10 + index * .3, "end": 10.2 + index * .3,
+             "timing_source": "vocal-activity-repair"}
+            for index, word in enumerate(text.split())
+        ])
+        stable_words = [
+            {"word": word, "start": 10 + index * .3, "end": 10.2 + index * .3,
+             "probability": .9}
+            for index, word in enumerate(recognized_text.split())
+        ]
+
+        result = realign_with_stable_words(
+            [line], stable_words, compare_transcripts(text, recognized_text))
+
+        self.assertNotEqual("accepted-replacement-timing-consensus",
+                            result["line_diagnostics"][0]["status"])
+        self.assertEqual("vocal-activity-repair", line.words[1]["timing_source"])
+
+    def test_replacement_consensus_rejects_unbounded_first_word_leadin(self):
+        text = "Einem Volk verkündet Wir ham die Scheiße satt"
+        recognized_text = "Einem Volk verkündet der auf die Scheiße satt"
+        line = LrcLine(54.4, text, "", source_timestamp=54.4, words=[
+            {"word": word, "start": 54.79 + index * .3, "end": 55.05 + index * .3,
+             "timing_source": "vocal-activity-repair"}
+            for index, word in enumerate(text.split())
+        ])
+        stable_words = [
+            {"word": word,
+             "start": 53.66 if index == 0 else 55.08 + (index - 1) * .3,
+             "end": 55.08 if index == 0 else 55.3 + (index - 1) * .3,
+             "probability": .8}
+            for index, word in enumerate(recognized_text.split())
+        ]
+
+        result = realign_with_stable_words(
+            [line], stable_words, compare_transcripts(text, recognized_text))
+
+        self.assertEqual("accepted-replacement-timing-consensus",
+                         result["line_diagnostics"][0]["status"])
+        self.assertEqual(54.79, line.words[0]["start"])
+        self.assertEqual(55.08, line.words[0]["end"])
+        self.assertTrue(line.words[0]["stable_ts_leadin_outlier_rejected"])
+
     def test_does_not_mix_partial_transcript_match_into_line(self):
         line = LrcLine(10.0, "Hallo schöne Welt", "", words=[
             {"word": word, "start": 10.0, "end": 10.2,

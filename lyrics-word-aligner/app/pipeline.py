@@ -19,6 +19,7 @@ from .ctc_aligner import realign_heuristic_lines, realign_overlapping_line_pairs
 from .easy_aligner import realign_with_easyaligner
 from .consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains, reconcile_acoustic_boundaries,
                         stabilize_acoustic_display_durations)
+from .fragment_recovery import recover_deleted_fragments
 from .lrc import parse_lrc, render_enhanced_lrc
 from .mms_aligner import realign_remaining_lines
 from .models import AlignmentConfig
@@ -397,6 +398,9 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         activity_repaired_timings = 0
         anchor_context_repairs = 0
         anchor_tail_repairs = 0
+        fragment_recovery = {"enabled": False, "reason": "keine Stable-ts-Wortzeiten",
+                             "recovered_fragments": 0, "recovered_words": 0,
+                             "diagnostics": []}
         try:
             if transcript_verification.get("enabled") and transcript_verification.get("text"):
                 notify(57, "ASR-Wiederholungsblöcke erhalten akustische Zeitanker")
@@ -567,6 +571,11 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                         "mode": f"{alignment_selected}+transitions",
                         "error": str(transition_error),
                     })
+            if stable_ts_summary.get("words"):
+                notify(82, "Von ASR ausgelassene Gesangsfragmente werden lokal neu ausgerichtet")
+                fragment_recovery = recover_deleted_fragments(
+                    audio, lines, stable_ts_summary["words"],
+                    stable_ts_summary["comparison"], aligner, language)
         finally:
             aligner.close()
         repetition_activity_summary = refine_stretched_repetition_anchors(
@@ -738,6 +747,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "transcript_verification": transcript_verification,
         "asr_prompt": asr_prompt_summary,
         "stable_ts": {**stable_ts_summary, "alignment": stable_alignment},
+        "fragment_recovery": fragment_recovery,
         "repetition_anchors": repetition_anchor_summary,
         "chorus_line_anchors": chorus_anchor_summary,
         "missing_instrumental_chorus": missing_chorus_summary,

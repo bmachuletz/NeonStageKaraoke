@@ -26,7 +26,7 @@ def enrich_lines_with_syllables(lines: Iterable, language: str) -> dict:
     acoustic interval on the GPU; syllable boundaries are estimated inside it.
     """
     dictionary = _dictionary(language)
-    words = syllables = dictionary_splits = 0
+    words = syllables = dictionary_splits = acoustic_splits = sustained_endings = 0
     confidence_sum = 0.0
     for line in lines:
         for word in line.words:
@@ -34,24 +34,67 @@ def enrich_lines_with_syllables(lines: Iterable, language: str) -> dict:
             start = float(word["start"])
             end = max(start, float(word.get("end", start)))
             confidence = _confidence(parts, end - start, used_dictionary)
-            word["syllables"] = _time_parts(parts, start, end, confidence)
+            acoustic = _time_parts_from_ctc(parts, word, start, end, confidence)
+            core_end = min(end, max(start, float(word.get("acoustic_end", end))))
+            timed_parts = acoustic or _time_parts(parts, start, core_end, confidence)
+            # ASR/CTC usually timestamps the lexical core. If vocal activity
+            # proves that the singer holds the release, only the final syllable
+            # owns that sustain; stretching every syllable makes karaoke
+            # highlighting visibly early in the middle of long words.
+            if timed_parts and end > core_end + 0.001:
+                timed_parts[-1]["end"] = round(end, 3)
+                timed_parts[-1]["sustain_extension_ms"] = round((end - core_end) * 1000)
+                sustained_endings += 1
+            word["syllables"] = timed_parts
             word["syllable_confidence"] = confidence
-            word["syllable_method"] = "orthographic-duration-v1"
+            word["syllable_method"] = "ctc-character-boundaries-v1" if acoustic else "orthographic-duration-v2"
             words += 1
             syllables += len(parts)
             dictionary_splits += int(used_dictionary and len(parts) > 1)
+            acoustic_splits += int(acoustic is not None and len(parts) > 1)
             confidence_sum += confidence
     return {
-        "version": 1,
-        "method": "orthographic-duration-v1",
+        "version": 2,
+        "method": "ctc-character-boundaries-with-orthographic-fallback-v2",
         "acoustic_word_boundaries": True,
-        "acoustic_syllable_boundaries": False,
+        "acoustic_syllable_boundaries": acoustic_splits > 0,
         "language": language,
         "words": words,
         "syllables": syllables,
         "dictionary_splits": dictionary_splits,
+        "acoustic_splits": acoustic_splits,
+        "sustained_endings": sustained_endings,
         "mean_confidence": round(confidence_sum / words, 3) if words else 0.0,
     }
+
+
+def _time_parts_from_ctc(parts: list[str], word: dict, start: float, end: float,
+                         confidence: float) -> list[dict] | None:
+    characters = word.get("ctc_characters")
+    if not isinstance(characters, list) or not characters or len(parts) < 2:
+        return None
+    counts = [sum(character.isalpha() or character.isdigit() for character in part) for part in parts]
+    if any(count <= 0 for count in counts) or sum(counts) != len(characters):
+        return None
+    boundaries = [start]
+    cursor = 0
+    for count in counts[:-1]:
+        cursor += count
+        left = float(characters[cursor - 1]["end"])
+        right = float(characters[cursor]["start"])
+        boundaries.append(max(boundaries[-1], min(end, (left + right) / 2)))
+    boundaries.append(end)
+    result = []
+    for index, part in enumerate(parts):
+        result.append({
+            "text": part,
+            "start": round(boundaries[index], 3),
+            "end": round(max(boundaries[index], boundaries[index + 1]), 3),
+            "confidence": confidence,
+            "index": index,
+            "boundary_source": "ctc-character",
+        })
+    return result
 
 
 def _dictionary(language: str):

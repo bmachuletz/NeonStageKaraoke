@@ -17,6 +17,15 @@ MODEL_BUNDLES = {
 }
 
 
+def _apply_ctc_replacement(word: dict, replacement: dict, source: str) -> None:
+    word["start"] = replacement["start"]
+    word["end"] = replacement["end"]
+    word["timing_source"] = source
+    word["ctc_confidence"] = replacement["confidence"]
+    if replacement.get("ctc_characters"):
+        word["ctc_characters"] = replacement["ctc_characters"]
+
+
 def _section_allows_atomic_replacement(section: list, replaceable_ids: set[int]) -> bool:
     """An atomic pass may replace only a section made entirely of weak lines.
 
@@ -159,6 +168,12 @@ class CtcPhraseAligner:
                 "start": round(base_seconds + float(selected[0].start) * frame_seconds, 3),
                 "end": round(base_seconds + float(selected[-1].end) * frame_seconds, 3),
                 "confidence": round(confidence, 4),
+                "ctc_characters": [{
+                    "character": character,
+                    "start": round(base_seconds + float(span.start) * frame_seconds, 3),
+                    "end": round(base_seconds + float(span.end) * frame_seconds, 3),
+                    "confidence": round(math.exp(float(span.score)), 4),
+                } for character, span in zip(word, selected)],
             })
         return aligned
 
@@ -245,10 +260,7 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                                     "attempts": attempts})
                 continue
             for word, replacement in zip(line.words, aligned):
-                word["start"] = replacement["start"]
-                word["end"] = replacement["end"]
-                word["timing_source"] = "ctc-phoneme-alignment"
-                word["ctc_confidence"] = replacement["confidence"]
+                _apply_ctc_replacement(word, replacement, "ctc-phoneme-alignment")
             line.timestamp = float(line.words[0]["start"])
             accepted_lines += 1
             accepted_words += len(line.words)
@@ -313,10 +325,7 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                 # prevents repeated lines from competing in isolated windows.
                 for line, replacements in zip(section, section_replacements):
                     for word, replacement in zip(line.words, replacements):
-                        word["start"] = replacement["start"]
-                        word["end"] = replacement["end"]
-                        word["timing_source"] = "ctc-section-alignment"
-                        word["ctc_confidence"] = replacement["confidence"]
+                        _apply_ctc_replacement(word, replacement, "ctc-section-alignment")
                     line.timestamp = float(line.words[0]["start"])
                     if id(line) in rejected_ids:
                         accepted_lines += 1
@@ -350,10 +359,7 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                         > float(lines[global_index + 1].words[0]["start"]) + 0.08):
                     continue
                 for word, replacement in zip(line.words, replacements):
-                    word["start"] = replacement["start"]
-                    word["end"] = replacement["end"]
-                    word["timing_source"] = "ctc-section-alignment"
-                    word["ctc_confidence"] = replacement["confidence"]
+                    _apply_ctc_replacement(word, replacement, "ctc-section-alignment")
                 line.timestamp = float(line.words[0]["start"])
                 accepted_lines += 1
                 accepted_words += len(line.words)
@@ -398,10 +404,7 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
             if aligned[split - 1]["end"] > aligned[split]["start"]:
                 continue
             for word, replacement in zip([*previous.words, *current.words], aligned):
-                word["start"] = replacement["start"]
-                word["end"] = replacement["end"]
-                word["timing_source"] = "ctc-context-alignment"
-                word["ctc_confidence"] = replacement["confidence"]
+                _apply_ctc_replacement(word, replacement, "ctc-context-alignment")
             previous.timestamp = float(previous.words[0]["start"])
             current.timestamp = float(current.words[0]["start"])
             contextual_pairs += 1
@@ -470,10 +473,7 @@ def realign_overlapping_line_pairs(audio, lines: list, language: str, device: st
                                     "mean_confidence": round(confidence, 4)})
                 continue
             for word, replacement in zip([*previous.words, *current.words], aligned):
-                word["start"] = replacement["start"]
-                word["end"] = replacement["end"]
-                word["timing_source"] = "ctc-overlap-reanalysis"
-                word["ctc_confidence"] = replacement["confidence"]
+                _apply_ctc_replacement(word, replacement, "ctc-overlap-reanalysis")
             previous.timestamp = float(previous.words[0]["start"])
             current.timestamp = float(current.words[0]["start"])
             accepted += 1
