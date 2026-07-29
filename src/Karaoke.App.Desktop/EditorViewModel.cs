@@ -980,7 +980,12 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (status.SongId is { } songId)
             {
                 if (SelectedSong?.Id == songId)
-                    await LoadRealignmentForReviewAsync(songId, cancellationToken);
+                {
+                    // A realignment can replace both lyrics and stems. Reload the complete
+                    // song so the revision-aware PCM and waveform caches select the new files.
+                    _realignedSongsPendingReview.Add(songId);
+                    await LoadSelectedSongAsync(cancellationToken);
+                }
                 else
                     _realignedSongsPendingReview.Add(songId);
             }
@@ -1367,9 +1372,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 {
                     if (Document is null || !_hasVocalStem) throw new InvalidOperationException("Keine Vocalspur vorhanden.");
                     Status = "Vocalspur wird lokal für sample-stabiles Editing vorbereitet …";
-                    _localVocalUri = await _audioCache.GetAsync(song.Id, "vocals", vocals, ct);
+                    _localVocalUri = await _audioCache.GetAsync(song.Id, "vocals", vocals, ct,
+                        stems?.Revision);
                     if (HasInstrumentalStem)
-                        _localInstrumentalUri = await _audioCache.GetAsync(song.Id, "instrumental", instrumental, ct);
+                        _localInstrumentalUri = await _audioCache.GetAsync(song.Id, "instrumental", instrumental, ct,
+                            stems?.Revision);
                     Waveform = await _waveforms.LoadAsync(song.Id, _localVocalUri, ct);
                     _selectedPlaybackUri = _localVocalUri;
                 }

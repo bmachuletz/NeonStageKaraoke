@@ -571,9 +571,12 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
     {
         var result = await SearchByIdAsync(id, cancellationToken);
         if (result.Path is null) return null;
+        var instrumental = ExistingStemPaths(result.Path, "instrumental");
+        var vocals = ExistingStemPaths(result.Path, "vocals");
         return new StemAvailabilityDto(
-            StemExists(result.Path, "instrumental"),
-            StemExists(result.Path, "vocals"));
+            instrumental.Length > 0,
+            vocals.Length > 0,
+            StemRevision(instrumental.Concat(vocals)));
     }
 
     public async Task<(string Path, string ContentType)?> GetStemFileAsync(Guid id, string kind,
@@ -592,6 +595,20 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
 
     private static bool StemExists(string audioPath, string kind) =>
         File.Exists(StemPath(audioPath, kind, ".ogg")) || File.Exists(StemPath(audioPath, kind, ".flac"));
+
+    private static string[] ExistingStemPaths(string audioPath, string kind) =>
+        new[] { StemPath(audioPath, kind, ".flac"), StemPath(audioPath, kind, ".ogg") }
+            .Where(File.Exists).ToArray();
+
+    private static string? StemRevision(IEnumerable<string> paths)
+    {
+        var files = paths.Select(path => new FileInfo(path)).ToArray();
+        if (files.Length == 0) return null;
+        var identity = string.Join('|', files.OrderBy(file => file.Extension).ThenBy(file => file.Name)
+            .Select(file => $"{file.Name}:{file.Length}:{file.LastWriteTimeUtc.Ticks}"));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(identity)))[..24].ToLowerInvariant();
+    }
 
     private static string StemPath(string audioPath, string kind, string extension) =>
         Path.Combine(Path.GetDirectoryName(audioPath)!, $"{Path.GetFileNameWithoutExtension(audioPath)}.{kind}{extension}");

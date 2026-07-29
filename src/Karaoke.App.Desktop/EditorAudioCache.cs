@@ -1,3 +1,6 @@
+using System.Security.Cryptography;
+using System.Text;
+
 namespace Karaoke.App.Desktop;
 
 internal sealed class EditorAudioCache(HttpClient http)
@@ -5,10 +8,12 @@ internal sealed class EditorAudioCache(HttpClient http)
     private readonly string _root = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NeonStage", "editor-audio-v2-pcm");
 
-    public async Task<Uri> GetAsync(Guid songId, string kind, Uri source, CancellationToken cancellationToken)
+    public async Task<Uri> GetAsync(Guid songId, string kind, Uri source, CancellationToken cancellationToken,
+        string? sourceRevision = null)
     {
         Directory.CreateDirectory(_root);
-        var target = Path.Combine(_root, $"{songId:N}.{kind}.wav");
+        var revision = SafeRevision(sourceRevision);
+        var target = Path.Combine(_root, $"{songId:N}.{kind}.{revision}.wav");
         if (new FileInfo(target) is { Exists: true, Length: > 4096 }) return new Uri(target);
 
         var download = target + ".source";
@@ -39,7 +44,12 @@ internal sealed class EditorAudioCache(HttpClient http)
         int vocalVolume, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(_root);
-        var target = Path.Combine(_root, $"{songId:N}.mix-i{instrumentalVolume}-v{vocalVolume}.wav");
+        var sourceIdentity = string.Join('|', instrumental.LocalPath, vocals.LocalPath,
+            instrumentalVolume, vocalVolume);
+        var mixRevision = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sourceIdentity)))[..16]
+            .ToLowerInvariant();
+        var target = Path.Combine(_root,
+            $"{songId:N}.mix-i{instrumentalVolume}-v{vocalVolume}.{mixRevision}.wav");
         if (new FileInfo(target) is { Exists: true, Length: > 4096 }) return new Uri(target);
         var temporary = target + ".download";
         try
@@ -56,6 +66,14 @@ internal sealed class EditorAudioCache(HttpClient http)
             return new Uri(target);
         }
         finally { if (File.Exists(temporary)) File.Delete(temporary); }
+    }
+
+    private static string SafeRevision(string? revision)
+    {
+        if (string.IsNullOrWhiteSpace(revision)) return "legacy";
+        var sanitized = new string(revision.Where(character => char.IsAsciiLetterOrDigit(character) || character == '-')
+            .ToArray());
+        return sanitized.Length == 0 ? "legacy" : sanitized[..Math.Min(sanitized.Length, 96)];
     }
 
     private static async Task RunFfmpegAsync(IEnumerable<string> arguments, CancellationToken cancellationToken,

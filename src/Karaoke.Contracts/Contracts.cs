@@ -131,7 +131,7 @@ public sealed record LyricsLineDto(TimeSpan Start, string Text, TimeSpan? End = 
 public sealed record LyricsWordDto(TimeSpan Start, string Text, TimeSpan? End = null, int Index = 0,
     IReadOnlyList<LyricsSyllableDto>? Syllables = null, double SyllableConfidence = 0);
 public sealed record LyricsSyllableDto(TimeSpan Start, string Text, TimeSpan? End = null, int Index = 0, double Confidence = 0);
-public sealed record StemAvailabilityDto(bool HasInstrumental, bool HasVocals);
+public sealed record StemAvailabilityDto(bool HasInstrumental, bool HasVocals, string? Revision = null);
 public sealed record StageTimingSampleDto(
     DateTimeOffset CapturedAt,
     string DeviceId,

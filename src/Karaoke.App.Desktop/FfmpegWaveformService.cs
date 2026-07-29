@@ -13,7 +13,8 @@ internal sealed class FfmpegWaveformService
     public async Task<WaveformPyramid> LoadAsync(Guid songId, Uri audio, CancellationToken ct, string sourceKind = "vocals")
     {
         Directory.CreateDirectory(_cacheRoot);
-        var cache = Path.Combine(_cacheRoot, $"{songId:N}.{sourceKind}.waveform");
+        var sourceRevision = SourceRevision(audio);
+        var cache = Path.Combine(_cacheRoot, $"{songId:N}.{sourceKind}.{sourceRevision}.waveform");
         if (File.Exists(cache))
             try { return await ReadCacheAsync(cache, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
 
@@ -39,6 +40,14 @@ internal sealed class FfmpegWaveformService
         var pyramid = WaveformPyramid.Create(samples, SampleRate);
         await WriteCacheAsync(cache, pyramid, ct);
         return pyramid;
+    }
+
+    private static string SourceRevision(Uri audio)
+    {
+        if (!audio.IsFile) return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(audio.AbsoluteUri)))[..16].ToLowerInvariant();
+        var file = new FileInfo(audio.LocalPath);
+        return file.Exists ? $"{file.Length:x}-{file.LastWriteTimeUtc.Ticks:x}" : "missing";
     }
 
     private static async Task WriteCacheAsync(string path, WaveformPyramid pyramid, CancellationToken ct)
