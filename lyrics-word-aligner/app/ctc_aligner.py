@@ -6,6 +6,8 @@ import os
 import re
 import statistics
 
+import numpy as np
+
 
 HEURISTIC_SOURCES = {"vocal-activity-repair", "anchor-context-vocal-activity",
                      "anchor-tail-vocal-activity", "geometric-repair"}
@@ -15,10 +17,59 @@ MODEL_BUNDLES = {
 }
 
 
-def _section_allows_atomic_replacement(section: list) -> bool:
-    """Do not overwrite complete-line timestamps from a stronger ASR vote."""
-    return not any(word.get("timing_source") == "stable-ts-whisper"
-                   for line in section for word in line.words)
+def _section_allows_atomic_replacement(section: list, replaceable_ids: set[int]) -> bool:
+    """An atomic pass may replace only a section made entirely of weak lines.
+
+    The combined transcript is useful for resolving several neighbouring
+    heuristic lines. It must not use one weak neighbour as permission to rewrite
+    an otherwise plausible line merely to make the global CTC path fit.
+    """
+    return (all(id(line) in replaceable_ids for line in section)
+            and not any(word.get("timing_source") == "stable-ts-whisper"
+                        for line in section for word in line.words))
+
+
+def _rms_db(audio, start: float, end: float) -> float:
+    first = max(0, int(start * 16000))
+    last = min(len(audio), max(first + 1, int(end * 16000)))
+    if first >= len(audio) or last <= first:
+        return -180.0
+    values = np.asarray(audio[first:last], dtype=np.float64)
+    if values.ndim > 1:
+        values = values.mean(axis=tuple(range(1, values.ndim)))
+    rms = float(np.sqrt(np.mean(values * values))) if len(values) else 0.0
+    return 20.0 * math.log10(max(rms, 1e-9))
+
+
+def _candidate_rejection_reason(
+    words: list[dict],
+    audio,
+    *,
+    minimum_word_confidence: float = 0.10,
+    maximum_internal_gap: float = 0.75,
+    weak_word_confidence: float = 0.20,
+    acoustic_margin_db: float = 12.0,
+) -> str | None:
+    """Reject a forced path that is geometrically or acoustically implausible."""
+    if not words:
+        return "empty-alignment"
+    if any(float(word["end"]) <= float(word["start"]) for word in words):
+        return "non-positive-word-duration"
+    gaps = [float(right["start"]) - float(left["end"])
+            for left, right in zip(words, words[1:])]
+    if gaps and max(gaps) > maximum_internal_gap:
+        return "implausible-internal-gap"
+    confidences = [float(word.get("confidence", 0.0)) for word in words]
+    if min(confidences) < minimum_word_confidence:
+        return "low-word-confidence"
+
+    levels = [_rms_db(audio, float(word["start"]) - 0.02,
+                      float(word["end"]) + 0.02) for word in words]
+    reference = max(levels)
+    if any(confidence < weak_word_confidence and level < reference - acoustic_margin_db
+           for confidence, level in zip(confidences, levels)):
+        return "weak-word-without-acoustic-support"
+    return None
 
 
 def _clean_words(text: str, dictionary: dict[str, int]) -> list[str]:
@@ -113,7 +164,9 @@ class CtcPhraseAligner:
 
 
 def realign_heuristic_lines(audio, lines: list, language: str, device: str,
-                            *, padding: float = 0.35, minimum_confidence: float = 0.25) -> dict:
+                            *, padding: float = 0.35, minimum_confidence: float = 0.25,
+                            minimum_word_confidence: float = 0.10,
+                            maximum_internal_gap: float = 0.75) -> dict:
     candidates = [line for line in lines if line.words and any(
         word.get("timing_source") in HEURISTIC_SOURCES for word in line.words
     )]
@@ -159,6 +212,19 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                 if any(right["start"] < left["end"] for left, right in zip(trial, trial[1:])):
                     attempts.append({"padding": candidate_padding, "status": "nonmonotonic",
                                      "mean_confidence": round(trial_confidence, 4)})
+                    continue
+                rejection = _candidate_rejection_reason(
+                    trial, audio, minimum_word_confidence=minimum_word_confidence,
+                    maximum_internal_gap=maximum_internal_gap)
+                if rejection:
+                    attempts.append({"padding": candidate_padding, "status": rejection,
+                                     "mean_confidence": round(trial_confidence, 4),
+                                     "minimum_word_confidence": round(min(
+                                         float(word["confidence"]) for word in trial), 4),
+                                     "maximum_internal_gap": round(max([
+                                         float(right["start"]) - float(left["end"])
+                                         for left, right in zip(trial, trial[1:])
+                                     ] or [0.0]), 3)})
                     continue
                 ownership_slack = min(0.45, candidate_padding)
                 if (trial[0]["start"] < original_start - ownership_slack
@@ -227,15 +293,20 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                 cursor += len(line.words)
                 section_replacements.append(replacements)
                 line_confidence = sum(word["confidence"] for word in replacements) / len(replacements)
+                rejection = _candidate_rejection_reason(
+                    replacements, audio, minimum_word_confidence=minimum_word_confidence,
+                    maximum_internal_gap=maximum_internal_gap)
                 section_line_results.append({"line": lines.index(line) + 1,
                                              "mean_confidence": round(line_confidence, 4),
+                                             "rejection_reason": rejection,
                                              "start": replacements[0]["start"],
                                              "end": replacements[-1]["end"],
                                              "was_heuristic": id(line) in rejected_ids})
             section_confidences = [item["mean_confidence"] for item in section_line_results]
             atomic = (min(section_confidences) >= 0.10
                       and statistics.median(section_confidences) >= 0.20
-                      and _section_allows_atomic_replacement(section))
+                      and not any(item["rejection_reason"] for item in section_line_results)
+                      and _section_allows_atomic_replacement(section, rejected_ids))
             if atomic:
                 # One transcript, one CTC path, one atomic update. This is the
                 # duration-aware equivalent of a left-to-right phrase HMM and
@@ -267,7 +338,7 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                 if id(line) not in rejected_ids:
                     continue
                 confidence = line_result["mean_confidence"]
-                if confidence < minimum_confidence:
+                if confidence < minimum_confidence or line_result["rejection_reason"]:
                     continue
                 global_index = lines.index(line)
                 if (global_index > 0 and lines[global_index - 1].words
@@ -319,7 +390,9 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
             if len(aligned) != expected:
                 continue
             confidence = sum(word["confidence"] for word in aligned) / len(aligned)
-            if confidence < minimum_confidence:
+            if (confidence < minimum_confidence or _candidate_rejection_reason(
+                    aligned, audio, minimum_word_confidence=minimum_word_confidence,
+                    maximum_internal_gap=maximum_internal_gap)):
                 continue
             split = len(previous.words)
             if aligned[split - 1]["end"] > aligned[split]["start"]:
@@ -340,13 +413,17 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
             "contextual_boundary_pairs": contextual_pairs,
             "section_alignment_passes": section_passes,
             "minimum_confidence": minimum_confidence,
+            "minimum_word_confidence": minimum_word_confidence,
+            "maximum_internal_gap": maximum_internal_gap,
             "section_diagnostics": section_diagnostics,
             "line_diagnostics": diagnostics}
 
 
 def realign_overlapping_line_pairs(audio, lines: list, language: str, device: str,
                                    *, padding: float = 0.45,
-                                   minimum_confidence: float = 0.25) -> dict:
+                                   minimum_confidence: float = 0.25,
+                                   minimum_word_confidence: float = 0.10,
+                                   maximum_internal_gap: float = 0.75) -> dict:
     """Re-align conflicting neighbours as one monotonic transcript.
 
     Independent line windows can claim the same vocal frames. A combined CTC
@@ -376,11 +453,15 @@ def realign_overlapping_line_pairs(audio, lines: list, language: str, device: st
             expected = len(previous.words) + len(current.words)
             confidence = (sum(word["confidence"] for word in aligned) / len(aligned)
                           if aligned else 0.0)
-            if len(aligned) != expected or confidence < minimum_confidence:
+            rejection = (_candidate_rejection_reason(
+                aligned, audio, minimum_word_confidence=minimum_word_confidence,
+                maximum_internal_gap=maximum_internal_gap) if aligned else "empty-alignment")
+            if len(aligned) != expected or confidence < minimum_confidence or rejection:
                 diagnostics.append({"previous_line": index, "next_line": index + 1,
                                     "status": "rejected", "returned_words": len(aligned),
                                     "expected_words": expected,
-                                    "mean_confidence": round(confidence, 4)})
+                                    "mean_confidence": round(confidence, 4),
+                                    "rejection_reason": rejection})
                 continue
             split = len(previous.words)
             if aligned[split - 1]["end"] > aligned[split]["start"] + 0.001:
@@ -412,4 +493,7 @@ def realign_overlapping_line_pairs(audio, lines: list, language: str, device: st
                   float(lines[index].words[0]["start"]) + 0.001]
     return {"enabled": True, "model": model, "detected_pairs": len(initial),
             "realigned_pairs": accepted, "unresolved_pairs": unresolved,
-            "minimum_confidence": minimum_confidence, "diagnostics": diagnostics}
+            "minimum_confidence": minimum_confidence,
+            "minimum_word_confidence": minimum_word_confidence,
+            "maximum_internal_gap": maximum_internal_gap,
+            "diagnostics": diagnostics}
