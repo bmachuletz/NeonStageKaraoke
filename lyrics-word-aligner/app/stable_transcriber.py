@@ -58,8 +58,68 @@ def _release_cuda(torch) -> None:
             pass
 
 
-def transcribe_stable(audio, language: str, device: str, *, vad: bool = True,
-                      initial_prompt: str | None = None) -> dict:
+def _transcribe_with_loaded_model(model, audio, language: str, torch, *, vad: bool,
+                                  initial_prompt: str | None,
+                                  model_name: str, chunk_seconds: float,
+                                  overlap_seconds: float) -> dict:
+    windows = _chunk_windows(
+        len(audio), chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds)
+    words: list[dict] = []
+    segment_count = 0
+    for sample_start, sample_end, keep_start, keep_end in windows:
+        base = sample_start / SAMPLE_RATE
+        result = None
+        raw = None
+        chunk = None
+        try:
+            chunk = np.ascontiguousarray(audio[sample_start:sample_end], dtype=np.float32)
+            result = model.transcribe(
+                chunk, language=language, vad=vad, regroup=True, verbose=False,
+                word_timestamps=True,
+                initial_prompt=initial_prompt or None,
+            )
+            raw = result.to_dict()
+            segment_count += len(raw.get("segments", []))
+            for segment in raw.get("segments", []):
+                for word in segment.get("words", []):
+                    text = str(word.get("word", "")).strip()
+                    if not text:
+                        continue
+                    start = float(word["start"]) + base
+                    end = float(word["end"]) + base
+                    midpoint = (start + end) / 2
+                    if midpoint < keep_start or midpoint >= keep_end:
+                        continue
+                    words.append({
+                        "word": text,
+                        "start": round(start, 3),
+                        "end": round(end, 3),
+                        "probability": round(float(word.get("probability", 0.0)), 4),
+                    })
+        finally:
+            # Results own transient CUDA tensors; the loaded model intentionally
+            # survives so another window strategy can reuse it without a second
+            # 6–7 GiB allocation.
+            del raw
+            del result
+            del chunk
+            _release_cuda(torch)
+    return {
+        "model": f"stable-ts/{model_name}",
+        "language": language,
+        "text": " ".join(str(word["word"]) for word in words),
+        "words": words,
+        "segments": segment_count,
+        "chunks": len(windows),
+        "chunk_seconds": chunk_seconds,
+        "chunk_overlap_seconds": overlap_seconds,
+    }
+
+
+def transcribe_stable_variants(audio, language: str, device: str,
+                               variants: list[tuple[str, float, float]], *,
+                               vad: bool = True,
+                               initial_prompt: str | None = None) -> dict[str, dict]:
     import stable_whisper
     import torch
 
@@ -70,64 +130,43 @@ def transcribe_stable(audio, language: str, device: str, *, vad: bool = True,
         model_name, device=device, download_root=os.getenv("LRC_WHISPER_CACHE", "/models/whisper")
     )
     try:
-        chunk_seconds = float(os.getenv("LRC_STABLE_TS_CHUNK_SECONDS", "30"))
-        overlap_seconds = float(os.getenv("LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS", "3"))
-        windows = _chunk_windows(
-            len(audio), chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds)
-        words: list[dict] = []
-        segment_count = 0
-        for sample_start, sample_end, keep_start, keep_end in windows:
-            base = sample_start / SAMPLE_RATE
-            result = None
-            raw = None
+        results: dict[str, dict] = {}
+        for index, (variant_id, chunk_seconds, overlap_seconds) in enumerate(variants):
             try:
-                chunk = np.ascontiguousarray(audio[sample_start:sample_end], dtype=np.float32)
-                result = model.transcribe(
-                    chunk, language=language, vad=vad, regroup=True, verbose=False,
-                    word_timestamps=True,
-                    initial_prompt=initial_prompt or None,
-                )
-                raw = result.to_dict()
-                segment_count += len(raw.get("segments", []))
-                for segment in raw.get("segments", []):
-                    for word in segment.get("words", []):
-                        text = str(word.get("word", "")).strip()
-                        if not text:
-                            continue
-                        start = float(word["start"]) + base
-                        end = float(word["end"]) + base
-                        midpoint = (start + end) / 2
-                        if midpoint < keep_start or midpoint >= keep_end:
-                            continue
-                        words.append({
-                            "word": text,
-                            "start": round(start, 3),
-                            "end": round(end, 3),
-                            "probability": round(float(word.get("probability", 0.0)), 4),
-                        })
-            finally:
-                # `result` contains CUDA tensors.  It must die before
-                # empty_cache(), otherwise the next model inherits several GB
-                # of cached Whisper allocations.
-                del raw
-                del result
-                if "chunk" in locals():
-                    del chunk
+                results[variant_id] = _transcribe_with_loaded_model(
+                    model, audio, language, torch, vad=vad,
+                    initial_prompt=initial_prompt, model_name=model_name,
+                    chunk_seconds=float(chunk_seconds),
+                    overlap_seconds=float(overlap_seconds))
+            except (RuntimeError, ValueError) as error:
+                if index == 0:
+                    raise
+                # An optional short-window experiment must never discard the
+                # already completed long-context transcript.
+                results[variant_id] = {
+                    "model": f"stable-ts/{model_name}", "language": language,
+                    "words": [], "text": "", "error": str(error),
+                    "chunk_seconds": float(chunk_seconds),
+                    "chunk_overlap_seconds": float(overlap_seconds),
+                }
                 _release_cuda(torch)
-        payload = {
-            "model": f"stable-ts/{model_name}",
-            "language": language,
-            "text": " ".join(str(word["word"]) for word in words),
-            "words": words,
-            "segments": segment_count,
-            "chunks": len(windows),
-            "chunk_seconds": chunk_seconds,
-            "chunk_overlap_seconds": overlap_seconds,
-        }
-        return payload
+        return results
     finally:
         del model
         _release_cuda(torch)
+
+
+def transcribe_stable(audio, language: str, device: str, *, vad: bool = True,
+                      initial_prompt: str | None = None,
+                      chunk_seconds: float | None = None,
+                      overlap_seconds: float | None = None) -> dict:
+    chunk_seconds = (float(os.getenv("LRC_STABLE_TS_CHUNK_SECONDS", "30"))
+                     if chunk_seconds is None else float(chunk_seconds))
+    overlap_seconds = (float(os.getenv("LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS", "3"))
+                       if overlap_seconds is None else float(overlap_seconds))
+    return transcribe_stable_variants(
+        audio, language, device, [("default", chunk_seconds, overlap_seconds)],
+        vad=vad, initial_prompt=initial_prompt)["default"]
 
 
 def realign_with_stable_words(lines: list, stable_words: list[dict], comparison: dict,

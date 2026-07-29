@@ -33,11 +33,41 @@ Core alignment settings:
 
 ```dotenv
 LRC_ALIGNMENT_MODE=line-windows       # or full-song
+LRC_ENGINE_V2_MODE=shadow             # off, shadow, or select
 LRC_FULL_SONG_MAX_SECONDS=300
 LRC_SECTION_PAUSE_GAP=7
 LRC_SECTION_MAX_DURATION=45
 LRC_SECTION_CANDIDATE_SECONDS=18,30,45
 ```
+
+### Lyrics Engine v2
+
+Engine v2 treats transcript recognition, word placement, and sung-word release
+as separate problems. It keeps every alignment path immutable and compares:
+
+- canonical LRCLIB text in local forced-alignment windows;
+- canonical text projected onto a long-context Stable-TS transcript;
+- the same projection using short, overlapping 12-second windows;
+- independent CTC/MMS/SOFA refinements; and
+- the historical sequential pipeline as a mandatory fallback.
+
+Each line is scored against vocal activity, onset evidence, model reliability,
+candidate agreement, geometry, and the original LRC cue. A Viterbi-style path
+search prevents cross-line collisions. Large disagreements need confirmation
+from two independent method families; energy-only placement cannot replace a
+stronger forced alignment unless the old line is demonstrably outside the
+vocal region.
+
+Use `shadow` while evaluating a library: the complete decision report is added
+to `*.alignment.json`, but the historical output is retained. Use `select` only
+after reviewing those reports. The previous engine always remains available
+with `off`.
+
+The design follows the same separation of concerns as
+[WhisperX](https://github.com/m-bain/whisperX) (VAD, transcription, then forced
+alignment) while retaining singing-specific candidate consensus. Note that the
+current TorchAudio forced-alignment API is deprecated upstream; the CTC adapter
+is isolated so it can be replaced without changing the engine contract.
 
 If a full-song result scores poorly, the pipeline can compare full-song,
 section-window, and line-window results. Only the highest-scoring candidate is

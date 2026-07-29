@@ -15,18 +15,20 @@ from .asr_prompt import build_asr_prompt
 from .candidate_selection import (AudioAlignmentCandidate, CandidateSelectionConfig,
                                   blend_audio, select_alignment_candidate,
                                   select_stage_stem_candidate)
+from .canonical_lyrics import transfer_canonical_lines
 from .ctc_aligner import realign_heuristic_lines, realign_overlapping_line_pairs
 from .easy_aligner import realign_with_easyaligner
 from .consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains, reconcile_acoustic_boundaries,
                         stabilize_acoustic_display_durations)
 from .fragment_recovery import recover_deleted_fragments
 from .lrc import parse_lrc, render_enhanced_lrc
+from .lyrics_engine_v2 import capture_candidate, fuse_alignment_candidates
 from .mms_aligner import realign_remaining_lines
 from .models import AlignmentConfig
 from .onset_validation import apply_supported_onset_refinements, validate_line_onsets
 from .separator import KARAOKE_MODEL, separate_stems
 from .sofa_aligner import realign_english_singing
-from .stable_transcriber import realign_with_stable_words, transcribe_stable
+from .stable_transcriber import realign_with_stable_words, transcribe_stable_variants
 from .repair import repair_collapsed_timings
 from .repetition_anchors import (apply_local_timestamp, apply_repetition_anchors,
                                  apply_transition_words, local_repetition_requests,
@@ -140,6 +142,11 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
     untimed_input = all(not line.timed_input for line in lines)
     if not lines:
         raise ValueError("Die LRC-Datei enthält keine synchronisierten Textzeilen.")
+    engine_v2_mode = os.getenv("LRC_ENGINE_V2_MODE", "shadow").strip().lower()
+    if engine_v2_mode not in {"off", "shadow", "select"}:
+        raise ValueError("LRC_ENGINE_V2_MODE muss off, shadow oder select sein.")
+    engine_v2_candidates = []
+    engine_v2_candidate_errors: list[dict] = []
 
     stem = audio_path.stem
     qwen_prompt, qwen_prompt_summary = build_asr_prompt(
@@ -314,6 +321,9 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         }
         transcript_verification: dict = {"enabled": False}
         stable_ts_summary: dict = {"enabled": False, "reason": "Qwen-ASR ausreichend"}
+        stable_ts_short_summary: dict = {
+            "enabled": False, "reason": "Lyrics Engine v2 deaktiviert"
+        }
         auto_language = language.strip().lower() == "auto"
         if (selected_candidate_transcript is not None or auto_language or
                 os.getenv("LRC_ASR_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}):
@@ -340,15 +350,28 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             stable_min_similarity = float(os.getenv("LRC_STABLE_TS_MIN_SIMILARITY", "0.80"))
             if (os.getenv("LRC_STABLE_TS_VERIFY", "true").strip().lower()
                     in {"1", "true", "yes", "on"}
-                    and (untimed_input
+                    and (engine_v2_mode != "off"
+                         or untimed_input
                          or recognized_ratio < stable_min_ratio
                          or comparison["similarity"] < stable_min_similarity)):
                 notify(56, ("Plain Lyrics benötigen einen zweiten Zeitgeber; Stable-ts prüft die Vocalspur"
                             if untimed_input else
                             "Qwen-ASR unvollständig; Stable-ts prüft die Vocalspur"))
                 try:
-                    stable = transcribe_stable(
-                        audio, language, device, initial_prompt=stable_prompt)
+                    long_seconds = float(os.getenv("LRC_STABLE_TS_CHUNK_SECONDS", "30"))
+                    long_overlap = float(os.getenv(
+                        "LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS", "3"))
+                    variants = [("long", long_seconds, long_overlap)]
+                    if engine_v2_mode != "off":
+                        variants.append((
+                            "short",
+                            float(os.getenv("LRC_ENGINE_V2_SHORT_WINDOW_SECONDS", "12")),
+                            float(os.getenv(
+                                "LRC_ENGINE_V2_SHORT_WINDOW_OVERLAP_SECONDS", "3"))))
+                        notify(57, "Lange und kurze Whisper-Fenster werden mit einem Modell verglichen")
+                    stable_variants = transcribe_stable_variants(
+                        audio, language, device, variants, initial_prompt=stable_prompt)
+                    stable = stable_variants["long"]
                     # Alignment indices must refer to the timestamped word list.
                     # Stable-ts' regrouped segment text can contain a different
                     # token count and would shift every later word timestamp.
@@ -367,6 +390,15 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                             "language": stable["language"], "text": stable["text"],
                             "comparison": stable_comparison,
                             "selected_from": "stable-ts",
+                        }
+                    if "short" in stable_variants:
+                        short_stable = stable_variants["short"]
+                        short_text = " ".join(
+                            str(word.get("word", ""))
+                            for word in short_stable.get("words", []))
+                        stable_ts_short_summary = {
+                            "enabled": True, **short_stable,
+                            "comparison": compare_transcripts(expected_text, short_text),
                         }
                 except (RuntimeError, ValueError) as stable_error:
                     stable_ts_summary = {"enabled": True, "error": str(stable_error)}
@@ -576,6 +608,41 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 fragment_recovery = recover_deleted_fragments(
                     audio, lines, stable_ts_summary["words"],
                     stable_ts_summary["comparison"], aligner, language)
+            if engine_v2_mode != "off":
+                engine_v2_candidates.append(capture_candidate(
+                    "lrclib-window-alignment",
+                    "LRCLIB-Zeilenanker mit lokalen Forced-Alignment-Fenstern",
+                    lines, "canonical-lrclib"))
+                stable_scaffolds = [
+                    ("full-transcript-scaffold", "long-context",
+                     stable_ts_summary),
+                    ("short-window-transcript-scaffold", "short-overlapping-windows",
+                     stable_ts_short_summary),
+                ]
+                for candidate_id, window_family, stable_source in stable_scaffolds:
+                    if not stable_source.get("words") or untimed_input:
+                        continue
+                    try:
+                        _candidate_headers, transcript_scaffold = parse_lrc(lrc_path)
+                        transfer_canonical_lines(
+                            _candidate_headers, transcript_scaffold,
+                            stable_source["words"],
+                            minimum_coverage=float(os.getenv(
+                                "LRC_CANONICAL_TRANSFER_MIN_COVERAGE", "0.55")))
+                        aligner.align(audio, transcript_scaffold, cfg)
+                        repair_with_vocal_activity(
+                            transcript_scaffold, cfg, vocal_activity)
+                        repair_collapsed_timings(transcript_scaffold, cfg)
+                        engine_v2_candidates.append(capture_candidate(
+                            candidate_id,
+                            ("Kanonischer LRCLIB-Text auf dem unabhängigen "
+                             f"Volltranskript-Zeitgerüst ({window_family})"),
+                            transcript_scaffold, "full-transcript-stable-ts"))
+                    except (RuntimeError, ValueError) as candidate_error:
+                        engine_v2_candidate_errors.append({
+                            "id": candidate_id,
+                            "error": str(candidate_error)[:500],
+                        })
         finally:
             aligner.close()
         repetition_activity_summary = refine_stretched_repetition_anchors(
@@ -613,6 +680,11 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 and os.getenv("LRC_SOFA_VERIFY", "true").strip().lower() in {"1", "true", "yes", "on"}):
             notify(85, "Englische Restabschnitte werden mit dem Gesangsmodell SOFA geprüft")
             sofa_summary = realign_english_singing(audio, lines)
+        if engine_v2_mode != "off":
+            engine_v2_candidates.append(capture_candidate(
+                "forced-refinement-cascade",
+                "LRCLIB-Pfad nach unabhängiger CTC/MMS/SOFA-Prüfung",
+                lines, "forced-alignment-consensus"))
         # Stable-ts is the last acoustic candidate.  It may fill only complete
         # lines that are still heuristic after CTC/MMS/EasyAligner/SOFA, so no
         # later section-level pass can overwrite its measured word timestamps.
@@ -626,6 +698,25 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 "enabled": True,
                 **stable_post_alignment,
             }
+        engine_v2_summary = {
+            "version": 2, "mode": engine_v2_mode, "applied": False,
+            "reason": "feature-disabled", "candidate_errors": engine_v2_candidate_errors,
+        }
+        if engine_v2_mode != "off":
+            baseline_id = "legacy-cascade"
+            engine_v2_candidates.append(capture_candidate(
+                baseline_id,
+                "Bisherige sequentielle Pipeline einschließlich Stable-TS",
+                lines, "legacy-cascade"))
+            notify(86, "Lyrics Engine v2 bewertet die Zeitkandidaten zeilenweise")
+            lines, engine_v2_summary = fuse_alignment_candidates(
+                engine_v2_candidates, vocal_activity, baseline_id=baseline_id,
+                mode=engine_v2_mode,
+                minimum_line_improvement=float(os.getenv(
+                    "LRC_ENGINE_V2_MIN_LINE_IMPROVEMENT", "0.035")))
+            engine_v2_summary["candidate_errors"] = engine_v2_candidate_errors
+            if engine_v2_summary.get("applied"):
+                alignment_selected = f"{alignment_selected}+lyrics-engine-v2"
         sustain_summary = extend_final_word_sustains(lines, vocal_activity)
         preliminary_onsets = validate_line_onsets(audio, lines)
         onset_refinements = apply_supported_onset_refinements(lines, preliminary_onsets)
@@ -744,9 +835,11 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "alignment_mode": alignment_selected,
         "alignment_attempts": alignment_attempts,
         "alignment_selected": alignment_selected,
+        "lyrics_engine_v2": engine_v2_summary,
         "transcript_verification": transcript_verification,
         "asr_prompt": asr_prompt_summary,
         "stable_ts": {**stable_ts_summary, "alignment": stable_alignment},
+        "stable_ts_short_windows": stable_ts_short_summary,
         "fragment_recovery": fragment_recovery,
         "repetition_anchors": repetition_anchor_summary,
         "chorus_line_anchors": chorus_anchor_summary,
