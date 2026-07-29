@@ -689,8 +689,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             AdminWishSearchResults.Clear();
             foreach (var track in results) AdminWishSearchResults.Add(track);
             AdminWishSearchStatus = Localized(
-                $"{results.Count} Treffer · Titel mit Lyrics können direkt importiert werden.",
-                $"{results.Count} results · tracks with lyrics can be imported directly.");
+                $"{results.Count} Treffer · ohne passende Lyrics wird automatisch ein Volltranskript erzeugt.",
+                $"{results.Count} results · a full transcript is created automatically when lyrics are unavailable.");
         }
         catch (Exception exception) { AdminWishSearchStatus = Localized("Suche fehlgeschlagen: ", "Search failed: ") + exception.Message; }
         finally { AdminWishSearching = false; }
@@ -698,7 +698,6 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 
     public async Task ImportAdminWishAsync(SpotifyTrackDto track, CancellationToken cancellationToken = default)
     {
-        if (!track.HasSyncedLyrics) { AdminWishSearchStatus = Localized("Für diesen Treffer wurden keine geeigneten Lyrics gefunden.", "No suitable lyrics were found for this result."); return; }
         ShowWishlistConsole();
         AppendConsole($"> Admin-Import: {track.Title} · {track.Artist}");
         try

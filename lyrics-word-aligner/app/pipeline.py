@@ -717,7 +717,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             engine_v2_summary["candidate_errors"] = engine_v2_candidate_errors
             if engine_v2_summary.get("applied"):
                 alignment_selected = f"{alignment_selected}+lyrics-engine-v2"
-        sustain_summary = extend_final_word_sustains(lines, vocal_activity)
+        sustain_summary = extend_final_word_sustains(lines, vocal_activity, audio=audio)
         preliminary_onsets = validate_line_onsets(audio, lines)
         onset_refinements = apply_supported_onset_refinements(lines, preliminary_onsets)
         display_duration_summary = stabilize_acoustic_display_durations(lines)

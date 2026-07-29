@@ -1,5 +1,7 @@
 import unittest
 
+import numpy as np
+
 from app.consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains, reconcile_acoustic_boundaries,
                            stabilize_acoustic_display_durations)
 from app.models import LrcLine
@@ -65,6 +67,47 @@ class ConsensusTests(unittest.TestCase):
         self.assertEqual(1, result["adjusted_words"])
         self.assertEqual(2.1, line.words[1]["end"])
         self.assertEqual(1.7, line.words[1]["acoustic_end"])
+
+    def test_quiet_tonal_release_extends_beyond_global_activity_limit(self):
+        sample_rate = 16000
+        audio = np.zeros(sample_rate * 5, dtype=np.float32)
+        start = int(0.75 * sample_rate)
+        stop = int(3.1 * sample_rate)
+        time = np.arange(stop - start) / sample_rate
+        envelope = np.linspace(0.22, 0.018, stop - start)
+        audio[start:stop] = envelope * np.sin(2 * np.pi * 220 * time)
+        lines = [
+            LrcLine(0.8, "la", "", words=[
+                {"word": "la", "start": 0.8, "end": 1.15,
+                 "timing_source": "stable-ts-whisper"}]),
+            LrcLine(3.6, "next", "", words=[
+                {"word": "next", "start": 3.6, "end": 3.9,
+                 "timing_source": "stable-ts-whisper"}]),
+        ]
+
+        result = extend_final_word_sustains(lines, [], audio=audio)
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertGreater(lines[0].words[0]["end"], 3.0)
+        self.assertLessEqual(lines[0].words[0]["end"], 3.48)
+        self.assertEqual("local-tonal-sustain-release-v4", result["method"])
+
+    def test_broadband_separator_noise_does_not_become_a_sustain(self):
+        generator = np.random.default_rng(7)
+        sample_rate = 16000
+        audio = np.zeros(sample_rate * 4, dtype=np.float32)
+        voiced_start, voiced_stop = int(.75 * sample_rate), int(1.2 * sample_rate)
+        time = np.arange(voiced_stop - voiced_start) / sample_rate
+        audio[voiced_start:voiced_stop] = .2 * np.sin(2 * np.pi * 220 * time)
+        audio[int(1.2 * sample_rate):int(3.0 * sample_rate)] = (
+            generator.normal(0, .004, int(1.8 * sample_rate)).astype(np.float32))
+        line = LrcLine(.8, "la", "", words=[
+            {"word": "la", "start": .8, "end": 1.15,
+             "timing_source": "stable-ts-whisper"}])
+
+        extend_final_word_sustains([line], [], audio=audio)
+
+        self.assertLess(line.words[0]["end"], 1.4)
 
     def test_display_floor_preserves_acoustic_measurement(self):
         line = LrcLine(1.0, "a", "", words=[

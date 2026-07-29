@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import numpy as np
+
 
 ACOUSTIC_SOURCES = {None, "qwen-forced", "ctc-phoneme-alignment",
                     "ctc-context-alignment", "ctc-section-alignment",
@@ -14,9 +16,90 @@ ACOUSTIC_SOURCES.add("ctc-overlap-reanalysis")
 VERIFIED_ACOUSTIC_SOURCES = ACOUSTIC_SOURCES - {None}
 
 
+def _measure_sung_release(audio: np.ndarray, word_start: float, lexical_end: float,
+                          upper_bound: float, *, sample_rate: int = 16000,
+                          bridge_gap: float = 0.24) -> tuple[float, float] | None:
+    """Follow a connected, tonal vocal decay beyond an ASR lexical boundary.
+
+    Energy-only VAD is intentionally conservative and often cuts quiet vibrato
+    or a held vowel.  This local detector uses hysteresis plus spectral flatness:
+    a low-energy harmonic tail remains singing, while broadband separator noise
+    does not acquire the word.  It only follows a region connected to the
+    measured word ending and can therefore never jump to a later phrase.
+    """
+    signal = np.asarray(audio, dtype=np.float32)
+    if signal.ndim > 1:
+        signal = np.mean(signal, axis=-1)
+    signal = signal.reshape(-1)
+    duration = len(signal) / sample_rate
+    upper_bound = min(float(upper_bound), duration)
+    window_start = max(0.0, min(word_start, lexical_end - 0.45))
+    if upper_bound <= lexical_end + 0.04 or upper_bound <= window_start:
+        return None
+    frame_size = max(1, int(sample_rate * 0.04))
+    hop_size = max(1, int(sample_rate * 0.01))
+    first_sample = max(0, int(window_start * sample_rate))
+    last_sample = min(len(signal), int(upper_bound * sample_rate))
+    segment = signal[first_sample:last_sample]
+    if len(segment) < frame_size:
+        return None
+    starts = np.arange(0, len(segment) - frame_size + 1, hop_size)
+    window = np.hanning(frame_size).astype(np.float32)
+    frames = np.stack([segment[start:start + frame_size] for start in starts])
+    rms = np.sqrt(np.mean(frames * frames, axis=1) + 1e-12)
+    spectrum = np.abs(np.fft.rfft(frames * window, axis=1))[:, 2:] + 1e-10
+    flatness = np.exp(np.mean(np.log(spectrum), axis=1)) / np.mean(spectrum, axis=1)
+    times = window_start + starts / sample_rate
+    core = (times >= max(word_start, lexical_end - 0.35)) & (times <= lexical_end + 0.04)
+    if not np.any(core):
+        return None
+    reference = float(np.percentile(rms[core], 60))
+    # The local window can be dominated by one very long held note. A 20th
+    # percentile then mistakes its quiet decay for the noise floor and cuts it
+    # early; the 10th percentile still rejects separator hiss while preserving
+    # that last audible part of the vowel.
+    noise = float(np.percentile(rms, 10))
+    if reference < 2e-5:
+        return None
+    low_threshold = max(2e-5, noise * 1.35, reference * 0.055)
+    strong_threshold = max(4e-5, noise * 2.1, reference * 0.22)
+    # Quiet frames must remain recognisably tonal. Louder consonants/releases
+    # are accepted regardless of flatness so that the word is not cut early.
+    active = (rms >= strong_threshold) | ((rms >= low_threshold) & (flatness <= 0.58))
+    end_index = int(np.argmin(np.abs(times - lexical_end)))
+    seed_candidates = np.flatnonzero(active &
+                                     (times >= lexical_end - 0.13) &
+                                     (times <= lexical_end + 0.16))
+    if not len(seed_candidates):
+        return None
+    cursor = int(seed_candidates[np.argmin(np.abs(seed_candidates - end_index))])
+    last_active = cursor
+    maximum_gap_frames = max(1, int(bridge_gap * sample_rate / hop_size))
+    inactive_frames = 0
+    for index in range(cursor + 1, len(active)):
+        if active[index]:
+            last_active = index
+            inactive_frames = 0
+        else:
+            inactive_frames += 1
+            if inactive_frames > maximum_gap_frames:
+                break
+    release = min(upper_bound, times[last_active] + frame_size / sample_rate)
+    if release <= lexical_end + 0.06:
+        return None
+    tail = slice(cursor, last_active + 1)
+    tonal_share = float(np.mean(flatness[tail] <= 0.58)) if last_active >= cursor else 0.0
+    energy_share = float(np.mean(rms[tail] >= low_threshold)) if last_active >= cursor else 0.0
+    confidence = max(0.0, min(1.0, 0.55 * energy_share + 0.45 * tonal_share))
+    return float(release), float(confidence)
+
+
 def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, float]],
-                               *, release_padding: float = 0.0,
-                               maximum_extension: float = 1.2) -> dict:
+                               *, audio: np.ndarray | None = None,
+                               sample_rate: int = 16000,
+                               release_padding: float = 0.0,
+                               maximum_extension: float = 1.2,
+                               maximum_sung_extension: float = 3.5) -> dict:
     """Keep a held word active through its measured vocal decay.
 
     ASR models generally timestamp the lexical core and often cut a sung vowel
@@ -48,10 +131,18 @@ def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, fl
                           if begin <= end + 0.1 and end + 0.06 < stop <= end + maximum_extension
                           and stop >= start
                           and (not internal or next_start is None or stop <= next_start + 0.08)]
-            if not candidates:
+            activity_end = max((stop for _begin, stop in candidates), default=end)
+            sung_release = None
+            if audio is not None:
+                upper_bound = end + maximum_sung_extension
+                if next_start is not None:
+                    upper_bound = min(upper_bound, next_start - 0.12)
+                sung_release = _measure_sung_release(
+                    audio, start, end, upper_bound, sample_rate=sample_rate)
+            measured_end = max(activity_end, sung_release[0] if sung_release else end)
+            if measured_end <= end + 0.06:
                 continue
-            activity_end = max(stop for _begin, stop in candidates)
-            target = min(end + maximum_extension, activity_end + release_padding)
+            target = min(end + maximum_sung_extension, measured_end + release_padding)
             if next_start is not None:
                 target = min(target, next_start - 0.12)
             if target - end < 0.08:
@@ -59,12 +150,16 @@ def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, fl
             word["acoustic_end"] = round(end, 3)
             word["end"] = round(target, 3)
             word["sustain_activity_end"] = round(activity_end, 3)
+            if sung_release:
+                word["sustain_release_confidence"] = round(sung_release[1], 3)
             word["sustain_extension_ms"] = round((target - end) * 1000)
             adjustments.append({"line": index + 1, "word_index": word_index + 1,
                                 "word": word.get("word", ""),
                                 "from": round(end, 3), "to": round(target, 3),
-                                "activity_end": round(activity_end, 3)})
-    return {"method": "vocal-activity-sustain-release-v3",
+                                "activity_end": round(activity_end, 3),
+                                "tonal_release": round(sung_release[0], 3) if sung_release else None,
+                                "confidence": round(sung_release[1], 3) if sung_release else None})
+    return {"method": "local-tonal-sustain-release-v4",
             "adjusted_words": len(adjustments), "release_padding_ms": round(release_padding * 1000),
             "adjustments": adjustments}
 

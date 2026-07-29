@@ -129,7 +129,9 @@ while IFS= read -r wish; do
       --sunnify-source "$sunnify_dir" --format mp3 --quality 320
       "$spotify_url" "$staging")
   fi
-  if ! "${download_command[@]}" >"$result_file"; then
+  if ! "${download_command[@]}" >"$result_file" ||
+      ! jq -e '.ok == true and (.track.file | type == "string") and (.track.file | length > 0)' \
+        "$result_file" >/dev/null 2>&1; then
     echo "Download fehlgeschlagen: $(jq -r '.errors // .messages // [] | join("; ")' "$result_file" 2>/dev/null || true)" >&2
     rm -rf -- "$staging"
     ((failed+=1))
@@ -159,29 +161,46 @@ while IFS= read -r wish; do
   report_audio_candidate "Audio gefunden · Lyrics werden verarbeitet"
 
   echo "LRCLIB-Matching: $destination"
+  lrc="${destination%.*}.lrc"
+  matcher_ok=1
   if ! dotnet run --project "$repo_root/LrcMatcher/LrcMatcher.csproj" --no-build -- \
       "$destination" --plain-fallback --max-duration-difference 5 --aligner-url "$aligner_url"; then
-    report_audio_candidate "Audio gefunden · Lyrics-Matching fehlgeschlagen"
-    echo "LRC-Matching fehlgeschlagen; Wunsch bleibt erhalten." >&2
-    ((failed+=1))
-    continue
-  fi
-  lrc="${destination%.*}.lrc"
-  if [[ ! -s "$lrc" ]]; then
-    report_audio_candidate "Audio gefunden · keine geeigneten Lyrics"
-    echo "Kein sicherer synchronisierter LRC-Treffer; Wunsch bleibt erhalten." >&2
-    ((failed+=1))
-    continue
+    matcher_ok=0
   fi
 
-  echo "GPU-Wort-/Silbenalignment: $destination"
-  if ! "$repo_root/scripts/linux/align-library.sh" --force \
-      --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url"; then
-    report_audio_candidate "Audio gefunden · Lyrics-Alignment fehlgeschlagen"
-    echo "Alignment fehlgeschlagen; Wunsch bleibt erhalten." >&2
-    ((failed+=1))
-    continue
+  pipeline_complete=0
+  if ((matcher_ok == 0)) || [[ ! -s "$lrc" ]]; then
+    report_audio_candidate "Audio gefunden · Volltranskript wird erzeugt"
+    echo "Kein sicherer LRCLIB-Treffer; Volltranskript wird aus der heruntergeladenen Audiofassung erzeugt."
+    if "$repo_root/scripts/linux/recognize-song-lyrics.sh" --audio "$destination" \
+        --url "$aligner_url" --language auto --no-canonical --no-reindex; then
+      pipeline_complete=1
+    else
+      report_audio_candidate "Audio gefunden · Volltranskript fehlgeschlagen"
+      echo "Volltranskript und Alignment fehlgeschlagen; Wunsch bleibt erhalten." >&2
+      ((failed+=1))
+      continue
+    fi
+  else
+    echo "GPU-Wort-/Silbenalignment: $destination"
+    if "$repo_root/scripts/linux/align-library.sh" --force \
+        --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url"; then
+      pipeline_complete=1
+    else
+      report_audio_candidate "Audio gefunden · reguläres Alignment fehlgeschlagen · Volltranskript läuft"
+      echo "Das LRCLIB-basierte Alignment ist fehlgeschlagen; zweiter Versuch über das Volltranskript."
+      if "$repo_root/scripts/linux/recognize-song-lyrics.sh" --audio "$destination" \
+          --url "$aligner_url" --language auto --canonical "$lrc" --no-reindex; then
+        pipeline_complete=1
+      else
+        report_audio_candidate "Audio gefunden · Lyrics-Alignment fehlgeschlagen"
+        echo "Auch Volltranskript und Canonical-Transfer sind fehlgeschlagen; Wunsch bleibt erhalten." >&2
+        ((failed+=1))
+        continue
+      fi
+    fi
   fi
+  ((pipeline_complete != 0)) || { report_audio_candidate "Audio gefunden · Pipeline unvollständig"; ((failed+=1)); continue; }
   [[ -s "${destination%.*}.alignment.json" ]] || { report_audio_candidate "Audio gefunden · Alignment unvollständig"; echo "Alignment-Sidecar fehlt; Wunsch bleibt erhalten." >&2; ((failed+=1)); continue; }
   publishable=$(jq -r '.quality.publishable // false' "${destination%.*}.alignment.json")
   quality_score=$(jq -r '.quality.score // 0' "${destination%.*}.alignment.json")

@@ -54,19 +54,33 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
         try
         {
             var root = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "..", ".."));
+            var fullTranscriptCompleted = false;
             if (useLrclib)
             {
                 Set(8, "LRCLIB-Matching wird gestartet …");
                 var exit = await RunAsync(root, "dotnet", output, "run", "--project", Path.Combine(root, "LrcMatcher"),
                     "--", audioPath, "--overwrite", "--plain-fallback");
-                if (exit != 0 || !File.Exists(lrcPath)) throw new InvalidOperationException("Für den Song konnten keine geeigneten Lyrics geladen werden.");
+                if (exit != 0 || !HasLyrics(lrcPath))
+                    Add(output, "Kein geeigneter LRCLIB-Treffer; es wird ein Volltranskript aus dem Song erzeugt.");
             }
-            if (!File.Exists(lrcPath)) throw new InvalidOperationException("Für die Trennung und Ausrichtung werden Lyrics benötigt.");
-            Set(20, "GPU-Separation und Lyrics-Alignment laufen …");
-            var script = Path.Combine(root, "scripts", "linux", "align-library.sh");
-            var result = await RunAsync(root, "/bin/bash", output, script, "--force", "--library",
-                settings.Get().LibraryPath, "--match", Path.GetFileName(audioPath));
+            int result;
+            if (!HasLyrics(lrcPath))
+            {
+                Set(15, "Keine Lyrics vorhanden · GPU-Volltranskript läuft …");
+                var recognitionScript = Path.Combine(root, "scripts", "linux", "recognize-song-lyrics.sh");
+                result = await RunAsync(root, "/bin/bash", output, recognitionScript, "--audio", audioPath,
+                    "--language", "auto", "--no-canonical", "--no-reindex");
+                fullTranscriptCompleted = result == 0;
+            }
+            else
+            {
+                Set(20, "GPU-Separation und Lyrics-Alignment laufen …");
+                var script = Path.Combine(root, "scripts", "linux", "align-library.sh");
+                result = await RunAsync(root, "/bin/bash", output, script, "--force", "--library",
+                    settings.Get().LibraryPath, "--match", Path.GetFileName(audioPath));
+            }
             if (result != 0) throw new InvalidOperationException("GPU-Pipeline hat den Song nicht akzeptiert.");
+            if (fullTranscriptCompleted) Add(output, "Volltranskript und Wort-/Silbenalignment wurden abgeschlossen.");
             Set(95, "Bibliothek wird aktualisiert …");
             await library.TryReindexAsync(CancellationToken.None);
             lock (_gate) _status = _status with { IsRunning = false, Percent = 100, Message = "Songprojekt ist bereit.",
@@ -113,6 +127,7 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
             ? value.Trim() + Environment.NewLine
             : "[re:Plain lyrics imported by Neon Stage; GPU alignment required]" + Environment.NewLine + value.Trim() + Environment.NewLine;
     }
+    private static bool HasLyrics(string path) => File.Exists(path) && new FileInfo(path).Length > 0;
     private static string SafeName(string value)
     {
         var invalid = Path.GetInvalidFileNameChars().ToHashSet();

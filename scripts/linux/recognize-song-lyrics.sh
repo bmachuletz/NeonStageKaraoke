@@ -6,11 +6,12 @@ aligner_url="${LRC_ALIGNER_URL:-http://127.0.0.1:8081}"
 audio=""
 language="auto"
 canonical_source=""
+force_no_canonical=0
 output_dir=""
 reindex=1
 
 usage() {
-  echo "Usage: $0 --audio FILE [--url URL] [--language auto|de|en|...] [--canonical FILE] [--output-dir DIR] [--no-reindex]"
+  echo "Usage: $0 --audio FILE [--url URL] [--language auto|de|en|...] [--canonical FILE | --no-canonical] [--output-dir DIR] [--no-reindex]"
 }
 
 while (($#)); do
@@ -19,6 +20,7 @@ while (($#)); do
     --url) aligner_url=${2:?URL missing}; shift 2 ;;
     --language) language=${2:?Language missing}; shift 2 ;;
     --canonical) canonical_source=${2:?Canonical lyrics file missing}; shift 2 ;;
+    --no-canonical) force_no_canonical=1; shift ;;
     --output-dir) output_dir=${2:?Output directory missing}; shift 2 ;;
     --no-reindex) reindex=0; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -30,6 +32,9 @@ for command in curl jq install realpath; do
   command -v "$command" >/dev/null || { echo "Missing command: $command" >&2; exit 1; }
 done
 [[ -n "$audio" && -f "$audio" ]] || { echo "Audio file not found: $audio" >&2; exit 1; }
+((force_no_canonical == 0)) || [[ -z "$canonical_source" ]] || {
+  echo "--canonical and --no-canonical cannot be used together" >&2; exit 2;
+}
 [[ -z "$canonical_source" || -f "$canonical_source" ]] || { echo "Canonical lyrics file not found: $canonical_source" >&2; exit 1; }
 curl -fsS "$aligner_url/health" >/dev/null || { echo "Aligner is unavailable: $aligner_url" >&2; exit 1; }
 
@@ -40,10 +45,10 @@ canonical_lrc=""
 if [[ -n "$canonical_source" ]]; then
   canonical_lrc="$work_dir/canonical.lrc"
   install -m 0600 "$canonical_source" "$canonical_lrc"
-elif [[ -s "$base.lrc" ]]; then
+elif ((force_no_canonical == 0)) && [[ -s "$base.lrc" ]]; then
   canonical_lrc="$work_dir/canonical.lrc"
   install -m 0600 "$base.lrc" "$canonical_lrc"
-elif [[ -s "$base.pre-align.lrc" ]]; then
+elif ((force_no_canonical == 0)) && [[ -s "$base.pre-align.lrc" ]]; then
   canonical_lrc="$work_dir/canonical.lrc"
   install -m 0600 "$base.pre-align.lrc" "$canonical_lrc"
 fi

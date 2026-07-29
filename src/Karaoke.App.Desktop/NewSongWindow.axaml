@@ -12,7 +12,7 @@
       <Grid ColumnDefinitions="*,Auto,Auto"><TextBlock Text="LYRICS (OPTIONAL · LRC / ULTRASTAR TXT)" Foreground="#8993A6" FontSize="10" FontWeight="Bold" VerticalAlignment="Center"/><Button Grid.Column="1" Content="Aus Datei …" Click="PickLyricsClick"/><Button Grid.Column="2" Content="Zwischenablage" Click="PasteLyricsClick" Margin="8,0,0,0"/></Grid>
       <TextBox x:Name="LyricsBox" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="230" ScrollViewer.VerticalScrollBarVisibility="Auto" Watermark="Plain-Text, LRC, Enhanced LRC oder UltraStar-Deluxe-TXT hier einfügen …"/>
       <TextBlock x:Name="LyricsStatusText" Foreground="#45E6D0" TextWrapping="Wrap"/>
-      <CheckBox x:Name="UseLrclibBox" IsChecked="True" Content="Wenn das Feld leer ist, automatisch passende Lyrics bei LRCLIB suchen"/>
+      <CheckBox x:Name="UseLrclibBox" IsChecked="True" Content="Wenn das Feld leer ist, zuerst LRCLIB suchen; andernfalls automatisch ein Volltranskript erzeugen"/>
       <TextBlock Text="Der Auftrag läuft nach dem Import in der Hintergrundkonsole weiter. Der Editor bleibt benutzbar." Foreground="#45E6D0" TextWrapping="Wrap"/>
     </StackPanel></ScrollViewer>
     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8"><Button Content="Abbrechen" Click="CancelClick"/><Button Content="Projekt anlegen" Click="CreateClick" Background="#DFFF28" Foreground="#11151C"/></StackPanel>
