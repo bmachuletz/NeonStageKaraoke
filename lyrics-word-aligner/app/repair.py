@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from .models import AlignmentConfig, LrcLine
 
 
@@ -14,9 +15,13 @@ def repair_collapsed_timings(lines: list[LrcLine], cfg: AlignmentConfig) -> int:
             continue
         durations = [float(word["end"]) - float(word["start"]) for word in line.words]
         collapsed = sum(duration < 0.03 for duration in durations)
+        nonpositive = any(duration <= 0 for duration in durations)
+        collapsed_threshold = max(3, math.ceil(len(durations) * 0.25))
         starts = [float(word["start"]) for word in line.words]
-        cross_line_rewind = starts[0] + 0.08 < previous_end
-        if collapsed < max(2, len(line.words) // 4) and not cross_line_rewind:
+        internal_overlap = any(
+            float(left["end"]) > float(right["start"]) + 0.005
+            for left, right in zip(line.words, line.words[1:]))
+        if (not nonpositive and collapsed < collapsed_threshold and not internal_overlap):
             previous_end = max(previous_end, float(line.words[-1]["end"]))
             continue
 

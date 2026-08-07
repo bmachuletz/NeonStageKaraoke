@@ -32,12 +32,31 @@ services:
       LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS: ${LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS:-3}
       LRC_ALIGNMENT_BATCH_SIZE: ${LRC_ALIGNMENT_BATCH_SIZE:-1}
       # Engine v2 keeps alignment paths immutable and evaluates them per line.
-      # shadow records its decision without changing output; select applies only
-      # candidates which measurably beat the historical pipeline.
-      LRC_ENGINE_V2_MODE: ${LRC_ENGINE_V2_MODE:-shadow}
+      # select applies only independently supported candidates which measurably
+      # beat the historical pipeline; shadow remains available for diagnostics.
+      LRC_ENGINE_V2_MODE: ${LRC_ENGINE_V2_MODE:-select}
       LRC_ENGINE_V2_MIN_LINE_IMPROVEMENT: ${LRC_ENGINE_V2_MIN_LINE_IMPROVEMENT:-0.035}
+      # Never replace a stronger Enhanced-LRC editor line with a weaker
+      # automatic result when the exact Stage vocal stem supports the editor.
+      LRC_ENHANCED_INPUT_MIN_IMPROVEMENT: ${LRC_ENHANCED_INPUT_MIN_IMPROVEMENT:-0.06}
       LRC_ENGINE_V2_SHORT_WINDOW_SECONDS: ${LRC_ENGINE_V2_SHORT_WINDOW_SECONDS:-12}
       LRC_ENGINE_V2_SHORT_WINDOW_OVERLAP_SECONDS: ${LRC_ENGINE_V2_SHORT_WINDOW_OVERLAP_SECONDS:-3}
+      # Refine internal syllable boundaries from local multiband changes in
+      # the exact vocal stem. Word windows remain controlled by the aligners.
+      LRC_ACOUSTIC_SYLLABLE_REFINE: ${LRC_ACOUSTIC_SYLLABLE_REFINE:-true}
+      # Independent IPA phone timing on short lyric-line windows. Version 1.2
+      # adds a class-aware duration path and applies only candidates confirmed
+      # by separate local acoustics.
+      LRC_PHONEME_CTC_REFINE: ${LRC_PHONEME_CTC_REFINE:-true}
+      LRC_PHONEME_CTC_MODEL: ${LRC_PHONEME_CTC_MODEL:-facebook/wav2vec2-xlsr-53-espeak-cv-ft}
+      LRC_PHONEME_PROMOTION_MIN_CONFIDENCE: ${LRC_PHONEME_PROMOTION_MIN_CONFIDENCE:-0.50}
+      LRC_PHONEME_PROMOTION_MIN_EVIDENCE: ${LRC_PHONEME_PROMOTION_MIN_EVIDENCE:-0.60}
+      LRC_PHONEME_PROMOTION_MAX_SHIFT: ${LRC_PHONEME_PROMOTION_MAX_SHIFT:-0.14}
+      # Variant 1.2: class-aware 2.5/5/10 ms DSP features plus a local monotone
+      # duration path. Use shadow to measure candidates without applying them.
+      LRC_MICRO_BOUNDARY_MODE: ${LRC_MICRO_BOUNDARY_MODE:-select}
+      LRC_MICRO_BOUNDARY_SEARCH_RADIUS: ${LRC_MICRO_BOUNDARY_SEARCH_RADIUS:-0.055}
+      LRC_MICRO_BOUNDARY_MIN_IMPROVEMENT: ${LRC_MICRO_BOUNDARY_MIN_IMPROVEMENT:-0.08}
       PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
       LRC_ASR_PROMPT_MAX_CHARS: ${LRC_ASR_PROMPT_MAX_CHARS:-1600}
       LRC_STABLE_TS_PROMPT_MAX_CHARS: ${LRC_STABLE_TS_PROMPT_MAX_CHARS:-700}

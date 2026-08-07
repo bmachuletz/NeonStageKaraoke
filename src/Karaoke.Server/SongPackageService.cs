@@ -153,8 +153,10 @@ internal sealed class SongPackageService(ServerSettingsService settings, Library
                 foreach (var version in packageSong.LyricsVersions)
                 {
                     var entry = GetVerifiedEntry(entries, version.ArchivePath, version.Size);
-                    if (entry.Length > 12 * 1024 * 1024)
-                        throw new InvalidDataException("Eine Lyrics-Version überschreitet 12 MiB.");
+                    // A version can contain the editor document (up to 10 MiB)
+                    // plus its immutable technical alignment report (up to 20 MiB).
+                    if (entry.Length > 32 * 1024 * 1024)
+                        throw new InvalidDataException("Eine Lyrics-Version überschreitet 32 MiB.");
                     expandedBytes = checked(expandedBytes + entry.Length);
                     if (expandedBytes > MaximumExpandedBytes)
                         throw new InvalidDataException("Das entpackte Songpaket ist zu groß.");

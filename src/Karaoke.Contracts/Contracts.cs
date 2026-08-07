@@ -164,14 +164,20 @@ public enum LyricsVersionStatus
     Generated, NeedsReview, InReview, Reviewed, Approved, Published, Rejected, Superseded
 }
 public sealed record LyricsVersionSummaryDto(Guid Id, Guid SongId, long Revision, LyricsVersionStatus Status,
-    string? AnalysisRunId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+    string? AnalysisRunId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+    bool HasAlignmentReport = false);
 public sealed record LyricsVersionDto(Guid Id, Guid SongId, long Revision, LyricsVersionStatus Status,
-    string DocumentJson, string? AnalysisRunId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt);
+    string DocumentJson, string? AnalysisRunId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
+    string? AlignmentReportJson = null);
 public sealed record CreateLyricsVersionRequest(string DocumentJson, string? AnalysisRunId = null,
-    LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false);
+    LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false,
+    bool PreserveExistingDrafts = false, string? AlignmentReportJson = null);
 public sealed record UpdateLyricsVersionRequest(long ExpectedRevision, string DocumentJson,
     LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false);
 public sealed record ChangeLyricsVersionStatusRequest(long ExpectedRevision, bool AllowTimingConflicts = false);
+public sealed record LyricsVersionReportDto(Guid VersionId, Guid SongId, long Revision,
+    string Title, string Outcome, string Content, bool HasTechnicalAlignmentReport,
+    DateTimeOffset CreatedAt);
 public sealed record SongRealignmentRequest(Guid? SourceVersionId = null,
     bool IncludeEditorBasis = true, bool IncludeOriginalLyrics = true);
 public sealed record SongPackageExportRequest(IReadOnlyList<Guid> SongIds);

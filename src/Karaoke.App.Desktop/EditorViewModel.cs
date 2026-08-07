@@ -30,6 +30,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private Guid? _serverVersionId;
     private long _serverRevision;
     private LyricsVersionStatus? _serverVersionStatus;
+    private string? _alignmentReportJson;
     private string _songFilter = string.Empty;
     private string _songStatusFilter = "In Review";
     private LyricSegment? _selectedSegment;
@@ -489,6 +490,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             _serverVersionId = null;
             _serverRevision = 0;
             _serverVersionStatus = null;
+            _alignmentReportJson = version.AlignmentReportJson;
             AnchorPosition(FirstVocalPosition());
             PreviewRevision++;
             TimelineRevision++;
@@ -501,6 +503,24 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         catch (Exception exception)
         {
             Status = "Lyrics-Version konnte nicht geladen werden: " + exception.Message;
+        }
+    }
+
+    public async Task<LyricsVersionReportDto?> GetLyricsVersionReportAsync(EditorLyricsVersionItem item,
+        CancellationToken cancellationToken = default)
+    {
+        if (SelectedSong is not { } song || item.Version.SongId != song.Id) return null;
+        try
+        {
+            var language = EditorLocale.German ? "de" : "en";
+            return await _http.GetFromJsonAsync<LyricsVersionReportDto>(
+                $"/api/songs/{song.Id}/lyrics/versions/{item.Version.Id}/report?language={language}",
+                cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            Status = "Alignment-Bericht konnte nicht geladen werden: " + exception.Message;
+            return null;
         }
     }
 
@@ -746,17 +766,21 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         var path = FolderImportPath.Trim();
         if (string.IsNullOrWhiteSpace(path))
         {
-            FolderImportSummary = "Bitte zuerst einen MP3-Ordner auswählen.";
+            FolderImportSummary = Localized(
+                "Bitte zuerst einen Audio-Ordner mit MP3- oder FLAC-Dateien auswählen.",
+                "Please select an audio folder containing MP3 or FLAC files first.");
             return;
         }
         ShowFolderImportConsole();
-        AppendConsole($"> import-mp3-folder \"{path}\"" + (FolderImportRecursive ? " --recursive" : string.Empty));
+        AppendConsole($"> import-audio-folder \"{path}\"" + (FolderImportRecursive ? " --recursive" : string.Empty));
         try
         {
             using var response = await _http.PostAsJsonAsync("/api/admin/folder-import",
                 new FolderImportRequest(path, FolderImportRecursive), cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
-                AppendConsole("Ein MP3-Ordnerimport läuft bereits; dessen Status wird angezeigt.");
+                AppendConsole(Localized(
+                    "Ein Audio-Ordnerimport läuft bereits; dessen Status wird angezeigt.",
+                    "An audio-folder import is already running; its status is shown."));
             else if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledFolderImportJob = null;
@@ -769,7 +793,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    public async Task StartSelectedSongRealignmentAsync(CancellationToken cancellationToken = default)
+    public async Task StartSelectedSongRealignmentAsync(AlignmentVariantChoice choice,
+        CancellationToken cancellationToken = default)
     {
         if (SelectedSong is not { } song)
         {
@@ -783,13 +808,15 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
         ConsoleVisible = true;
         _audio.Stop();
-        AppendConsole($"> Duales GPU-Alignment: {song.Title} · {song.Artist}");
-        AppendConsole("  1. letzter gespeicherter Editor-Stand");
-        AppendConsole("  2. ursprüngliche LRCLIB-Lyrics + Volltranskript-Timing");
+        var (includeEditorBasis, includeOriginalLyrics) = AlignmentVariants(choice);
+        AppendConsole($"> GPU-Alignment: {song.Title} · {song.Artist}");
+        if (includeEditorBasis) AppendConsole("  Variante 1.2: IPA-Mikroanalyse + Pitch-/Voicing-Ausklänge");
+        if (includeOriginalLyrics) AppendConsole("  Variante 2: ursprüngliche LRCLIB-Lyrics + Volltranskript-Timing");
         try
         {
             using var response = await _http.PostAsJsonAsync($"/api/admin/songs/{song.Id}/realign",
-                new SongRealignmentRequest(_serverVersionId), cancellationToken);
+                new SongRealignmentRequest(_serverVersionId, includeEditorBasis, includeOriginalLyrics),
+                cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
             {
                 AppendConsole("Es läuft bereits eine GPU-Neuausrichtung. Es wird kein zweiter Song gestartet.");
@@ -798,7 +825,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledRealignmentJob = null;
-            Status = $"Zwei GPU-Alignment-Varianten für {song.Title} laufen im Hintergrund …";
+            Status = choice == AlignmentVariantChoice.Both
+                ? $"Zwei GPU-Alignment-Varianten für {song.Title} laufen im Hintergrund …"
+                : $"Die ausgewählte GPU-Alignment-Variante für {song.Title} läuft im Hintergrund …";
             await RefreshRealignmentStatusAsync(cancellationToken);
         }
         catch (Exception exception)
@@ -808,14 +837,24 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    public async Task StartAllSongsRealignmentAsync(CancellationToken cancellationToken = default)
+    public async Task StartAllSongsRealignmentAsync(AlignmentVariantChoice choice,
+        CancellationToken cancellationToken = default)
     {
+        if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
+        {
+            AppendConsole("Der aktuelle Editor-Stand konnte vor dem Bibliotheks-Alignment nicht gespeichert werden.");
+            return;
+        }
         ConsoleVisible = true;
         _audio.Stop();
+        var (includeEditorBasis, includeOriginalLyrics) = AlignmentVariants(choice);
         AppendConsole("> GPU-Neuausrichtung: gesamte Bibliothek");
+        if (includeEditorBasis) AppendConsole("  Variante 1.2: IPA-Mikroanalyse + Pitch-/Voicing-Ausklänge");
+        if (includeOriginalLyrics) AppendConsole("  Variante 2: LRCLIB + Volltranskript-Timing");
         try
         {
-            using var response = await _http.PostAsync("/api/admin/songs/realign-all", null, cancellationToken);
+            using var response = await _http.PostAsJsonAsync("/api/admin/songs/realign-all",
+                new SongRealignmentRequest(null, includeEditorBasis, includeOriginalLyrics), cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
             {
                 AppendConsole("Es läuft bereits eine GPU-Neuausrichtung.");
@@ -824,7 +863,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledRealignmentJob = null;
-            Status = "GPU-Alignment der gesamten Bibliothek läuft im Hintergrund …";
+            Status = choice == AlignmentVariantChoice.Both
+                ? "Beide GPU-Alignment-Varianten der gesamten Bibliothek laufen im Hintergrund …"
+                : "Die ausgewählte GPU-Alignment-Variante der gesamten Bibliothek läuft im Hintergrund …";
             await RefreshRealignmentStatusAsync(cancellationToken);
         }
         catch (Exception exception)
@@ -833,6 +874,15 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             AppendConsole(Status);
         }
     }
+
+    private static (bool IncludeEditorBasis, bool IncludeOriginalLyrics) AlignmentVariants(
+        AlignmentVariantChoice choice) => choice switch
+        {
+            AlignmentVariantChoice.Phoneme => (true, false),
+            AlignmentVariantChoice.FullTranscript => (false, true),
+            AlignmentVariantChoice.Both => (true, true),
+            _ => throw new ArgumentOutOfRangeException(nameof(choice), choice, null)
+        };
 
     public async Task StartCompleteLyricsRecognitionAsync(CancellationToken cancellationToken = default)
     {
@@ -944,7 +994,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                   $"{status.Succeeded} fertig, {status.Review} Review, {status.Failed} Fehler"
                 : $"{status.Message} · {status.Succeeded} fertig, {status.Review} Review, " +
                   $"{status.Failed} Fehler, {status.Skipped} übersprungen";
-            if (status.IsRunning) JobState = $"MP3-ORDNERIMPORT · {status.Percent}% · {status.Message}";
+            if (status.IsRunning) JobState = $"AUDIO-ORDNERIMPORT · {status.Percent}% · {status.Message}";
             foreach (var line in status.RecentOutput)
                 if (_seenConsoleOutput.Add("folder:" + status.JobId + ":" + line)) AppendConsole(line);
             if (status.IsRunning || _handledFolderImportJob == status.JobId) return;
@@ -980,10 +1030,10 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             {
                 if (SelectedSong?.Id == songId)
                 {
-                    // A realignment can replace both lyrics and stems. Reload the complete
-                    // song so the revision-aware PCM and waveform caches select the new files.
                     _realignedSongsPendingReview.Add(songId);
-                    await LoadSelectedSongAsync(cancellationToken);
+                    await RefreshLyricsVersionsAsync(cancellationToken, reportErrors: false);
+                    Status = "GPU-Neuausrichtung abgeschlossen. Vergleichsvarianten stehen unter Lyrics-Versionen bereit; der aktuelle Arbeitsstand blieb geladen.";
+                    AppendConsole(Status);
                 }
                 else
                     _realignedSongsPendingReview.Add(songId);
@@ -1015,6 +1065,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _serverVersionId = serverVersion?.Id;
         _serverRevision = serverVersion?.Revision ?? 0;
         _serverVersionStatus = serverVersion?.Status;
+        _alignmentReportJson = serverVersion?.AlignmentReportJson;
         SelectedSegment = null;
         LoopEnabled = false;
         LoopStart = null;
@@ -1267,6 +1318,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _serverVersionId = null;
         _serverRevision = 0;
         _serverVersionStatus = null;
+        _alignmentReportJson = null;
         _loadedSourceFingerprint = null;
         History.Clear();
         Document = null;
@@ -1321,6 +1373,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _serverVersionId = serverDraft?.Id;
                 _serverRevision = serverDraft?.Revision ?? 0;
                 _serverVersionStatus = serverDraft?.Status;
+                _alignmentReportJson = serverDraft?.AlignmentReportJson;
                 _loadedSourceFingerprint = currentSourceFingerprint;
                 Status = serverDraft is null
                     ? "Lokaler Recovery-Entwurf geladen – bitte erneut speichern."
@@ -1332,6 +1385,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _serverVersionId = serverDraft.Id;
                 _serverRevision = serverDraft.Revision;
                 _serverVersionStatus = serverDraft.Status;
+                _alignmentReportJson = serverDraft.AlignmentReportJson;
                 _loadedSourceFingerprint = currentSourceFingerprint;
             }
             else
@@ -1349,6 +1403,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _serverVersionId = null;
                 _serverRevision = 0;
                 _serverVersionStatus = null;
+                _alignmentReportJson = null;
             }
             History.Clear();
             if (Document is { Lines.Count: > 0 })
@@ -1474,7 +1529,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (createNewVersion)
                 response = await _http.PostAsJsonAsync($"/api/songs/{songId}/lyrics/versions",
                     new CreateLyricsVersionRequest(json, Document.AnalysisRunId,
-                        AllowTimingConflicts: allowTimingConflicts), cancellationToken);
+                        AllowTimingConflicts: allowTimingConflicts,
+                        AlignmentReportJson: _alignmentReportJson), cancellationToken);
             else
                 response = await _http.PutAsJsonAsync($"/api/songs/{songId}/lyrics/versions/{_serverVersionId}",
                     new UpdateLyricsVersionRequest(_serverRevision, json,
@@ -1491,6 +1547,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _serverVersionId = saved?.Id;
                 _serverRevision = saved?.Revision ?? _serverRevision;
                 _serverVersionStatus = saved?.Status;
+                _alignmentReportJson = saved?.AlignmentReportJson;
                 Document.Revision = _serverRevision;
                 if (saved is null) throw new InvalidOperationException("Server hat keine gespeicherte Revision zurückgegeben.");
                 var verified = await _http.GetFromJsonAsync<LyricsVersionDto>(
@@ -2184,6 +2241,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _serverVersionId = null;
         _serverRevision = 0;
         _serverVersionStatus = null;
+        _alignmentReportJson = null;
         _loadedSourceFingerprint = null;
         if (replacement.Lines.Count > 0) AnchorPosition(replacement.Lines.Min(line => line.Start));
         PreviewRevision++;

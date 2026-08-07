@@ -5,6 +5,20 @@ from app.validator import validate
 
 
 class ValidatorTests(unittest.TestCase):
+    def test_adjacent_decoder_frame_words_are_reported_as_compressed_run(self):
+        line = LrcLine(1.0, "und einer", "", words=[
+            {"word": "und", "start": 1.0, "end": 1.08,
+             "timing_source": "qwen-forced"},
+            {"word": "einer", "start": 1.2, "end": 1.28,
+             "timing_source": "qwen-forced"},
+        ])
+
+        result = validate([line], AlignmentConfig())
+
+        self.assertEqual(1, result["quality"]["compressed_word_runs"])
+        self.assertEqual("uncertain", line.status)
+        self.assertIn("komprimiert", line.reason)
+
     def test_clean_global_alignment_is_publishable(self):
         lines = [
             LrcLine(10.0, "Hallo Welt", "", words=[
@@ -122,6 +136,22 @@ class ValidatorTests(unittest.TestCase):
 
         self.assertEqual(2, result["uncertain"])
         self.assertIn("ragt stark", lines[0].reason)
+
+    def test_overlapping_words_inside_one_line_are_never_publishable(self):
+        line = LrcLine(38.2, "to live but", "", words=[
+            {"word": "to", "start": 39.28, "end": 39.32,
+             "timing_source": "qwen-forced"},
+            {"word": "live", "start": 39.29, "end": 39.34,
+             "timing_source": "qwen-forced"},
+            {"word": "but", "start": 39.30, "end": 39.36,
+             "timing_source": "qwen-forced"},
+        ], source_timestamp=38.2)
+
+        result = validate([line], AlignmentConfig())
+
+        self.assertFalse(result["quality"]["publishable"])
+        self.assertEqual(2, result["quality"]["word_overlap_conflicts"])
+        self.assertIn("innerhalb", line.reason)
 
 
 if __name__ == "__main__":

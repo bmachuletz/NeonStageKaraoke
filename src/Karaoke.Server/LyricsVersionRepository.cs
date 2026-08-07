@@ -19,7 +19,7 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         await EnsureInitializedAsync(ct);
         await using var connection = await OpenAsync(ct);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,songId,revision,status,analysisRunId,createdAt,updatedAt FROM lyrics_versions WHERE songId=$song ORDER BY revision DESC, createdAt DESC";
+        command.CommandText = "SELECT id,songId,revision,status,analysisRunId,createdAt,updatedAt,alignmentReportJson IS NOT NULL FROM lyrics_versions WHERE songId=$song ORDER BY revision DESC, createdAt DESC";
         command.Parameters.AddWithValue("$song", songId.ToString());
         var result = new List<LyricsVersionSummaryDto>();
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -32,7 +32,7 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         await EnsureInitializedAsync(ct);
         await using var connection = await OpenAsync(ct);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt FROM lyrics_versions WHERE id=$id AND songId=$song";
+        command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt,alignmentReportJson FROM lyrics_versions WHERE id=$id AND songId=$song";
         command.Parameters.AddWithValue("$id", versionId.ToString());
         command.Parameters.AddWithValue("$song", songId.ToString());
         await using var reader = await command.ExecuteReaderAsync(ct);
@@ -44,7 +44,7 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         await EnsureInitializedAsync(ct);
         await using var connection = await OpenAsync(ct);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt FROM lyrics_versions WHERE songId=$song AND status NOT IN ('Superseded','Rejected') ORDER BY updatedAt DESC LIMIT 1";
+        command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt,alignmentReportJson FROM lyrics_versions WHERE songId=$song AND status NOT IN ('Superseded','Rejected','Generated') ORDER BY updatedAt DESC LIMIT 1";
         command.Parameters.AddWithValue("$song", songId.ToString());
         await using var reader = await command.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
@@ -55,7 +55,7 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         await EnsureInitializedAsync(ct);
         await using var connection = await OpenAsync(ct);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt FROM lyrics_versions WHERE songId=$song AND status='Published' ORDER BY updatedAt DESC LIMIT 1";
+        command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt,alignmentReportJson FROM lyrics_versions WHERE songId=$song AND status='Published' ORDER BY updatedAt DESC LIMIT 1";
         command.Parameters.AddWithValue("$song", songId.ToString());
         await using var reader = await command.ExecuteReaderAsync(ct);
         return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
@@ -64,31 +64,37 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
     public async Task<LyricsVersionDto> CreateAsync(Guid songId, CreateLyricsVersionRequest request, CancellationToken ct)
     {
         ValidateDocument(songId, request.DocumentJson, request.AllowTimingConflicts);
+        ValidateAlignmentReport(request.AlignmentReportJson);
         await EnsureInitializedAsync(ct);
         var id = Guid.NewGuid();
         var now = DateTimeOffset.UtcNow;
         await using var connection = await OpenAsync(ct);
         await using var transaction = await connection.BeginTransactionAsync(ct);
-        var archiveDrafts = connection.CreateCommand();
-        archiveDrafts.Transaction = (SqliteTransaction)transaction;
-        archiveDrafts.CommandText = "UPDATE lyrics_versions SET status='Superseded' WHERE songId=$song AND status NOT IN ('Published','Superseded','Rejected')";
-        archiveDrafts.Parameters.AddWithValue("$song", songId.ToString());
-        await archiveDrafts.ExecuteNonQueryAsync(ct);
+        if (!request.PreserveExistingDrafts)
+        {
+            var archiveDrafts = connection.CreateCommand();
+            archiveDrafts.Transaction = (SqliteTransaction)transaction;
+            archiveDrafts.CommandText = "UPDATE lyrics_versions SET status='Superseded' WHERE songId=$song AND status NOT IN ('Published','Superseded','Rejected')";
+            archiveDrafts.Parameters.AddWithValue("$song", songId.ToString());
+            await archiveDrafts.ExecuteNonQueryAsync(ct);
+        }
         var revision = await NextRevisionAsync(connection, (SqliteTransaction)transaction, songId, ct);
         var command = connection.CreateCommand();
         command.Transaction = (SqliteTransaction)transaction;
-        command.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt) VALUES($id,$song,$revision,$status,$json,$analysis,$created,$updated)";
+        command.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,alignmentReportJson,createdAt,updatedAt) VALUES($id,$song,$revision,$status,$json,$analysis,$report,$created,$updated)";
         command.Parameters.AddWithValue("$id", id.ToString());
         command.Parameters.AddWithValue("$song", songId.ToString());
         command.Parameters.AddWithValue("$revision", revision);
         command.Parameters.AddWithValue("$status", request.Status.ToString());
         command.Parameters.AddWithValue("$json", request.DocumentJson);
         command.Parameters.AddWithValue("$analysis", (object?)request.AnalysisRunId ?? DBNull.Value);
+        command.Parameters.AddWithValue("$report", (object?)request.AlignmentReportJson ?? DBNull.Value);
         command.Parameters.AddWithValue("$created", now.ToString("O"));
         command.Parameters.AddWithValue("$updated", now.ToString("O"));
         await command.ExecuteNonQueryAsync(ct);
         await transaction.CommitAsync(ct);
-        return new(id, songId, revision, request.Status, request.DocumentJson, request.AnalysisRunId, now, now);
+        return new(id, songId, revision, request.Status, request.DocumentJson, request.AnalysisRunId, now, now,
+            request.AlignmentReportJson);
     }
 
     public async Task<LyricsVersionDto?> UpdateAsync(Guid songId, Guid versionId,
@@ -119,7 +125,7 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         var revision = await NextRevisionAsync(connection, (SqliteTransaction)transaction, songId, ct);
         var insert = connection.CreateCommand();
         insert.Transaction = (SqliteTransaction)transaction;
-        insert.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt) SELECT $id,$song,$revision,$status,$json,analysisRunId,$created,$updated FROM lyrics_versions WHERE id=$previousId AND songId=$song";
+        insert.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,alignmentReportJson,createdAt,updatedAt) SELECT $id,$song,$revision,$status,$json,analysisRunId,alignmentReportJson,$created,$updated FROM lyrics_versions WHERE id=$previousId AND songId=$song";
         insert.Parameters.AddWithValue("$id", newId.ToString());
         insert.Parameters.AddWithValue("$previousId", versionId.ToString());
         insert.Parameters.AddWithValue("$song", songId.ToString());
@@ -216,13 +222,15 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         {
             var command = connection.CreateCommand();
             command.Transaction = (SqliteTransaction)transaction;
-            command.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt) VALUES($id,$song,$revision,$status,$json,$analysis,$created,$updated)";
+            ValidateAlignmentReport(version.AlignmentReportJson);
+            command.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,alignmentReportJson,createdAt,updatedAt) VALUES($id,$song,$revision,$status,$json,$analysis,$report,$created,$updated)";
             command.Parameters.AddWithValue("$id", Guid.NewGuid().ToString());
             command.Parameters.AddWithValue("$song", songId.ToString());
             command.Parameters.AddWithValue("$revision", version.Revision);
             command.Parameters.AddWithValue("$status", version.Status.ToString());
             command.Parameters.AddWithValue("$json", version.DocumentJson);
             command.Parameters.AddWithValue("$analysis", (object?)version.AnalysisRunId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$report", (object?)version.AlignmentReportJson ?? DBNull.Value);
             command.Parameters.AddWithValue("$created", version.CreatedAt.ToString("O"));
             command.Parameters.AddWithValue("$updated", version.UpdatedAt.ToString("O"));
             await command.ExecuteNonQueryAsync(ct);
@@ -246,11 +254,13 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
                 CREATE TABLE IF NOT EXISTS lyrics_versions(
                     id TEXT PRIMARY KEY, songId TEXT NOT NULL, revision INTEGER NOT NULL,
                     status TEXT NOT NULL, documentJson TEXT NOT NULL, analysisRunId TEXT NULL,
+                    alignmentReportJson TEXT NULL,
                     createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_lyrics_versions_song_updated ON lyrics_versions(songId,updatedAt DESC);
                 """;
             await command.ExecuteNonQueryAsync(ct);
+            await EnsureColumnAsync(connection, "lyrics_versions", "alignmentReportJson", "TEXT NULL", ct);
             _initialized = true;
         }
         finally { _initialization.Release(); }
@@ -271,6 +281,31 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         command.CommandText = "SELECT COALESCE(MAX(revision),0)+1 FROM lyrics_versions WHERE songId=$song";
         command.Parameters.AddWithValue("$song", songId.ToString());
         return Convert.ToInt64(await command.ExecuteScalarAsync(ct), System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    private static async Task EnsureColumnAsync(SqliteConnection connection, string table, string column,
+        string declaration, CancellationToken ct)
+    {
+        var lookup = connection.CreateCommand();
+        lookup.CommandText = $"PRAGMA table_info({table})";
+        var exists = false;
+        await using (var reader = await lookup.ExecuteReaderAsync(ct))
+            while (await reader.ReadAsync(ct))
+                exists |= string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase);
+        if (exists) return;
+        var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {table} ADD COLUMN {column} {declaration}";
+        await alter.ExecuteNonQueryAsync(ct);
+    }
+
+    private static void ValidateAlignmentReport(string? json)
+    {
+        if (json is null) return;
+        if (string.IsNullOrWhiteSpace(json) || json.Length > 20 * 1024 * 1024)
+            throw new ArgumentException("Der Alignment-Bericht ist leer oder größer als 20 MiB.");
+        using var report = JsonDocument.Parse(json);
+        if (report.RootElement.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("Der Alignment-Bericht muss ein JSON-Objekt sein.");
     }
 
     private static void ValidateDocument(Guid songId, string json, bool allowTimingConflicts = false)
@@ -336,13 +371,13 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
     private static LyricsVersionSummaryDto ReadSummary(SqliteDataReader reader) => new(
         Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), reader.GetInt64(2),
         Enum.Parse<LyricsVersionStatus>(reader.GetString(3)), reader.IsDBNull(4) ? null : reader.GetString(4),
-        DateTimeOffset.Parse(reader.GetString(5)), DateTimeOffset.Parse(reader.GetString(6)));
+        DateTimeOffset.Parse(reader.GetString(5)), DateTimeOffset.Parse(reader.GetString(6)), reader.GetBoolean(7));
 
     private static LyricsVersionDto ReadVersion(SqliteDataReader reader) => new(
         Guid.Parse(reader.GetString(0)), Guid.Parse(reader.GetString(1)), reader.GetInt64(2),
         Enum.Parse<LyricsVersionStatus>(reader.GetString(3)), reader.GetString(4),
         reader.IsDBNull(5) ? null : reader.GetString(5), DateTimeOffset.Parse(reader.GetString(6)),
-        DateTimeOffset.Parse(reader.GetString(7)));
+        DateTimeOffset.Parse(reader.GetString(7)), reader.IsDBNull(8) ? null : reader.GetString(8));
 }
 
 internal enum LyricsVersionDeleteResult { Deleted, NotFound, Published }

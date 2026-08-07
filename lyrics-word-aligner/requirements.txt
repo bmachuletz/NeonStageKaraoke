@@ -8,7 +8,7 @@ accelerate>=1.9,<2
 sentencepiece>=0.2,<1
 pyphen>=0.17,<1
 # Pin to CUDA 12.x / cuDNN 9. Newer 1.27 wheels require CUDA 13.
-onnxruntime-gpu==1.20.1
+onnxruntime-gpu==1.20.2
 audio-separator[gpu]>=0.35,<1
 # Optional singing-specific English fallback (vendored SOFA v1.0.3).
 lightning>=2.2,<3
@@ -28,3 +28,5 @@ nltk==3.10.0
 # Independent Whisper timing/transcript fallback.  It is used as an acoustic
 # vote when Qwen ASR returns an empty or severely incomplete music transcript.
 stable-ts==2.19.1
+# Directly used for targeted pYIN F0/voicing analysis of sung vowel releases.
+librosa>=0.11,<1

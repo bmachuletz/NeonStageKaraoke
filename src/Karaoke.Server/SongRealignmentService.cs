@@ -10,7 +10,7 @@ public sealed record SongRealignmentStatus(bool IsRunning, Guid? JobId, Guid? So
     int Percent, string Message, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt,
     int? ExitCode, IReadOnlyList<string> RecentOutput);
 
-internal sealed class SongRealignmentService(IWebHostEnvironment environment, ServerSettingsService settings,
+internal sealed class SongRealignmentService(IWebHostEnvironment environment,
     LibraryRepository library, LyricsAlignmentVersionService alignmentVersions, LyricsVersionRepository versions,
     ILogger<SongRealignmentService> logger)
 {
@@ -26,28 +26,29 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment, Se
         var song = await library.GetAsync(songId, cancellationToken);
         var audio = await library.GetAudioFileAsync(songId, cancellationToken);
         if (song is null || audio is null) return null;
+        var selected = request ?? new SongRealignmentRequest();
+        ValidateSelection(selected);
         lock (_gate)
         {
             if (_status.IsRunning) return false;
             _status = new(true, Guid.CreateVersion7(), songId, $"{song.Title} · {song.Artist}", 1,
                 "GPU-Neuausrichtung wird gestartet …", DateTimeOffset.UtcNow, null, null, []);
         }
-        var selected = request ?? new SongRealignmentRequest();
-        if (!selected.IncludeEditorBasis && !selected.IncludeOriginalLyrics)
-            throw new ArgumentException("Mindestens eine Alignment-Variante muss ausgewählt sein.");
         _ = Task.Run(() => RunAsync(songId, audio.Value.Path, selected));
         return true;
     }
 
-    public bool TryStartAll()
+    public bool TryStartAll(SongRealignmentRequest? request)
     {
+        var selected = request ?? new SongRealignmentRequest();
+        ValidateSelection(selected);
         lock (_gate)
         {
             if (_status.IsRunning) return false;
             _status = new(true, Guid.CreateVersion7(), null, "Gesamte Bibliothek", 1,
                 "GPU-Neuausrichtung der gesamten Bibliothek wird gestartet …", DateTimeOffset.UtcNow, null, null, []);
         }
-        _ = Task.Run(() => RunAsync(null, null, null));
+        _ = Task.Run(() => RunAsync(null, null, selected with { SourceVersionId = null }));
         return true;
     }
 
@@ -61,58 +62,29 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment, Se
                                 ?? throw new InvalidOperationException("Dem Alignment fehlt eine Job-ID.");
             if (songId is not null && audioPath is not null && request is not null)
             {
-                await RunSongVariantsAsync(songId.Value, audioPath, request, jobId, output);
+                var result = await RunSongVariantsAsync(
+                    songId.Value, audioPath, request, jobId, output, 3, 95, continueOnVariantError: true);
+                if (result.Created == 0)
+                    throw new InvalidOperationException("Keine der ausgewählten Alignment-Varianten konnte erstellt werden.");
                 lock (_gate) _status = _status with { IsRunning = false, Percent = 100,
-                    Message = "Beide Alignment-Varianten sind als Review-Stände bereit.",
+                    Message = result.Failed > 0
+                        ? $"{result.Created} Alignment-Variante ist bereit; {result.Failed} Variante ist fehlgeschlagen."
+                        : result.Created == 1
+                        ? "Die ausgewählte Alignment-Variante ist als Review-Stand bereit."
+                        : "Beide Alignment-Varianten sind als Review-Stände bereit.",
                     FinishedAt = DateTimeOffset.UtcNow, ExitCode = 0, RecentOutput = output.ToArray() };
                 return;
             }
 
-            var fingerprints = songId is null
-                ? await alignmentVersions.CaptureSourceFingerprintsAsync(CancellationToken.None)
-                : null;
-            var root = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "..", ".."));
-            var script = Path.Combine(root, "scripts", "linux", "align-library.sh");
-            var start = new ProcessStartInfo("/bin/bash")
-            {
-                WorkingDirectory = root, UseShellExecute = false, RedirectStandardOutput = true,
-                RedirectStandardError = true, CreateNoWindow = true
-            };
-            foreach (var argument in new[] { script, "--force", "--library", settings.Get().LibraryPath })
-                start.ArgumentList.Add(argument);
-            if (!string.IsNullOrWhiteSpace(audioPath))
-            {
-                start.ArgumentList.Add("--match");
-                start.ArgumentList.Add(Path.GetFileName(audioPath));
-            }
-            using var process = new Process { StartInfo = start };
-            process.OutputDataReceived += (_, args) => Add(output, args.Data);
-            process.ErrorDataReceived += (_, args) => Add(output, args.Data);
-            if (!process.Start()) throw new InvalidOperationException("GPU-Alignment konnte nicht gestartet werden.");
-            process.BeginOutputReadLine(); process.BeginErrorReadLine();
-            await process.WaitForExitAsync();
-            if (process.ExitCode != 0) throw new InvalidOperationException($"GPU-Pipeline wurde mit Code {process.ExitCode} beendet.");
-            Set(96, "Alignment wird als Lyrics-Version gesichert …");
-            int createdVersions;
-            if (songId is { } id)
-            {
-                await alignmentVersions.SnapshotAsync(id, jobId.ToString("N"), CancellationToken.None);
-                createdVersions = 1;
-            }
-            else
-            {
-                createdVersions = await alignmentVersions.SnapshotChangedAsync(
-                    fingerprints!, jobId.ToString("N"), CancellationToken.None);
-            }
-            Add(output, $"{createdVersions} Lyrics-Version(en) dauerhaft gespeichert.");
-            Set(98, "Bibliothek wird aktualisiert …");
-            await library.TryReindexAsync(CancellationToken.None);
+            if (request is null)
+                throw new InvalidOperationException("Für das Bibliotheks-Alignment fehlt die Variantenauswahl.");
+            var libraryResult = await RunLibraryVariantsAsync(request, jobId, output);
             lock (_gate) _status = _status with { IsRunning = false, Percent = 100,
-                Message = createdVersions == 1
-                    ? "Neues Alignment ist als versionierter Review-Stand bereit."
-                    : $"{createdVersions} neue Alignments sind als versionierte Review-Stände bereit.",
+                Message = $"Bibliotheks-Alignment beendet: {libraryResult.Created} Review-Versionen, " +
+                          $"{libraryResult.Failed} Fehler, {libraryResult.Skipped} Songs übersprungen.",
                 FinishedAt = DateTimeOffset.UtcNow,
-                ExitCode = 0, RecentOutput = output.ToArray() };
+                ExitCode = libraryResult.Created > 0 || libraryResult.Failed == 0 ? 0 : -1,
+                RecentOutput = output.ToArray() };
         }
         catch (Exception exception)
         {
@@ -124,61 +96,126 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment, Se
         }
     }
 
-    private async Task RunSongVariantsAsync(Guid songId, string audioPath,
+    private async Task<VariantBatchResult> RunLibraryVariantsAsync(
         SongRealignmentRequest request, Guid jobId, List<string> output)
+    {
+        var allSongs = await library.SearchAsync(
+            null, 0, 100_000, CancellationToken.None, includeUnreleased: true);
+        var songs = allSongs.Where(song => song.HasLyrics).ToArray();
+        var skipped = allSongs.Count - songs.Length;
+        var created = 0;
+        var failed = 0;
+        Add(output, $"Bibliothek: {songs.Length} geeignete Songs, {skipped} ohne Lyrics übersprungen.");
+        for (var index = 0; index < songs.Length; index++)
+        {
+            var song = songs[index];
+            var audio = await library.GetAudioFileAsync(song.Id, CancellationToken.None);
+            if (audio is null)
+            {
+                skipped++;
+                Add(output, $"Übersprungen: {song.Title} · {song.Artist} – Audiodatei fehlt.");
+                continue;
+            }
+            var progressStart = 3 + (int)Math.Floor(92d * index / Math.Max(1, songs.Length));
+            var progressEnd = 3 + (int)Math.Floor(92d * (index + 1) / Math.Max(1, songs.Length));
+            Set(progressStart, $"Song {index + 1}/{songs.Length}: {song.Title} · {song.Artist}");
+            var result = await RunSongVariantsAsync(
+                song.Id, audio.Value.Path, request with { SourceVersionId = null }, jobId, output,
+                progressStart, Math.Max(progressStart + 1, progressEnd), continueOnVariantError: true,
+                scope: $"{index + 1}/{songs.Length}");
+            created += result.Created;
+            failed += result.Failed;
+        }
+        return new VariantBatchResult(created, failed, skipped);
+    }
+
+    private async Task<VariantBatchResult> RunSongVariantsAsync(Guid songId, string audioPath,
+        SongRealignmentRequest request, Guid jobId, List<string> output,
+        int progressStart, int progressEnd, bool continueOnVariantError, string? scope = null)
     {
         var root = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "..", ".."));
         var alignScript = Path.Combine(root, "scripts", "linux", "align-library.sh");
         var recognizeScript = Path.Combine(root, "scripts", "linux", "recognize-song-lyrics.sh");
         var basePath = Path.Combine(Path.GetDirectoryName(audioPath)!, Path.GetFileNameWithoutExtension(audioPath));
         var originalLyrics = basePath + ".pre-align.lrc";
-        var temporaryRoot = Path.Combine(Path.GetTempPath(), $"neonstage-dual-alignment-{jobId:N}");
+        var temporaryRoot = Path.Combine(
+            Path.GetTempPath(), $"neonstage-dual-alignment-{jobId:N}-{songId:N}");
+        var variantCount = Convert.ToInt32(request.IncludeEditorBasis)
+                           + Convert.ToInt32(request.IncludeOriginalLyrics);
+        var variantIndex = 0;
+        var created = 0;
+        var failed = 0;
         Directory.CreateDirectory(temporaryRoot);
         try
         {
             if (request.IncludeEditorBasis)
             {
-                Set(3, "Variante 1/2: letzter Editor-Stand wird vorbereitet …");
-                var sourceVersion = request.SourceVersionId is { } versionId
-                    ? await versions.GetAsync(songId, versionId, CancellationToken.None)
-                    : await versions.GetLatestDraftAsync(songId, CancellationToken.None)
-                      ?? await versions.GetRuntimeAsync(songId, CancellationToken.None);
-                if (sourceVersion is null)
-                    throw new InvalidOperationException("Für den Song existiert kein gespeicherter Editor-Stand.");
-                var document = JsonSerializer.Deserialize<LyricsEditorDocument>(sourceVersion.DocumentJson, JsonOptions)
-                               ?? throw new InvalidOperationException("Der letzte Editor-Stand ist nicht lesbar.");
-                var editorLyrics = Path.Combine(temporaryRoot, "editor-basis.lrc");
-                await File.WriteAllTextAsync(editorLyrics,
-                    LyricsDocumentLrcExporter.ToEnhancedLrc(document), new UTF8Encoding(false));
-                var editorOutput = Path.Combine(temporaryRoot, "editor-result");
-                Set(6, $"Variante 1/2: Revision {sourceVersion.Revision} wird akustisch neu ausgerichtet …");
-                await RunProcessAsync(root, alignScript,
-                    ["--force", "--library", Path.GetDirectoryName(audioPath)!, "--match", Path.GetFileName(audioPath),
-                     "--lyrics-source", editorLyrics, "--output-dir", editorOutput, "--no-reindex"], output);
-                var result = Path.Combine(editorOutput, Path.GetFileName(basePath) + ".lrc");
-                var report = Path.Combine(editorOutput, Path.GetFileName(basePath) + ".alignment.json");
-                var version = await alignmentVersions.SnapshotFileAsync(songId, result, report,
-                    $"dual-{jobId:N}:editor-basis:r{sourceVersion.Revision}", "editor-basis-acoustic-realignment",
-                    CancellationToken.None);
-                Add(output, $"Variante letzter Editor-Stand als Revision {version.Revision} gespeichert.");
+                var range = VariantRange(progressStart, progressEnd, variantIndex++, variantCount);
+                try
+                {
+                    Set(range.Start, Prefix(scope, "Variante 1.2: letzter Editor-Stand wird vorbereitet …"));
+                    var sourceVersion = request.SourceVersionId is { } versionId
+                        ? await versions.GetAsync(songId, versionId, CancellationToken.None)
+                        : await versions.GetLatestDraftAsync(songId, CancellationToken.None)
+                          ?? await versions.GetRuntimeAsync(songId, CancellationToken.None);
+                    if (sourceVersion is null)
+                        throw new InvalidOperationException("Für den Song existiert kein gespeicherter Editor-Stand.");
+                    var document = JsonSerializer.Deserialize<LyricsEditorDocument>(
+                                       sourceVersion.DocumentJson, JsonOptions)
+                                   ?? throw new InvalidOperationException("Der letzte Editor-Stand ist nicht lesbar.");
+                    var editorLyrics = Path.Combine(temporaryRoot, "editor-basis.lrc");
+                    await File.WriteAllTextAsync(editorLyrics,
+                        LyricsDocumentLrcExporter.ToEnhancedLrc(document), new UTF8Encoding(false));
+                    var editorOutput = Path.Combine(temporaryRoot, "editor-result");
+                    Set(range.Start, Prefix(scope,
+                        $"Variante 1.2: Revision {sourceVersion.Revision} erhält IPA-Mikroanalyse und Pitch-/Voicing-Ausklänge …"));
+                    await RunProcessAsync(root, alignScript,
+                        ["--force", "--library", Path.GetDirectoryName(audioPath)!, "--match", Path.GetFileName(audioPath),
+                         "--lyrics-source", editorLyrics, "--output-dir", editorOutput, "--no-reindex"], output,
+                        percent => MapProgress(percent, range.Start, range.End));
+                    var result = Path.Combine(editorOutput, Path.GetFileName(basePath) + ".lrc");
+                    var report = Path.Combine(editorOutput, Path.GetFileName(basePath) + ".alignment.json");
+                    var version = await alignmentVersions.SnapshotFileAsync(songId, result, report,
+                        $"dual-{jobId:N}:editor-basis:r{sourceVersion.Revision}",
+                        "editor-basis-acoustic-realignment", CancellationToken.None,
+                        LyricsVersionStatus.Generated, preserveExistingDrafts: true);
+                    Add(output, $"Variante 1.2 als Revision {version.Revision} gespeichert.");
+                    created++;
+                }
+                catch (Exception exception) when (continueOnVariantError)
+                {
+                    failed++;
+                    Add(output, Prefix(scope, $"Variante 1.2 fehlgeschlagen: {exception.Message}"));
+                }
             }
 
             if (request.IncludeOriginalLyrics)
             {
-                if (!File.Exists(originalLyrics))
-                    throw new InvalidOperationException("Die ursprüngliche LRCLIB/pre-align-Lyrics-Datei fehlt.");
-                var originalOutput = Path.Combine(temporaryRoot, "lrclib-result");
-                Set(request.IncludeEditorBasis ? 52 : 6,
-                    "Variante 2/2: LRCLIB-Text wird auf das Volltranskript-Timing übertragen …");
-                await RunProcessAsync(root, recognizeScript,
-                    ["--audio", audioPath, "--canonical", originalLyrics, "--output-dir", originalOutput,
-                     "--no-reindex", "--language", "auto"], output);
-                var result = Path.Combine(originalOutput, Path.GetFileName(basePath) + ".lrc");
-                var report = Path.Combine(originalOutput, Path.GetFileName(basePath) + ".alignment.json");
-                var version = await alignmentVersions.SnapshotFileAsync(songId, result, report,
-                    $"dual-{jobId:N}:lrclib-full-transcript", "lrclib-canonical-on-full-transcript",
-                    CancellationToken.None);
-                Add(output, $"Variante LRCLIB + Volltranskript als Revision {version.Revision} gespeichert.");
+                var range = VariantRange(progressStart, progressEnd, variantIndex, variantCount);
+                try
+                {
+                    if (!File.Exists(originalLyrics))
+                        throw new InvalidOperationException("Die ursprüngliche LRCLIB/pre-align-Lyrics-Datei fehlt.");
+                    var originalOutput = Path.Combine(temporaryRoot, "lrclib-result");
+                    Set(range.Start, Prefix(scope,
+                        "Variante 2: LRCLIB-Text wird auf das Volltranskript-Timing übertragen …"));
+                    await RunProcessAsync(root, recognizeScript,
+                        ["--audio", audioPath, "--canonical", originalLyrics, "--output-dir", originalOutput,
+                         "--no-reindex", "--language", "auto"], output,
+                        percent => MapProgress(percent, range.Start, range.End));
+                    var result = Path.Combine(originalOutput, Path.GetFileName(basePath) + ".lrc");
+                    var report = Path.Combine(originalOutput, Path.GetFileName(basePath) + ".alignment.json");
+                    var version = await alignmentVersions.SnapshotFileAsync(songId, result, report,
+                        $"dual-{jobId:N}:lrclib-full-transcript", "lrclib-canonical-on-full-transcript",
+                        CancellationToken.None, LyricsVersionStatus.Generated, preserveExistingDrafts: true);
+                    Add(output, $"Variante 2 als Revision {version.Revision} gespeichert.");
+                    created++;
+                }
+                catch (Exception exception) when (continueOnVariantError)
+                {
+                    failed++;
+                    Add(output, Prefix(scope, $"Variante 2 fehlgeschlagen: {exception.Message}"));
+                }
             }
         }
         finally
@@ -186,10 +223,11 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment, Se
             try { Directory.Delete(temporaryRoot, recursive: true); }
             catch (IOException exception) { logger.LogWarning(exception, "Temporäre Alignment-Ausgaben konnten nicht vollständig entfernt werden."); }
         }
+        return new VariantBatchResult(created, failed, 0);
     }
 
     private async Task RunProcessAsync(string workingDirectory, string script,
-        IReadOnlyList<string> arguments, List<string> output)
+        IReadOnlyList<string> arguments, List<string> output, Func<int, int>? progressMap = null)
     {
         var start = new ProcessStartInfo("/bin/bash")
         {
@@ -199,8 +237,8 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment, Se
         start.ArgumentList.Add(script);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = new Process { StartInfo = start };
-        process.OutputDataReceived += (_, args) => Add(output, args.Data);
-        process.ErrorDataReceived += (_, args) => Add(output, args.Data);
+        process.OutputDataReceived += (_, args) => Add(output, args.Data, progressMap);
+        process.ErrorDataReceived += (_, args) => Add(output, args.Data, progressMap);
         if (!process.Start()) throw new InvalidOperationException("GPU-Alignment konnte nicht gestartet werden.");
         process.BeginOutputReadLine(); process.BeginErrorReadLine();
         await process.WaitForExitAsync();
@@ -208,7 +246,7 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment, Se
             throw new InvalidOperationException($"GPU-Pipeline wurde mit Code {process.ExitCode} beendet.");
     }
 
-    private void Add(List<string> output, string? line)
+    private void Add(List<string> output, string? line, Func<int, int>? progressMap = null)
     {
         if (string.IsNullOrWhiteSpace(line)) return;
         lock (_gate)
@@ -216,12 +254,36 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment, Se
             output.Add(line); if (output.Count > 120) output.RemoveAt(0);
             var percent = _status.Percent;
             var marker = System.Text.RegularExpressions.Regex.Match(line, @"\b(?<value>\d{1,3})%(?!\d)");
-            if (marker.Success) percent = Math.Clamp(int.Parse(marker.Groups["value"].Value), percent, 95);
+            if (marker.Success)
+            {
+                var reported = int.Parse(marker.Groups["value"].Value);
+                var mapped = progressMap?.Invoke(reported) ?? reported;
+                percent = Math.Clamp(mapped, percent, 95);
+            }
             _status = _status with { Message = line.Trim(), Percent = percent, RecentOutput = output.ToArray() };
         }
     }
 
     private void Set(int percent, string message) { lock (_gate) _status = _status with { Percent = percent, Message = message }; }
+
+    private static void ValidateSelection(SongRealignmentRequest request)
+    {
+        if (!request.IncludeEditorBasis && !request.IncludeOriginalLyrics)
+            throw new ArgumentException("Mindestens eine Alignment-Variante muss ausgewählt sein.");
+    }
+
+    private static (int Start, int End) VariantRange(
+        int start, int end, int index, int count) =>
+        (start + (int)Math.Floor((end - start) * (double)index / count),
+         start + (int)Math.Floor((end - start) * (double)(index + 1) / count));
+
+    private static int MapProgress(int percent, int start, int end) =>
+        start + (int)Math.Round((end - start) * Math.Clamp(percent, 0, 100) / 100d);
+
+    private static string Prefix(string? scope, string message) =>
+        string.IsNullOrWhiteSpace(scope) ? message : $"[{scope}] {message}";
+
+    private readonly record struct VariantBatchResult(int Created, int Failed, int Skipped);
 
     public Task<Karaoke.Contracts.LyricsVersionDto> SnapshotCurrentAsync(Guid songId,
         CancellationToken cancellationToken) =>

@@ -88,6 +88,22 @@ def _exact_sequence_mapping(expected: list[str], actual: list[str]) -> dict[int,
     }
 
 
+def _phones_for_bounds(intervals: list, start: float, end: float) -> list[dict]:
+    result = []
+    for interval in intervals:
+        mark = str(interval.mark).strip()
+        if mark in {"SP", "AP", "", "<SP>", "<AP>"}:
+            continue
+        midpoint = (float(interval.minTime) + float(interval.maxTime)) / 2
+        if start - 0.001 <= midpoint <= end + 0.001:
+            result.append({
+                "phone": mark,
+                "start": round(float(interval.minTime), 3),
+                "end": round(float(interval.maxTime), 3),
+            })
+    return result
+
+
 def realign_english_singing(audio, lines: list, *, minimum_confidence: float = 0.25) -> dict:
     sofa_root = Path(os.getenv("LRC_SOFA_ROOT", "/app/SOFA"))
     checkpoint = Path(os.getenv("LRC_SOFA_EN_CKPT", "/models/sofa/english/tgm_en_v100.ckpt"))
@@ -143,6 +159,7 @@ def realign_english_singing(audio, lines: list, *, minimum_confidence: float = 0
             grid = textgrid.TextGrid.fromFile(str(grid_path))
             intervals = [item for item in grid.getFirst("words")
                          if item.mark not in {"SP", "AP", "", "<SP>", "<AP>"}]
+            phone_intervals = list(grid.getFirst("phones"))
             expected_words = [word for line in section for word in _words(line.text)]
             actual_words = [item.mark.lower() for item in intervals]
             if confidence < minimum_confidence:
@@ -168,16 +185,29 @@ def realign_english_singing(audio, lines: list, *, minimum_confidence: float = 0
                     continue
                 replacement_bounds = [bounds[index] for index in mapped if index is not None]
                 grouped_bounds = []
+                grouped_phones = []
                 group_cursor = 0
                 for group in groups:
                     group_spans = replacement_bounds[group_cursor:group_cursor + len(group)]
                     group_cursor += len(group)
                     grouped_bounds.append((group_spans[0][0], group_spans[-1][1]))
-                for word, (word_start, word_end) in zip(line.words, grouped_bounds):
+                    grouped_phones.append(_phones_for_bounds(
+                        phone_intervals, group_spans[0][0], group_spans[-1][1]))
+                for word, (word_start, word_end), phones in zip(
+                        line.words, grouped_bounds, grouped_phones):
                     word["start"] = round(base + word_start, 3)
                     word["end"] = round(base + word_end, 3)
                     word["timing_source"] = "sofa-singing-alignment"
                     word["sofa_confidence"] = round(confidence, 4)
+                    if phones:
+                        word["phonemes"] = [{
+                            **phone,
+                            "start": round(base + phone["start"], 3),
+                            "end": round(base + phone["end"], 3),
+                            "confidence": round(confidence, 4),
+                        } for phone in phones]
+                        word["phoneme_source"] = "sofa-singing-alignment"
+                        word["phoneme_confidence"] = round(confidence, 4)
                 line.timestamp = float(line.words[0]["start"])
                 section_applied_words += len(groups)
             if section_applied_words:

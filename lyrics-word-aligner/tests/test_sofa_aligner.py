@@ -2,13 +2,14 @@ import unittest
 
 from app.models import LrcLine
 from app.sofa_aligner import (_exact_sequence_mapping, _karaoke_word_bounds, _line_can_be_replaced,
-                              _word_groups, _words)
+                              _phones_for_bounds, _word_groups, _words)
 
 
 class Interval:
-    def __init__(self, start: float, end: float):
+    def __init__(self, start: float, end: float, mark: str = ""):
         self.minTime = start
         self.maxTime = end
+        self.mark = mark
 
 
 class SofaAlignerTests(unittest.TestCase):
@@ -45,6 +46,16 @@ class SofaAlignerTests(unittest.TestCase):
         self.assertNotIn(2, mapping)
         self.assertEqual(2, mapping[3])
         self.assertEqual(5, mapping[6])
+
+    def test_extracts_phone_tier_inside_a_word(self):
+        phones = _phones_for_bounds([
+            Interval(0.9, 1.0, "SP"), Interval(1.0, 1.1, "l"),
+            Interval(1.1, 1.6, "iy"), Interval(1.6, 1.7, "f"),
+            Interval(1.7, 1.8, "SP"),
+        ], 1.0, 1.7)
+
+        self.assertEqual(["l", "iy", "f"], [phone["phone"] for phone in phones])
+        self.assertEqual(1.1, phones[1]["start"])
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ using Karaoke.Contracts;
 namespace Karaoke.Server;
 
 /// <summary>
-/// Imports complete MP3 folders without routing the audio through the Spotify/
+/// Imports complete MP3/FLAC folders without routing the audio through the Spotify/
 /// YouTube downloader. Every file is processed in isolation and reaches the
 /// library only after lyrics, both stems and an alignment report exist.
 /// </summary>
@@ -16,8 +16,10 @@ public sealed class FolderImportService(
     LibraryRepository library,
     ILogger<FolderImportService> logger)
 {
+    private static readonly HashSet<string> SupportedAudioExtensions =
+        new([".mp3", ".flac"], StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
-    private FolderImportStatus _status = Idle("Bereit für MP3-Ordnerimport.");
+    private FolderImportStatus _status = Idle("Bereit für Audio-Ordnerimport (MP3/FLAC).");
 
     public FolderImportStatus GetStatus()
     {
@@ -30,19 +32,15 @@ public sealed class FolderImportService(
         if (!Directory.Exists(sourcePath))
             throw new DirectoryNotFoundException($"Importordner nicht gefunden: {sourcePath}");
 
-        var option = request.Recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-        var files = Directory.EnumerateFiles(sourcePath, "*", option)
-            .Where(path => Path.GetExtension(path).Equals(".mp3", StringComparison.OrdinalIgnoreCase))
-            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var files = DiscoverAudioFiles(sourcePath, request.Recursive);
         if (files.Length == 0)
-            throw new ArgumentException("Der gewählte Ordner enthält keine MP3-Dateien.");
+            throw new ArgumentException("Der gewählte Ordner enthält keine MP3- oder FLAC-Dateien.");
 
         lock (_gate)
         {
             if (_status.IsRunning) return null;
             _status = new FolderImportStatus(true, Guid.CreateVersion7(), sourcePath, 0, files.Length,
-                0, 0, 0, 0, 0, "MP3-Dateien werden vorbereitet …", DateTimeOffset.UtcNow, null, []);
+                0, 0, 0, 0, 0, "MP3- und FLAC-Dateien werden vorbereitet …", DateTimeOffset.UtcNow, null, []);
         }
 
         _ = Task.Run(() => ProcessFolderAsync(files));
@@ -70,15 +68,15 @@ public sealed class FolderImportService(
                 {
                     var metadata = ReadMetadata(sourcePath);
                     if (string.IsNullOrWhiteSpace(metadata.Title) || string.IsNullOrWhiteSpace(metadata.Artist))
-                        throw new InvalidOperationException("ID3-Tags enthalten weder einen verwertbaren Titel noch Interpreten.");
+                        throw new InvalidOperationException("Die Audio-Metadaten enthalten weder einen verwertbaren Titel noch Interpreten.");
 
-                    Add(output, $"ID3: {metadata.Title} · {metadata.Artist}" +
+                    Add(output, $"METADATA: {metadata.Title} · {metadata.Artist}" +
                         (string.IsNullOrWhiteSpace(metadata.Album) ? string.Empty : $" · {metadata.Album}"));
 
                     var sourceAlreadyInLibrary = IsWithin(sourcePath, libraryRoot);
-                    var expectedAudio = Path.Combine(libraryRoot, SafeName(metadata.Artist),
-                        $"{SafeName(metadata.Title)} - {SafeName(metadata.Artist)}.mp3");
-                    if (!sourceAlreadyInLibrary && IsCompleteProject(expectedAudio))
+                    var expectedBase = Path.Combine(libraryRoot, SafeName(metadata.Artist),
+                        $"{SafeName(metadata.Title)} - {SafeName(metadata.Artist)}");
+                    if (!sourceAlreadyInLibrary && HasCompleteProject(expectedBase))
                     {
                         SkipFile(output, $"Bereits vollständig vorhanden: {metadata.Title}");
                         continue;
@@ -87,29 +85,50 @@ public sealed class FolderImportService(
                         ? Path.GetDirectoryName(sourcePath)!
                         : Path.Combine(stagingRoot, Guid.NewGuid().ToString("N"));
                     Directory.CreateDirectory(workDirectory);
+                    var audioExtension = NormalizeAudioExtension(sourcePath);
                     var workPath = sourceAlreadyInLibrary
                         ? sourcePath
-                        : Path.Combine(workDirectory, $"{SafeName(metadata.Title)} - {SafeName(metadata.Artist)}.mp3");
+                        : Path.Combine(workDirectory,
+                            $"{SafeName(metadata.Title)} - {SafeName(metadata.Artist)}{audioExtension}");
                     if (!sourceAlreadyInLibrary) File.Copy(sourcePath, workPath, overwrite: false);
 
                     var workBase = Path.Combine(Path.GetDirectoryName(workPath)!, Path.GetFileNameWithoutExtension(workPath));
                     await SeedLyricsAsync(sourcePath, workBase + ".lrc", metadata.EmbeddedLyrics);
                     CopyCoverSidecar(sourcePath, workBase + ".cover.jpg");
 
-                    if (!File.Exists(workBase + ".lrc"))
+                    var lyricsPath = workBase + ".lrc";
+                    if (!HasUsableLyrics(lyricsPath))
                     {
                         SetMessage("Lyrics werden über LRCLIB ermittelt …", .12);
                         var matcherExit = await RunAsync(root, "dotnet", output,
                             "run", "--project", Path.Combine(root, "LrcMatcher", "LrcMatcher.csproj"), "--no-build", "--",
                             workPath, "--plain-fallback", "--max-duration-difference", "5", "--aligner-url", alignerUrl);
-                        if (matcherExit != 0 || !File.Exists(workBase + ".lrc"))
-                            throw new InvalidOperationException("Es konnten keine geeigneten Lyrics ermittelt werden.");
+                        if (matcherExit != 0 || !HasUsableLyrics(lyricsPath))
+                            Add(output, "Kein geeigneter lokaler oder LRCLIB-Text; GPU-Volltranskript wird erzeugt.");
                     }
 
-                    SetMessage("GPU-Separation und Wort-/Silbenalignment laufen …", .30);
-                    var alignExit = await RunAsync(root, "/bin/bash", output,
-                        Path.Combine(root, "scripts", "linux", "align-library.sh"), "--force",
-                        "--library", workDirectory, "--match", Path.GetFileName(workPath), "--url", alignerUrl);
+                    int alignExit;
+                    if (SelectPipelineRoute(lyricsPath) == FolderImportPipelineRoute.FullTranscript)
+                    {
+                        // Do not pass a failed/empty matcher result back as a canonical source. The
+                        // recognition worker first creates timed words from the complete vocal signal
+                        // and then invokes the same IPA word/syllable pipeline used by variant 1.2.
+                        File.Delete(lyricsPath);
+                        SetMessage("Keine Lyrics vorhanden · GPU-Volltranskript mit Wortgrenzen läuft …", .22);
+                        alignExit = await RunAsync(root, "/bin/bash", output,
+                            Path.Combine(root, "scripts", "linux", "recognize-song-lyrics.sh"),
+                            "--audio", workPath, "--language", "auto", "--url", alignerUrl,
+                            "--no-canonical", "--no-reindex");
+                        if (alignExit == 0)
+                            Add(output, "Volltranskript, Wortgrenzen und Variante 1.2 wurden abgeschlossen.");
+                    }
+                    else
+                    {
+                        SetMessage("Lyrics vorhanden · Variante 1.2 mit GPU-Separation läuft …", .30);
+                        alignExit = await RunAsync(root, "/bin/bash", output,
+                            Path.Combine(root, "scripts", "linux", "align-library.sh"), "--force",
+                            "--library", workDirectory, "--match", Path.GetFileName(workPath), "--url", alignerUrl);
+                    }
                     if (alignExit != 0)
                         throw new InvalidOperationException("Die GPU-Pipeline konnte den Titel nicht technisch fertigstellen.");
 
@@ -134,7 +153,7 @@ public sealed class FolderImportService(
                 }
                 catch (Exception exception)
                 {
-                    logger.LogWarning(exception, "MP3-Ordnerimport für {SourcePath} fehlgeschlagen", sourcePath);
+                    logger.LogWarning(exception, "Audio-Ordnerimport für {SourcePath} fehlgeschlagen", sourcePath);
                     FailFile(output, exception.Message);
                 }
             }
@@ -144,8 +163,8 @@ public sealed class FolderImportService(
             lock (_gate)
             {
                 var message = _status.Failed == 0
-                    ? "MP3-Ordnerimport abgeschlossen."
-                    : "MP3-Ordnerimport mit einzelnen Fehlern abgeschlossen.";
+                    ? "Audio-Ordnerimport abgeschlossen."
+                    : "Audio-Ordnerimport mit einzelnen Fehlern abgeschlossen.";
                 _status = _status with
                 {
                     IsRunning = false, Percent = 100, Message = message,
@@ -155,12 +174,12 @@ public sealed class FolderImportService(
         }
         catch (Exception exception)
         {
-            logger.LogError(exception, "MP3-Ordnerimport ist abgebrochen");
+            logger.LogError(exception, "Audio-Ordnerimport ist abgebrochen");
             Add(output, exception.Message);
             lock (_gate)
                 _status = _status with
                 {
-                    IsRunning = false, Percent = 100, Message = "MP3-Ordnerimport ist abgebrochen.",
+                    IsRunning = false, Percent = 100, Message = "Audio-Ordnerimport ist abgebrochen.",
                     FinishedAt = DateTimeOffset.UtcNow, RecentOutput = output.ToArray()
                 };
         }
@@ -236,18 +255,19 @@ public sealed class FolderImportService(
     {
         var destinationDirectory = Path.Combine(libraryRoot, SafeName(metadata.Artist));
         Directory.CreateDirectory(destinationDirectory);
+        var audioExtension = NormalizeAudioExtension(workPath);
         var destinationAudio = UniquePath(destinationDirectory,
-            $"{SafeName(metadata.Title)} - {SafeName(metadata.Artist)}.mp3");
+            $"{SafeName(metadata.Title)} - {SafeName(metadata.Artist)}{audioExtension}");
         var destinationBase = Path.Combine(destinationDirectory, Path.GetFileNameWithoutExtension(destinationAudio));
         var published = new List<string>();
         try
         {
-            // Publish the MP3 last. The library scanner can therefore never
+            // Publish the audio file last. The library scanner can therefore never
             // observe a half-copied song project.
             foreach (var suffix in new[]
                      {
                          ".lrc", ".pre-align.lrc", ".alignment.json", ".instrumental.ogg", ".vocals.ogg",
-                         ".visuals.json", ".cover.jpg"
+                         ".visuals.json", ".transcription.json", ".cover.jpg"
                      })
             {
                 var source = workBase + suffix;
@@ -278,6 +298,18 @@ public sealed class FolderImportService(
         var projectBase = Path.Combine(Path.GetDirectoryName(audioPath)!, Path.GetFileNameWithoutExtension(audioPath));
         return new[] { ".lrc", ".alignment.json", ".instrumental.ogg", ".vocals.ogg", ".visuals.json" }
             .All(suffix => File.Exists(projectBase + suffix) && new FileInfo(projectBase + suffix).Length > 0);
+    }
+
+    private static bool HasCompleteProject(string projectBase)
+    {
+        var directory = Path.GetDirectoryName(projectBase)!;
+        if (!Directory.Exists(directory)) return false;
+        var name = Path.GetFileName(projectBase);
+        return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly)
+            .Where(IsSupportedAudioFile)
+            .Where(path => Path.GetFileNameWithoutExtension(path)
+                .Equals(name, StringComparison.OrdinalIgnoreCase))
+            .Any(IsCompleteProject);
     }
 
     private static bool AlignmentIsPublishable(string reportPath)
@@ -323,7 +355,8 @@ public sealed class FolderImportService(
             };
         }
         Add(output, string.Empty);
-        Add(output, $"> MP3 {GetStatus().Current}/{GetStatus().Total}: {Path.GetFileName(sourcePath)}");
+        Add(output, $"> {NormalizeAudioExtension(sourcePath).TrimStart('.').ToUpperInvariant()} " +
+            $"{GetStatus().Current}/{GetStatus().Total}: {Path.GetFileName(sourcePath)}");
     }
 
     private void CompleteFile(List<string> output, bool review)
@@ -371,7 +404,7 @@ public sealed class FolderImportService(
         {
             output.Add(line);
             if (output.Count > 160) output.RemoveAt(0);
-            var stage = line.StartsWith("ID3:", StringComparison.Ordinal) ? .08 :
+            var stage = line.StartsWith("METADATA:", StringComparison.Ordinal) ? .08 :
                 line.Contains("LRCLIB", StringComparison.OrdinalIgnoreCase) ? .2 :
                 line.Contains("GPU-Aligner", StringComparison.OrdinalIgnoreCase) ? .4 :
                 line.Contains("Quality-Gate", StringComparison.OrdinalIgnoreCase) ? .85 : .3;
@@ -412,11 +445,40 @@ public sealed class FolderImportService(
         return string.IsNullOrWhiteSpace(result) ? "Unbenannt" : result;
     }
 
-    private static string UniquePath(string folder, string name)
+    internal static bool IsSupportedAudioFile(string path) =>
+        SupportedAudioExtensions.Contains(Path.GetExtension(path));
+
+    internal static string[] DiscoverAudioFiles(string sourcePath, bool recursive) =>
+        Directory.EnumerateFiles(sourcePath, "*",
+                recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+            .Where(IsSupportedAudioFile)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+    internal static string NormalizeAudioExtension(string path)
+    {
+        var extension = Path.GetExtension(path);
+        if (!SupportedAudioExtensions.Contains(extension))
+            throw new ArgumentException($"Nicht unterstütztes Audioformat: {extension}");
+        return extension.ToLowerInvariant();
+    }
+
+    internal static bool HasUsableLyrics(string path) =>
+        File.Exists(path) && new FileInfo(path).Length > 0 &&
+        !string.IsNullOrWhiteSpace(File.ReadAllText(path));
+
+    internal static FolderImportPipelineRoute SelectPipelineRoute(string lyricsPath) =>
+        HasUsableLyrics(lyricsPath)
+            ? FolderImportPipelineRoute.Variant12
+            : FolderImportPipelineRoute.FullTranscript;
+
+    internal static string UniquePath(string folder, string name)
     {
         var path = Path.Combine(folder, name);
+        var extension = Path.GetExtension(name);
+        var baseName = Path.GetFileNameWithoutExtension(name);
         for (var index = 2; File.Exists(path); index++)
-            path = Path.Combine(folder, $"{Path.GetFileNameWithoutExtension(name)} ({index}).mp3");
+            path = Path.Combine(folder, $"{baseName} ({index}){extension}");
         return path;
     }
 
@@ -425,4 +487,10 @@ public sealed class FolderImportService(
 
     private sealed record AudioTags(string Title, string Artist, string Album, string? EmbeddedLyrics,
         TimeSpan Duration);
+}
+
+internal enum FolderImportPipelineRoute
+{
+    Variant12,
+    FullTranscript
 }

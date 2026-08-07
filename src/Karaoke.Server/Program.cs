@@ -41,6 +41,7 @@ builder.Services.AddSingleton<SongPackageService>();
 builder.Services.AddSingleton<StageTimingDiagnosticsService>();
 builder.Services.AddSingleton<LyricsVersionRepository>();
 builder.Services.AddSingleton<LyricsAlignmentVersionService>();
+builder.Services.AddSingleton<LyricsVersionReportService>();
 builder.Services.AddHostedService<LibraryIndexWorker>();
 builder.Services.AddSignalR();
 builder.Services.AddCors(o => o.AddDefaultPolicy(p => p.AllowAnyHeader().AllowAnyMethod().AllowAnyOrigin()));
@@ -127,8 +128,9 @@ app.MapPost("/api/admin/songs/{id:guid}/realign", async (Guid id, SongRealignmen
         false => Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung."),
         true => Results.Accepted(value: realignment.GetStatus())
     });
-app.MapPost("/api/admin/songs/realign-all", (SongRealignmentService realignment) =>
-    realignment.TryStartAll()
+app.MapPost("/api/admin/songs/realign-all", (SongRealignmentRequest? request,
+    SongRealignmentService realignment) =>
+    realignment.TryStartAll(request)
         ? Results.Accepted(value: realignment.GetStatus())
         : Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung."));
 app.MapPost("/api/admin/song-packages/export", async (SongPackageExportRequest request,
@@ -169,7 +171,8 @@ app.MapPost("/api/admin/songs/{id:guid}/lyrics/snapshot-alignment", async (
     {
         var version = await realignment.SnapshotCurrentAsync(id, ct);
         return Results.Ok(new LyricsVersionSummaryDto(version.Id, version.SongId, version.Revision,
-            version.Status, version.AnalysisRunId, version.CreatedAt, version.UpdatedAt));
+            version.Status, version.AnalysisRunId, version.CreatedAt, version.UpdatedAt,
+            version.AlignmentReportJson is not null));
     }
     catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or System.Text.Json.JsonException)
     {
@@ -339,6 +342,12 @@ app.MapGet("/api/songs/{id:guid}/lyrics/versions", async (Guid id, LyricsVersion
     Results.Ok(await versions.GetAllAsync(id, ct)));
 app.MapGet("/api/songs/{id:guid}/lyrics/versions/{versionId:guid}", async (Guid id, Guid versionId, LyricsVersionRepository versions, CancellationToken ct) =>
     await versions.GetAsync(id, versionId, ct) is { } version ? Results.Ok(version) : Results.NotFound());
+app.MapGet("/api/songs/{id:guid}/lyrics/versions/{versionId:guid}/report", async (
+    Guid id, Guid versionId, string? language, LyricsVersionReportService reports, CancellationToken ct) =>
+    await reports.GetAsync(id, versionId,
+        string.Equals(language, "de", StringComparison.OrdinalIgnoreCase), ct) is { } report
+        ? Results.Ok(report)
+        : Results.NotFound());
 app.MapDelete("/api/songs/{id:guid}/lyrics/versions/{versionId:guid}", async (Guid id, Guid versionId, LyricsVersionRepository versions, CancellationToken ct) =>
     await versions.DeleteAsync(id, versionId, ct) switch
     {

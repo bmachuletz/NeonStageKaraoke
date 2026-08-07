@@ -6,7 +6,7 @@ recursive=true
 source_path=""
 
 usage() {
-  echo "Verwendung: $0 ORDNER [--no-recursive] [--server URL]"
+  echo "Verwendung: process-audio-folder.sh ORDNER [--no-recursive] [--server URL]"
 }
 
 while (($#)); do
@@ -35,7 +35,7 @@ response=$(curl -fsS -X POST "$server_url/api/admin/folder-import" \
   exit 1
 }
 job_id=$(jq -er '.jobId' <<<"$response")
-echo "MP3-Ordnerimport gestartet: $job_id"
+echo "Audio-Ordnerimport (MP3/FLAC) gestartet: $job_id"
 
 last_message=""
 while :; do

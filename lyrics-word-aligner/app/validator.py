@@ -24,6 +24,9 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
     ok = 0
     uncertain = 0
     line_overlaps: list[dict] = []
+    vocal_onset_conflicts = 0
+    word_overlap_conflicts = 0
+    compressed_word_runs = 0
     for index, line in enumerate(lines):
         reasons: list[str] = []
         words = line.words
@@ -32,12 +35,29 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
         else:
             starts = [float(w["start"]) for w in words]
             ends = [float(w["end"]) for w in words]
+            if words[0].get("stage_vocal_onset_conflict_ms") is not None:
+                reasons.append("Zeileneinsatz liegt außerhalb der Stage-Vocalspur")
+                vocal_onset_conflicts += 1
             if any(b < a for a, b in zip(starts, starts[1:])):
                 reasons.append("Wortzeiten nicht monoton")
+            overlaps = [
+                round((float(left["end"]) - float(right["start"])) * 1000, 1)
+                for left, right in zip(words, words[1:])
+                if float(left["end"]) > float(right["start"]) + 0.001
+            ]
+            if overlaps:
+                reasons.append("Wörter überlappen innerhalb der Zeile")
+                word_overlap_conflicts += len(overlaps)
             if any(e < s for s, e in zip(starts, ends)):
                 reasons.append("negativer Wortzeitraum")
             if sum(e - s < 0.03 for s, e in zip(starts, ends)) >= max(2, len(words) // 4):
                 reasons.append("zu viele Wörter ohne messbare Dauer")
+            short = [end - start <= 0.09 for start, end in zip(starts, ends)]
+            local_compressed_runs = sum(
+                left and right for left, right in zip(short, short[1:]))
+            if local_compressed_runs:
+                reasons.append("aufeinanderfolgende Wörter unplausibel komprimiert")
+                compressed_word_runs += local_compressed_runs
             if any(e - s > cfg.max_word_duration for s, e in zip(starts, ends)):
                 reasons.append("unplausibel langes Wort")
             reference = line.source_timestamp
@@ -99,13 +119,18 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
         for line in lines
     )
     repair_penalty = min(0.35, final_repaired_lines / max(1, len(lines)))
+    compression_penalty = min(0.12, compressed_word_runs / max(1, total_words) * 0.50)
     score = round(100.0 * max(0.0,
                               0.45 * line_ratio + 0.25 * coverage + 0.30 * acoustic_coverage
-                              - repair_penalty), 1)
+                              - repair_penalty - compression_penalty), 1)
     trustworthy_coverage = acoustic_coverage >= 0.90
-    if score >= 92 and uncertain == 0 and trustworthy_coverage and not line_overlaps:
+    if (score >= 92 and uncertain == 0 and trustworthy_coverage
+            and not line_overlaps and vocal_onset_conflicts == 0
+            and word_overlap_conflicts == 0):
         grade = "excellent"
-    elif score >= 80 and uncertain <= max(1, len(lines) // 20) and trustworthy_coverage:
+    elif (score >= 80 and uncertain <= max(1, len(lines) // 20)
+          and trustworthy_coverage and vocal_onset_conflicts == 0
+          and word_overlap_conflicts == 0):
         grade = "good"
     elif score >= 65:
         grade = "review"
@@ -115,12 +140,17 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
         "lines": len(lines), "ok": ok, "uncertain": uncertain,
         "quality": {
             "score": score, "grade": grade,
-            "publishable": grade in {"excellent", "good"} and not line_overlaps,
+            "publishable": (grade in {"excellent", "good"} and not line_overlaps
+                            and vocal_onset_conflicts == 0
+                            and word_overlap_conflicts == 0),
             "word_duration_coverage": round(coverage, 4),
             "acoustically_aligned_word_coverage": round(acoustic_coverage, 4),
             "heuristically_placed_words": heuristic_words,
             "geometrically_repaired_lines": final_repaired_lines,
             "line_overlap_conflicts": len(line_overlaps),
+            "stage_vocal_onset_conflicts": vocal_onset_conflicts,
+            "word_overlap_conflicts": word_overlap_conflicts,
+            "compressed_word_runs": compressed_word_runs,
         },
         "line_overlaps": line_overlaps,
     }

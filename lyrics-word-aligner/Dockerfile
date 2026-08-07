@@ -9,14 +9,17 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 python3-pip python3-venv python3-dev \
     build-essential gcc g++ git \
-    ffmpeg libsndfile1 curl \
+    ffmpeg libsndfile1 curl espeak-ng \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt .
 RUN python3 -m pip install --break-system-packages \
-    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 \
-    && python3 -m pip install --break-system-packages -r requirements.txt \
+    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+
+# Keep the large CUDA/PyTorch layer reusable when a smaller Python dependency
+# changes during aligner development.
+COPY requirements.txt .
+RUN python3 -m pip install --break-system-packages -r requirements.txt \
     && python3 -m pip install --break-system-packages --no-deps easyaligner==0.3.3 \
     && python3 -c "import torch, onnxruntime as ort, transformers; from transformers import Qwen3ASRForTokenClassification; print('Torch:', torch.__version__, 'CUDA:', torch.version.cuda); print('Transformers:', transformers.__version__); print('Qwen3ASRForTokenClassification: OK'); print('ONNX Runtime:', ort.__version__, ort.get_available_providers())" \
     && apt-get purge -y --auto-remove build-essential gcc g++ git python3-dev \

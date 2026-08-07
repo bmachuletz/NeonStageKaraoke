@@ -33,7 +33,7 @@ Core alignment settings:
 
 ```dotenv
 LRC_ALIGNMENT_MODE=line-windows       # or full-song
-LRC_ENGINE_V2_MODE=shadow             # off, shadow, or select
+LRC_ENGINE_V2_MODE=select             # production; shadow or off for diagnostics
 LRC_FULL_SONG_MAX_SECONDS=300
 LRC_SECTION_PAUSE_GAP=7
 LRC_SECTION_MAX_DURATION=45
@@ -58,10 +58,12 @@ from two independent method families; energy-only placement cannot replace a
 stronger forced alignment unless the old line is demonstrably outside the
 vocal region.
 
-Use `shadow` while evaluating a library: the complete decision report is added
-to `*.alignment.json`, but the historical output is retained. Use `select` only
-after reviewing those reports. The previous engine always remains available
-with `off`.
+`select` is the validated production mode. It applies only alternatives which
+measurably beat the historical path and have sufficient independent acoustic
+support. `shadow` records the complete decision report in `*.alignment.json`
+without changing output, while `off` retains the legacy engine. Regardless of
+the mode, the final Stage-vocal boundary, monotonic word geometry, and
+single-lane overlap gates remain mandatory.
 
 The design follows the same separation of concerns as
 [WhisperX](https://github.com/m-bain/whisperX) (VAD, transcription, then forced
@@ -364,13 +366,76 @@ must be repaired or reviewed.
 
 ## Syllable data
 
-The GPU alignment determines acoustic word boundaries. Each word in
-`*.alignment.json` can additionally contain `syllables`,
-`syllable_confidence`, and `syllable_method`. A language-aware dictionary
-distributes syllable windows inside the detected word interval. These are more
-granular than word timing but are not yet acoustic phoneme boundaries
-(`acoustic_syllable_boundaries: false`). Neon Stage uses syllables at a
+The GPU alignment determines acoustic word boundaries. Variant 1.2 adds an
+independent IPA/CTC pass over short lyric-line windows, followed by a
+class-aware micro-boundary pass. It searches a 2.5 ms grid around IPA phone
+priors, combines multiple analysis-window sizes, and chooses a locally
+monotonic path with phone-duration constraints. An IPA word onset may replace
+the prior onset only when all of these gates pass:
+
+- the phone path and the individual word exceed their confidence thresholds;
+- the candidate remains within 140 ms of the trusted word window;
+- an independent local energy/spectral measurement confirms the same edge;
+- applying it preserves positive word duration and the single, non-overlapping
+  karaoke lane.
+
+Held endings use a separate targeted pYIN pass over the Stage vocal stem. It
+can extend a connected voiced release, or conservatively shorten one only when
+an earlier sustain estimate already exists. Exact frame-center timebase data,
+micro-path decisions, rejected candidates, and movements against the immutable
+Enhanced-LRC input are written to `*.alignment.json`.
+
+Two or more adjacent words which have collapsed to 90 ms or less are treated
+as one local repair problem. They are expanded from the IPA path only when the
+complete replacement lies between stable neighbouring anchors and at least
+55% of that interval contains independently measured Stage-vocal activity. A
+single short function word is never expanded by this rule. Remaining compressed
+runs are exposed by the quality gate instead of being hidden by a high overall
+coverage score.
+
+The same pass also detects an unassigned hole of at least 160 ms between two
+otherwise ordered words. It moves only the two inner word edges when the IPA
+path reduces the hole to at most 100 ms, at least 55% of the old hole contains
+independently measured vocal activity, and one unchanged outer word edge is a
+reliable anchor. Consequently a sung transition is not left blank, while an
+actual breath or instrumental pause is preserved. These decisions are reported
+separately as `ipa_vocal_hole_repairs`.
+
+Complete lines made exclusively from at least three repetitions of the same
+short word unit receive an additional repetition-aware pass. Long-context
+Stable-TS identifies the correct chorus occurrence, but every repeated word is
+then re-anchored independently against a multiresolution onset measurement in
+the Stage vocal stem. The line is changed atomically only when every onset has
+stronger evidence than its ASR prior. This prevents identical calls from
+borrowing duration from the preceding or following repetition. The report key
+is `repeated_phrase_refinement`.
+
+German syllables are post-validated phonetically because Pyphen describes
+typographic hyphenation rather than sung nuclei. In particular, `au`, `ei`,
+`eu`, `äu`, `ai`, and `ie` remain intact across a dictionary hyphenation edge;
+for example, `Träum` is one sung syllable rather than `Trä-um`.
+
+Each word can additionally contain `syllables`, `syllable_confidence`, and
+`syllable_method`. A language-aware dictionary supplies the written syllables;
+the IPA phone sequence places a new syllable at its sung consonant onset rather
+than waiting for the vowel nucleus. A conservative multiband change-point pass
+may refine that internal boundary further. Neon Stage uses syllables at a
 confidence of at least 0.62 and otherwise falls back to word timing.
+
+The promotion gates can be made stricter for diagnostics through
+`LRC_PHONEME_PROMOTION_MIN_CONFIDENCE`,
+`LRC_PHONEME_PROMOTION_MIN_EVIDENCE`, and
+`LRC_PHONEME_PROMOTION_MAX_SHIFT` (seconds). Loosening them is not recommended
+without comparing the generated alignment reports against manually reviewed
+versions.
+
+Set `LRC_MICRO_BOUNDARY_MODE=shadow` to record Variant 1.2 candidates without
+changing timestamps, `select` to apply candidates which pass every gate, or
+`off` to disable the pass. `LRC_MICRO_BOUNDARY_SEARCH_RADIUS` and
+`LRC_MICRO_BOUNDARY_MIN_IMPROVEMENT` control its local search and acceptance
+threshold. Human-readable version reports expose the same decisions and make
+clear that movement from the input is a diagnostic measurement, not by itself
+proof of better timing.
 
 ## Supported alignment languages
 

@@ -124,6 +124,14 @@ public partial class EditorWindow : Window
             await viewModel.LoadLyricsVersionAsync(item);
     }
 
+    private async void ShowVersionReportClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel ||
+            sender is not Button { Tag: EditorLyricsVersionItem item }) return;
+        var report = await viewModel.GetLyricsVersionReportAsync(item);
+        if (report is not null) await new LyricsVersionReportWindow(report).ShowDialog(this);
+    }
+
     private async void DeleteVersionClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel viewModel ||
@@ -135,15 +143,17 @@ public partial class EditorWindow : Window
     private async void RealignSongClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel) return;
-        if (await new ConfirmRealignSongWindow(song.Title, song.Artist).ShowDialog<bool>(this))
-            await viewModel.StartSelectedSongRealignmentAsync();
+        var choice = await new ConfirmRealignSongWindow(song.Title, song.Artist)
+            .ShowDialog<AlignmentVariantChoice?>(this);
+        if (choice is { } selected) await viewModel.StartSelectedSongRealignmentAsync(selected);
     }
 
     private async void RealignAllSongsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel viewModel) return;
-        if (await new ConfirmRealignSongWindow(null, null).ShowDialog<bool>(this))
-            await viewModel.StartAllSongsRealignmentAsync();
+        var choice = await new ConfirmRealignSongWindow(null, null)
+            .ShowDialog<AlignmentVariantChoice?>(this);
+        if (choice is { } selected) await viewModel.StartAllSongsRealignmentAsync(selected);
     }
 
     private async void GlobalLyricsOffsetClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
@@ -280,7 +290,7 @@ public partial class EditorWindow : Window
         if (DataContext is not EditorViewModel viewModel) return;
         var folders = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
         {
-            Title = "MP3-Ordner für die Import-Pipeline auswählen",
+            Title = EditorLocale.Text("Audio-Ordner mit MP3- oder FLAC-Dateien auswählen"),
             AllowMultiple = false
         });
         var path = folders.FirstOrDefault()?.TryGetLocalPath();

@@ -29,15 +29,19 @@ internal sealed class LyricsAlignmentVersionService(
                          $"Das Alignment für Song {songId} enthält keine lesbaren Lyrics.");
         var document = LyricsDocumentImporter.Import(lyrics, analysisRunId, "gpu-aligner");
         var json = JsonSerializer.Serialize(document, JsonOptions);
+        var reportJson = await ReadLibraryAlignmentReportAsync(songId, cancellationToken);
         var version = await versions.CreateAsync(songId,
-            new CreateLyricsVersionRequest(json, analysisRunId, LyricsVersionStatus.InReview),
+            new CreateLyricsVersionRequest(json, analysisRunId, LyricsVersionStatus.InReview,
+                AlignmentReportJson: reportJson),
             cancellationToken);
         changes.Publish("lyrics-version-changed");
         return version;
     }
 
     public async Task<LyricsVersionDto> SnapshotFileAsync(Guid songId, string lrcPath, string alignmentPath,
-        string analysisRunId, string modelVersion, CancellationToken cancellationToken)
+        string analysisRunId, string modelVersion, CancellationToken cancellationToken,
+        LyricsVersionStatus status = LyricsVersionStatus.InReview,
+        bool preserveExistingDrafts = false)
     {
         var song = await library.GetAsync(songId, cancellationToken)
                    ?? throw new InvalidOperationException($"Song {songId} wurde nicht gefunden.");
@@ -52,8 +56,10 @@ internal sealed class LyricsAlignmentVersionService(
             throw new InvalidOperationException("Die Alignment-Ausgabe enthält keine lesbaren Lyrics.");
         var document = LyricsDocumentImporter.Import(lyrics, analysisRunId, modelVersion);
         var json = JsonSerializer.Serialize(document, JsonOptions);
+        var reportJson = await ReadAlignmentReportAsync(alignmentPath, cancellationToken);
         var version = await versions.CreateAsync(songId,
-            new CreateLyricsVersionRequest(json, analysisRunId, LyricsVersionStatus.InReview),
+            new CreateLyricsVersionRequest(json, analysisRunId, status,
+                PreserveExistingDrafts: preserveExistingDrafts, AlignmentReportJson: reportJson),
             cancellationToken);
         changes.Publish("lyrics-version-changed");
         return version;
@@ -89,5 +95,27 @@ internal sealed class LyricsAlignmentVersionService(
             created++;
         }
         return created;
+    }
+
+    private async Task<string?> ReadLibraryAlignmentReportAsync(Guid songId, CancellationToken cancellationToken)
+    {
+        var audio = await library.GetAudioFileAsync(songId, cancellationToken);
+        if (audio is null) return null;
+        var path = Path.Combine(Path.GetDirectoryName(audio.Value.Path)!,
+            Path.GetFileNameWithoutExtension(audio.Value.Path) + ".alignment.json");
+        return await ReadAlignmentReportAsync(path, cancellationToken);
+    }
+
+    private static async Task<string?> ReadAlignmentReportAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path)) return null;
+        var info = new FileInfo(path);
+        if (info.Length is <= 0 or > 20 * 1024 * 1024)
+            throw new InvalidDataException($"Alignment-Bericht hat eine ungültige Größe: {path}");
+        var json = await File.ReadAllTextAsync(path, cancellationToken);
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            throw new InvalidDataException($"Alignment-Bericht ist kein JSON-Objekt: {path}");
+        return json;
     }
 }

@@ -96,12 +96,47 @@ try
             "Qobuz-Suchergebnisse behalten Quelle, Preis, Qualität und Katalog-ID.");
     }
 
+    Assert(FolderImportService.IsSupportedAudioFile("Demo.MP3") &&
+           FolderImportService.IsSupportedAudioFile("Demo.FlAc") &&
+           !FolderImportService.IsSupportedAudioFile("Demo.wav"),
+        "Der Audio-Ordnerimport akzeptiert MP3 und FLAC unabhängig von der Schreibweise.");
+    var uniqueAudioFolder = Path.Combine(Path.GetTempPath(), $"neon-stage-audio-name-{Guid.NewGuid():N}");
+    Directory.CreateDirectory(uniqueAudioFolder);
+    try
+    {
+        await File.WriteAllBytesAsync(Path.Combine(uniqueAudioFolder, "Demo.flac"), [0]);
+        await File.WriteAllBytesAsync(Path.Combine(uniqueAudioFolder, "Track.MP3"), [0]);
+        await File.WriteAllBytesAsync(Path.Combine(uniqueAudioFolder, "Ignored.wav"), [0]);
+        var nestedAudioFolder = Path.Combine(uniqueAudioFolder, "nested");
+        Directory.CreateDirectory(nestedAudioFolder);
+        await File.WriteAllBytesAsync(Path.Combine(nestedAudioFolder, "Nested.FLAC"), [0]);
+        Assert(Path.GetFileName(FolderImportService.UniquePath(uniqueAudioFolder, "Demo.flac")) == "Demo (2).flac" &&
+               FolderImportService.NormalizeAudioExtension("Demo.FLAC") == ".flac",
+            "Kollisionsnamen und normalisierte Dateiendungen erhalten das FLAC-Format.");
+        Assert(FolderImportService.DiscoverAudioFiles(uniqueAudioFolder, recursive: false).Length == 2 &&
+               FolderImportService.DiscoverAudioFiles(uniqueAudioFolder, recursive: true).Length == 3,
+            "Die Ordnersuche findet MP3 und FLAC und respektiert die rekursive Einstellung.");
+        var lyricsPath = Path.Combine(uniqueAudioFolder, "Demo.lrc");
+        Assert(FolderImportService.SelectPipelineRoute(lyricsPath) == FolderImportPipelineRoute.FullTranscript,
+            "Ohne lokale oder LRCLIB-Lyrics wählt der Ordnerimport die Volltranskript-Pipeline.");
+        await File.WriteAllTextAsync(lyricsPath, "   \n");
+        Assert(FolderImportService.SelectPipelineRoute(lyricsPath) == FolderImportPipelineRoute.FullTranscript,
+            "Eine leere LRC-Datei verhindert den Volltranskript-Fallback nicht.");
+        await File.WriteAllTextAsync(lyricsPath, "[00:01.00]Example lyrics");
+        Assert(FolderImportService.SelectPipelineRoute(lyricsPath) == FolderImportPipelineRoute.Variant12,
+            "Mit vorhandenen Lyrics wählt der Ordnerimport Variante 1.2.");
+    }
+    finally { Directory.Delete(uniqueAudioFolder, recursive: true); }
+
     var lyricsVersions = new LyricsVersionRepository(options);
     var versionSongId = Guid.NewGuid();
     var editorJson = JsonSerializer.Serialize(new { schemaVersion = 1, songId = versionSongId, lines = Array.Empty<object>() });
-    var version = await lyricsVersions.CreateAsync(versionSongId, new(editorJson), default);
-    Assert(version.Revision == 1 && version.Status == LyricsVersionStatus.InReview,
-        "Ein Editorentwurf startet versioniert im Prüfstatus.");
+    var alignmentReportJson = """{"quality":{"score":91,"publishable":true}}""";
+    var version = await lyricsVersions.CreateAsync(versionSongId,
+        new(editorJson, AlignmentReportJson: alignmentReportJson), default);
+    Assert(version.Revision == 1 && version.Status == LyricsVersionStatus.InReview &&
+           version.AlignmentReportJson == alignmentReportJson,
+        "Ein Editorentwurf startet versioniert im Prüfstatus und bindet seinen Alignment-Bericht.");
     var staleUpdate = await lyricsVersions.UpdateAsync(versionSongId, version.Id,
         new(0, editorJson), default);
     Assert(staleUpdate is null, "Eine veraltete Revision überschreibt keinen Editorentwurf.");
@@ -111,9 +146,20 @@ try
         new(version.Revision, changedEditorJson), default);
     Assert(savedVersion is { Revision: 2 } && savedVersion.Id != version.Id,
         "Jedes Speichern legt einen eigenständigen Lyrics-Stand mit neuer Revision an.");
+    Assert(savedVersion!.AlignmentReportJson == alignmentReportJson &&
+           (await lyricsVersions.GetAllAsync(versionSongId, default)).Single(item => item.Id == savedVersion.Id).HasAlignmentReport,
+        "Ein abgeleiteter Editor-Stand behält die Provenienz seines technischen Alignment-Berichts.");
     var archivedVersion = await lyricsVersions.GetAsync(versionSongId, version.Id, default);
     Assert(archivedVersion?.Status == LyricsVersionStatus.Superseded && archivedVersion.DocumentJson == editorJson,
         "Der vorherige Lyrics-Inhalt bleibt unverändert im Versionsarchiv erhalten.");
+    var comparisonJson = JsonSerializer.Serialize(new
+        { schemaVersion = 1, songId = versionSongId, marker = "Alignment-Vergleich", lines = Array.Empty<object>() });
+    var comparisonVersion = await lyricsVersions.CreateAsync(versionSongId,
+        new(comparisonJson, Status: LyricsVersionStatus.Generated, PreserveExistingDrafts: true), default);
+    var stillCurrentDraft = await lyricsVersions.GetLatestDraftAsync(versionSongId, default);
+    Assert(comparisonVersion.Status == LyricsVersionStatus.Generated &&
+           stillCurrentDraft?.Id == savedVersion!.Id && stillCurrentDraft.DocumentJson == changedEditorJson,
+        "Eine erzeugte Alignment-Vergleichsversion ersetzt den aktuellen Editor-Stand nicht.");
     var reviewed = await lyricsVersions.ChangeStatusAsync(versionSongId, savedVersion!.Id, savedVersion.Revision,
         LyricsVersionStatus.Reviewed, default);
     var approved = await lyricsVersions.ChangeStatusAsync(versionSongId, savedVersion.Id, reviewed!.Revision,

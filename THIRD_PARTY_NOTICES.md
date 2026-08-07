@@ -56,6 +56,7 @@ they are not included in the server image or editor AppImage.
 | TextGrid, TensorBoardX, RapidFuzz | MIT |
 | EasyAligner 0.3.3 | MIT |
 | stable-ts 2.19.1 | MIT |
+| librosa | ISC; its transitive audio/scientific packages retain their own notices |
 | SOFA 1.0.3 code vendored in `lyrics-word-aligner/third_party/SOFA` | MIT; preserve its bundled LICENSE |
 
 Python packages bring transitive dependencies. A distributed alignment image
@@ -70,6 +71,7 @@ are ignored and never enter the application releases.
 | Model / family | License / restriction |
 |---|---|
 | Qwen3-ASR and Qwen3 ForcedAligner model revisions used by the pipeline | Apache-2.0 according to their Qwen model cards; pin and retain the exact downloaded model card/revision before redistribution |
+| Meta `facebook/wav2vec2-xlsr-53-espeak-cv-ft` phoneme checkpoint | Apache-2.0 according to its model card; the downloaded checkpoint is cached separately and is not committed to this repository |
 | OpenAI Whisper code and published model weights | MIT |
 | Silero VAD code/model shipped by its repository | MIT; the cached repository LICENSE is retained locally |
 | torchaudio `MMS_FA` / Meta MMS weights | **CC-BY-NC-4.0**; attribution and the non-commercial restriction apply. Do not use this optional verifier for a commercial deployment without separate permission. |
@@ -83,6 +85,7 @@ are ignored and never enter the application releases.
 | Unity Engine and Unity packages | stage runtime/editor | Unity Software Terms and package-specific licenses (commonly Unity Companion License); not covered by Neon Stage's Apache-2.0 license |
 | TextMesh Pro resources / Liberation Sans | stage text | Unity package terms / SIL Open Font License 1.1 respectively |
 | FFmpeg | decoding, conversion, analysis | LGPL-2.1-or-later or GPL-2.0-or-later depending on the exact build/configuration; container and AppImage artifacts retain the distributor build/version and copyright metadata |
+| [eSpeak NG](https://github.com/espeak-ng/espeak-ng) | optional IPA pronunciation process used by the aligner container | GPL-3.0-or-later; invoked as a separate unmodified command-line program, not imported or linked into the Apache application. Distributed images must retain the package copyright/license and corresponding-source information. |
 | curl / libcurl | server-container health and worker HTTP | curl license; Debian copyright metadata is retained |
 | linuxdeploy / appimagetool | AppImage build tooling | MIT for the upstream projects; verify downloaded build-tool revisions before release |
 | AppImage Type-2 runtime | embedded launcher in each AppImage | MIT; its upstream license and bundled-dependency inventory are included as `AppImage-Type2-Runtime-LICENSE.txt` in every AppImage |

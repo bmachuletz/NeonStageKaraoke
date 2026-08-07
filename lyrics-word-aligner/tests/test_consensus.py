@@ -196,6 +196,28 @@ class ConsensusTests(unittest.TestCase):
         self.assertTrue(all(word["end"] <= 206.97 for word in lines[0].words))
         self.assertTrue(all(word["timing_source"] == "overlap-display-lane-fallback"
                             for word in lines[0].words))
+        self.assertTrue(all(left["end"] <= right["start"]
+                            for left, right in zip(lines[0].words, lines[0].words[1:])))
+
+    def test_final_fallback_keeps_many_compressed_words_monotonic(self):
+        previous = LrcLine(66.954, "It's going ya ya ya ya ya ya ya", "", words=[
+            {"word": token, "start": 66.954 + index * .55,
+             "end": 67.354 + index * .55, "timing_source": "qwen-forced"}
+            for index, token in enumerate("It's going ya ya ya ya ya ya ya".split())
+        ])
+        current = LrcLine(67.331, "Oh yeah", "", words=[
+            {"word": "Oh", "start": 67.331, "end": 67.389,
+             "timing_source": "qwen-forced"},
+            {"word": "yeah", "start": 67.389, "end": 71.77,
+             "timing_source": "qwen-forced"},
+        ])
+
+        eliminate_remaining_line_overlaps([previous, current])
+
+        self.assertEqual(67.331, previous.words[-1]["end"])
+        self.assertTrue(all(left["end"] <= right["start"]
+                            for left, right in zip(previous.words, previous.words[1:])))
+        self.assertTrue(all(word["end"] > word["start"] for word in previous.words))
 
 
 if __name__ == "__main__":

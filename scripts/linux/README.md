@@ -90,26 +90,33 @@ Eine fertige Bibliothek und vollständige Songpakete funktionieren ohne
 Aligner. Downloader, Ordnerimport und neues Alignment benötigen weiterhin den
 separaten Worker-/GPU-Stack.
 
-## MP3-Ordner importieren
+## Audio-Ordner mit MP3 und FLAC importieren
 
 Der Server muss bereits laufen. Der Pfad muss auf dem Serverrechner erreichbar
 sein. Die Originaldateien werden nicht verändert:
 
 ```bash
-./scripts/linux/process-mp3-folder.sh /pfad/zu/meinen/mp3s
+./scripts/linux/process-audio-folder.sh /pfad/zu/meinen/audiodateien
 ```
 
 Nur den gewählten Ordner ohne Unterordner durchsuchen:
 
 ```bash
-./scripts/linux/process-mp3-folder.sh /pfad/zu/meinen/mp3s --no-recursive
+./scripts/linux/process-audio-folder.sh /pfad/zu/meinen/audiodateien --no-recursive
 ```
 
+Der bisherige Name `process-mp3-folder.sh` bleibt als kompatibler Alias erhalten.
+
 Die gleiche Pipeline steht im Lyrics Editor unter
-**Verwaltung → MP3-Ordner importieren …** bereit. Lyrics werden in dieser
-Reihenfolge gesucht: benachbarte `.lrc`/`.txt`, eingebettete ID3-Lyrics,
-anschließend LRCLIB. Danach folgen GPU-Stem-Separation, Wort-/Silbenalignment
-und der Review-Status.
+**Verwaltung → Audio-Ordner (MP3/FLAC) importieren …** bereit. MP3-Metadaten
+werden aus ID3-Tags und FLAC-Metadaten aus Vorbis Comments gelesen. Das
+ursprüngliche Audioformat bleibt als Master erhalten. Lyrics werden in dieser
+Reihenfolge gesucht: benachbarte `.lrc`/`.txt`, eingebettete Tag-Lyrics,
+anschließend LRCLIB. Ein gefundener Text läuft durch Variante 1.2 mit
+IPA-Wort-/Silbenalignment. Gibt es überhaupt keinen verwertbaren Text, erzeugt
+der GPU-Worker automatisch ein Volltranskript mit Wortgrenzen und führt dieses
+danach ebenfalls durch Variante 1.2. Anschließend folgen Review-Status und
+Bibliotheksaktualisierung.
 
 ## Stage-Timing untersuchen
 

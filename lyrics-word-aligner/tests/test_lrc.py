@@ -7,6 +7,23 @@ from app.models import LrcLine
 
 
 class LrcParsingTests(unittest.TestCase):
+    def test_enhanced_word_ranges_are_loaded_as_one_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "enhanced.lrc"
+            path.write_text(
+                "[00:19.620]<00:19.620,00:20.120>Du "
+                "<00:20.120,00:21.310>träumst\n",
+                encoding="utf-8",
+            )
+            _headers, lines = parse_lrc(path)
+
+        self.assertEqual(1, len(lines))
+        self.assertEqual("Du träumst", lines[0].text)
+        self.assertEqual(2, len(lines[0].words))
+        self.assertAlmostEqual(19.620, lines[0].words[0]["start"])
+        self.assertAlmostEqual(21.310, lines[0].words[1]["end"])
+        self.assertEqual("input-enhanced-lrc", lines[0].words[1]["timing_source"])
+
     def test_accepts_editor_timespan_precision_beyond_milliseconds(self):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "precise.lrc"

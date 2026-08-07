@@ -37,6 +37,9 @@ Special thanks go to:
   [Qwen](https://huggingface.co/Qwen),
   [OpenAI Whisper](https://github.com/openai/whisper),
   [stable-ts](https://github.com/jianfch/stable-ts),
+  [librosa](https://librosa.org/) and the pYIN authors for precise local pitch and voicing analysis,
+  [eSpeak NG](https://github.com/espeak-ng/espeak-ng),
+  [Meta's multilingual XLSR phoneme model](https://huggingface.co/facebook/wav2vec2-xlsr-53-espeak-cv-ft),
   [Silero VAD](https://github.com/snakers4/silero-vad),
   [EasyAligner](https://github.com/kb-labb/easyaligner), and
   [SOFA](https://github.com/qiuqiao/SOFA) for speech recognition and forced

@@ -41,6 +41,19 @@ def _onset_support(start: float, activity: list[tuple[float, float]]) -> float:
     return math.exp(-distance / 0.12)
 
 
+def _release_support(end: float, activity: list[tuple[float, float]]) -> float:
+    """Score whether a line ends at its own connected vocal release."""
+    if not activity:
+        return 0.0
+    containing = [(begin, stop) for begin, stop in activity
+                  if begin - 0.04 <= end <= stop + 0.04]
+    if containing:
+        distance = min(abs(end - stop) for _begin, stop in containing)
+    else:
+        distance = min(abs(end - stop) for _begin, stop in activity)
+    return math.exp(-distance / 0.24)
+
+
 def _source_reliability(word: dict) -> float:
     source = str(word.get("timing_source", ""))
     if source.startswith("ctc-"):
@@ -49,6 +62,11 @@ def _source_reliability(word: dict) -> float:
         return 0.72 + 0.24 * float(word.get("stable_ts_probability", 0.0))
     if source in {"qwen-forced", "targeted-deleted-fragment-qwen"}:
         return 0.82
+    if source == "input-enhanced-lrc":
+        # A human/editor timing is a real competing hypothesis. It is not
+        # blindly trusted, but strong agreement with the Stage vocal activity
+        # must be allowed to beat a weaker automatic re-alignment.
+        return 0.80
     if source in {"mms-forced-alignment", "sofa-singing-alignment",
                   "easyaligner-global"}:
         return 0.86
@@ -121,7 +139,10 @@ def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> t
         return 0.0, {"valid": False, "reason": "no-word-timestamps"}
     starts = [float(word["start"]) for word in words]
     ends = [float(word["end"]) for word in words]
-    monotonic = all(right >= left for left, right in zip(starts, starts[1:]))
+    ordered_starts = all(right >= left for left, right in zip(starts, starts[1:]))
+    nonoverlapping = all(left_end <= right_start + 0.001
+                         for left_end, right_start in zip(ends, starts[1:]))
+    monotonic = ordered_starts and nonoverlapping
     positive = all(end > start for start, end in zip(starts, ends))
     plausible = all(0.025 <= end - start <= 6.0 for start, end in zip(starts, ends))
     geometry = (float(monotonic) + float(positive) + float(plausible)) / 3
@@ -132,6 +153,7 @@ def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> t
         for start, end, duration in zip(starts, ends, durations)
     ) / max(0.001, sum(durations)))
     onset = float(_onset_support(starts[0], activity))
+    release = float(_release_support(ends[-1], activity))
     reliability = float(statistics.mean(_source_reliability(word) for word in words))
 
     source_timestamp = line.source_timestamp
@@ -144,8 +166,9 @@ def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> t
         deviations.append(abs(ends[-1] - float(consensus["end"])))
     agreement = math.exp(-statistics.mean(deviations) / 0.22) if deviations else 0.5
 
-    score = float(0.31 * activity_coverage + 0.18 * onset + 0.18 * reliability +
-                  0.14 * agreement + 0.11 * geometry + 0.08 * source_prior)
+    score = float(0.27 * activity_coverage + 0.16 * onset + 0.16 * reliability +
+                  0.13 * agreement + 0.10 * geometry + 0.07 * source_prior +
+                  0.11 * release)
     if not monotonic or not positive:
         score *= 0.25
     return score, {
@@ -153,9 +176,11 @@ def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> t
         "score": round(score, 4),
         "activity_coverage": round(activity_coverage, 4),
         "onset_support": round(onset, 4),
+        "release_support": round(release, 4),
         "model_reliability": round(reliability, 4),
         "candidate_agreement": round(agreement, 4),
         "geometry": round(geometry, 4),
+        "nonoverlapping_words": nonoverlapping,
         "lrc_prior": round(source_prior, 4),
         "start": round(starts[0], 3),
         "end": round(ends[-1], 3),
@@ -170,9 +195,11 @@ def _transition_penalty(previous, current) -> float:
     overlap = previous_end - current_start
     if overlap <= 0.015:
         return 0.0
-    # Cross-line overlap is forbidden in the emitted karaoke lane. A tiny
-    # tolerance covers rounding, while larger collisions dominate local gains.
-    return 0.45 + min(1.5, overlap * 2.5)
+    # Cross-line overlap is forbidden in the emitted karaoke lane. Make an
+    # overlapping path effectively impossible whenever a clean candidate path
+    # exists; the final single-lane gate remains the fallback when every model
+    # reports concurrent lead/backing vocals.
+    return 25.0 + min(25.0, overlap * 10.0)
 
 
 def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
@@ -238,7 +265,10 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
                               not baseline_detail.get("valid", False))
                              and disagreement_supported
                              and reliability_supported))
-            adjusted.append((score if eligible else -10.0,
+            # Ineligible candidates must remain impossible even when the
+            # baseline has a large cross-line transition penalty. A small
+            # sentinel allowed Viterbi to prefer an unsupported clean seam.
+            adjusted.append((score if eligible else -1_000_000.0,
                              {**detail, "eligible": eligible,
                               "high_disagreement": high_disagreement,
                               "strong_acoustic_rescue": strong_acoustic_rescue,
@@ -306,3 +336,148 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
         "lines": line_reports,
     }
     return (selected_lines if mode == "select" else baseline_lines), report
+
+
+def preserve_better_enhanced_input(generated: list, source: AlignmentCandidate | None,
+                                   vocal_activity: list[tuple[float, float]], *,
+                                   minimum_improvement: float = 0.06) -> tuple[list, dict]:
+    """Preserve editor timings where they fit Stage vocals measurably better.
+
+    Adjacent lyrics are also compared as a block.  This matters for repeated
+    choruses: an automatic candidate can let the end of one line invade the
+    following line.  Comparing those lines independently makes the good editor
+    boundary ineligible merely because its neighbour is already wrong.
+    """
+    if source is None or len(source.lines) != len(generated):
+        return generated, {"enabled": False, "reason": "no-compatible-enhanced-input",
+                           "preserved_lines": 0, "lines": []}
+    probe = [capture_candidate("generated", "generated", generated, "automatic"), source]
+    try:
+        _compatible(probe)
+    except ValueError:
+        return generated, {"enabled": False, "reason": "canonical-text-changed",
+                           "preserved_lines": 0, "lines": []}
+
+    result = deepcopy(generated)
+    consensus = _consensus_boundaries(probe)
+    preserved = []
+    preserved_indices: set[int] = set()
+    preserved_blocks = []
+
+    # First repair coherent blocks around cross-line collisions.  Expand a
+    # block when the source boundary would otherwise collide with an unchanged
+    # neighbour.  Keeping this bounded prevents a single disagreement from
+    # replacing a complete song.
+    block_candidates = []
+    for index in range(len(result) - 1):
+        if not result[index].words or not result[index + 1].words:
+            continue
+        generated_seam_overlap = (
+            float(result[index].words[-1]["end"]) -
+            float(result[index + 1].words[0]["start"]))
+        if generated_seam_overlap <= 0.015:
+            continue
+        first, last = index, index + 1
+        while first > 0 and source.lines[first].words and result[first - 1].words and (
+                float(source.lines[first].words[0]["start"]) <
+                float(result[first - 1].words[-1]["end"]) - 0.001):
+            first -= 1
+        while last + 1 < len(result) and source.lines[last].words and result[last + 1].words and (
+                float(source.lines[last].words[-1]["end"]) >
+                float(result[last + 1].words[0]["start"]) + 0.001):
+            last += 1
+        if last - first + 1 > 4:
+            continue
+        source_details = []
+        generated_details = []
+        source_scores = []
+        generated_scores = []
+        valid_source_block = True
+        for line_index in range(first, last + 1):
+            generated_score, generated_detail = _score_line(
+                result[line_index], vocal_activity, consensus[line_index])
+            source_score, source_detail = _score_line(
+                source.lines[line_index], vocal_activity, consensus[line_index])
+            generated_scores.append(generated_score)
+            source_scores.append(source_score)
+            generated_details.append(generated_detail)
+            source_details.append(source_detail)
+            valid_source_block = valid_source_block and bool(source_detail["valid"])
+        valid_source_block = valid_source_block and all(
+            float(source.lines[line_index].words[-1]["end"]) <=
+            float(source.lines[line_index + 1].words[0]["start"]) + 0.001
+            for line_index in range(first, last)
+            if source.lines[line_index].words and source.lines[line_index + 1].words)
+        average_gain = (statistics.mean(source_scores) - statistics.mean(generated_scores))
+        if not valid_source_block or average_gain < minimum_improvement / 2:
+            continue
+        block_candidates.append((average_gain, first, last, generated_seam_overlap,
+                                 generated_details, source_details))
+
+    for (average_gain, first, last, seam_overlap,
+         generated_details, source_details) in sorted(block_candidates, reverse=True):
+        indices = set(range(first, last + 1))
+        if indices & preserved_indices:
+            continue
+        for line_index in indices:
+            result[line_index] = deepcopy(source.lines[line_index])
+        preserved_indices.update(indices)
+        preserved_blocks.append({
+            "first_line": first + 1,
+            "last_line": last + 1,
+            "average_score_improvement": round(average_gain, 4),
+            "repaired_seam_overlap_ms": round(seam_overlap * 1000, 1),
+            "generated": generated_details,
+            "input": source_details,
+        })
+        for offset, line_index in enumerate(range(first, last + 1)):
+            preserved.append({
+                "line": line_index + 1,
+                "reason": "coherent-block",
+                "generated": generated_details[offset],
+                "input": source_details[offset],
+            })
+
+    for index, source_line in enumerate(source.lines):
+        if index in preserved_indices:
+            continue
+        generated_score, generated_detail = _score_line(
+            result[index], vocal_activity, consensus[index])
+        source_score, source_detail = _score_line(
+            source_line, vocal_activity, consensus[index])
+        stronger_activity = (
+            source_detail["activity_coverage"] >=
+            generated_detail["activity_coverage"] + 0.08
+            or source_detail["onset_support"] >=
+            generated_detail["onset_support"] + 0.18
+            or source_detail["release_support"] >=
+            generated_detail["release_support"] + 0.18
+        )
+        if (not source_detail["valid"]
+                or (generated_detail["valid"] and not stronger_activity)
+                or source_score < generated_score + minimum_improvement):
+            continue
+        source_start = float(source_line.words[0]["start"])
+        source_end = float(source_line.words[-1]["end"])
+        previous_end = (float(result[index - 1].words[-1]["end"])
+                        if index > 0 and result[index - 1].words else None)
+        next_start = (float(result[index + 1].words[0]["start"])
+                      if index + 1 < len(result) and result[index + 1].words else None)
+        if ((previous_end is not None and source_start < previous_end - 0.001)
+                or (next_start is not None and source_end > next_start + 0.001)):
+            continue
+        result[index] = deepcopy(source_line)
+        preserved.append({
+            "line": index + 1,
+            "generated_score": round(generated_score, 4),
+            "input_score": round(source_score, 4),
+            "generated": generated_detail,
+            "input": source_detail,
+        })
+    return result, {
+        "enabled": True,
+        "method": "stage-vocal-coherent-input-preservation-v2",
+        "preserved_lines": len(preserved),
+        "preserved_blocks": preserved_blocks,
+        "lines": preserved,
+    }

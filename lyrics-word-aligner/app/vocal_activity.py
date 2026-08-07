@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from .models import AlignmentConfig
@@ -180,14 +182,49 @@ def repair_with_vocal_activity(lines: list, cfg: AlignmentConfig,
             continue
         durations = [float(word["end"]) - float(word["start"]) for word in line.words]
         collapsed = sum(duration < 0.03 for duration in durations)
-        rewind = float(line.words[0]["start"]) + 0.08 < previous_end
+        nonpositive = any(duration <= 0 for duration in durations)
+        collapsed_threshold = max(3, math.ceil(len(durations) * 0.25))
         starts = [float(word["start"]) for word in line.words]
         nonmonotonic = any(right + 0.015 < left for left, right in zip(starts, starts[1:]))
+        internal_overlap = any(
+            float(left["end"]) > float(right["start"]) + 0.005
+            for left, right in zip(line.words, line.words[1:]))
         phrase_span = float(line.words[-1]["end"]) - float(line.words[0]["start"])
         compressed_phrase = bool(durations) and sum(durations) / len(durations) < 0.10
         sparse_phrase = phrase_span > max(4.0, len(line.words) * 1.6)
-        if (collapsed < max(1, len(line.words) // 4) and not rewind and not nonmonotonic
+        # A mostly good acoustic line may contain only a few decoder-frame
+        # collisions between neighbouring short words.  Repair those exact
+        # seams locally; redistributing the complete line would destroy all
+        # already measured onsets and sung vowel lengths.
+        if (internal_overlap and not nonpositive and not nonmonotonic
                 and not compressed_phrase and not sparse_phrase):
+            locally_repaired = False
+            local_repair_possible = True
+            for left, right in zip(line.words, line.words[1:]):
+                left_end = float(left["end"])
+                right_start = float(right["start"])
+                overlap = left_end - right_start
+                if overlap <= 0.005:
+                    continue
+                boundary = (left_end + right_start) / 2
+                minimum = float(left["start"]) + 0.015
+                maximum = float(right["end"]) - 0.015
+                if overlap > 0.35 or minimum > maximum:
+                    local_repair_possible = False
+                    break
+                boundary = max(minimum, min(maximum, boundary))
+                left["end"] = round(boundary, 3)
+                right["start"] = round(boundary, 3)
+                left["local_overlap_repair_ms"] = round((boundary - left_end) * 1000, 1)
+                right["local_overlap_repair_ms"] = round((boundary - right_start) * 1000, 1)
+                locally_repaired = True
+            if local_repair_possible and locally_repaired:
+                line.timestamp = float(line.words[0]["start"])
+                previous_end = max(previous_end, float(line.words[-1]["end"]))
+                repaired += 1
+                continue
+        if (not nonpositive and collapsed < collapsed_threshold and not nonmonotonic
+                and not internal_overlap):
             previous_end = max(previous_end, float(line.words[-1]["end"]))
             continue
         source_start = line.source_timestamp if line.source_timestamp is not None else line.timestamp

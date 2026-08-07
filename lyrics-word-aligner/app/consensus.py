@@ -11,7 +11,9 @@ ACOUSTIC_SOURCES = {None, "qwen-forced", "ctc-phoneme-alignment",
                     "stable-ts-whisper",
                     "targeted-deleted-fragment-qwen",
                     "asr-repetition-anchor", "asr-repetition-activity",
-                    "transition-block-qwen"}
+                    "transition-block-qwen", "ipa-collapsed-run-repair",
+                    "ipa-vocal-hole-repair",
+                    "stable-repetition-acoustic-onset"}
 ACOUSTIC_SOURCES.add("ctc-overlap-reanalysis")
 VERIFIED_ACOUSTIC_SOURCES = ACOUSTIC_SOURCES - {None}
 
@@ -283,17 +285,25 @@ def eliminate_remaining_line_overlaps(lines: list, *, minimum_word_duration: flo
             first = 0
 
         scale = available / max(0.001, old_end - old_start)
-        for word in previous.words[first:]:
-            word_start = old_start + (float(word["start"]) - old_start) * scale
-            word_end = old_start + (float(word["end"]) - old_start) * scale
-            word["start"] = round(min(word_start, boundary - minimum_word_duration), 3)
-            word["end"] = round(min(boundary, max(word["start"] + minimum_word_duration, word_end)), 3)
+        tail = previous.words[first:]
+        originals = [(float(word["start"]), float(word["end"])) for word in tail]
+        cursor = old_start
+        for offset, (word, (original_start, original_end)) in enumerate(zip(tail, originals)):
+            remaining = len(tail) - offset - 1
+            latest_end = boundary - remaining * minimum_word_duration
+            mapped_start = old_start + (original_start - old_start) * scale
+            mapped_end = old_start + (original_end - old_start) * scale
+            word_start = min(max(cursor, mapped_start), latest_end - minimum_word_duration)
+            word_end = min(latest_end, max(word_start + minimum_word_duration, mapped_end))
+            word["start"] = round(word_start, 3)
+            word["end"] = round(word_end, 3)
             word["timing_source"] = "overlap-display-lane-fallback"
             for syllable in word.get("syllables", []):
                 syllable_start = old_start + (float(syllable["start"]) - old_start) * scale
                 syllable_end = old_start + (float(syllable["end"]) - old_start) * scale
                 syllable["start"] = round(max(float(word["start"]), syllable_start), 3)
                 syllable["end"] = round(min(float(word["end"]), max(syllable_start, syllable_end)), 3)
+            cursor = float(word["end"])
         # Rounding must never leave the final token a millisecond over the lane.
         previous.words[-1]["end"] = round(boundary, 3)
         adjustments.append({
