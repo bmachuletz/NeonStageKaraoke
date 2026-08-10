@@ -25,7 +25,8 @@ public sealed class StageVisualView
     private string _qrServer = "";
     private bool _qrLoaded, _qrLoading;
     private float _nextQrAttempt;
-    private float _energyPeak = .001f, _bassPeak = .001f;
+    private float _energyPeak = .001f, _bassPeak = .001f, _midPeak = .001f, _treblePeak = .001f;
+    private float _mid, _treble;
     private readonly Canvas _transitionCanvas;
     private readonly TextMeshProUGUI _flyingTitle;
     private readonly TextMeshProUGUI _flyingArtist;
@@ -40,7 +41,7 @@ public sealed class StageVisualView
         background.rectTransform.anchorMin = Vector2.zero;
         background.rectTransform.anchorMax = Vector2.one;
         background.rectTransform.offsetMin = background.rectTransform.offsetMax = Vector2.zero;
-        _material = new Material(Resources.Load<Shader>("NeonBackdrop"));
+        _material = StageBackgroundShaderCatalog.CreateMaterial();
         background.material = _material;
 
         var coverCanvas = CreateCanvas("Album Art Canvas", host.transform, 8);
@@ -187,16 +188,34 @@ public sealed class StageVisualView
         if (!_qrLoaded && !_qrLoading && !string.IsNullOrWhiteSpace(_qrServer) && Time.unscaledTime >= _nextQrAttempt)
             _ = LoadQrAsync(_qrServer);
         audio.GetSpectrum(_spectrum);
-        var energy = 0f; var bass = 0f;
-        for (var i = 0; i < _spectrum.Length; i++) { energy += _spectrum[i]; if (i < 10) bass += _spectrum[i]; }
+        var energy = 0f; var bass = 0f; var mid = 0f; var treble = 0f;
+        for (var i = 0; i < _spectrum.Length; i++)
+        {
+            energy += _spectrum[i];
+            if (i < 10) bass += _spectrum[i];
+            else if (i < 48) mid += _spectrum[i];
+            else treble += _spectrum[i];
+        }
         _energyPeak = Mathf.Max(energy, _energyPeak * Mathf.Exp(-Time.unscaledDeltaTime * .55f));
         _bassPeak = Mathf.Max(bass, _bassPeak * Mathf.Exp(-Time.unscaledDeltaTime * .7f));
+        _midPeak = Mathf.Max(mid, _midPeak * Mathf.Exp(-Time.unscaledDeltaTime * .75f));
+        _treblePeak = Mathf.Max(treble, _treblePeak * Mathf.Exp(-Time.unscaledDeltaTime * .8f));
         var normalizedEnergy = Mathf.Clamp01(energy / Mathf.Max(.0001f, _energyPeak));
         var newBass = Mathf.Clamp01(bass / Mathf.Max(.0001f, _bassPeak));
+        var newMid = Mathf.Clamp01(mid / Mathf.Max(.0001f, _midPeak));
+        var newTreble = Mathf.Clamp01(treble / Mathf.Max(.0001f, _treblePeak));
         _energy = Mathf.Lerp(_energy, normalizedEnergy, Time.unscaledDeltaTime * 6);
         _pulse = Mathf.Max(_pulse * Mathf.Exp(-Time.unscaledDeltaTime * 5.5f), Mathf.Max(0, newBass - _bass) * 7);
         _bass = Mathf.Lerp(_bass, newBass, Time.unscaledDeltaTime * 7);
-        _material.SetFloat("_Energy", _energy); _material.SetFloat("_Bass", _bass); _material.SetFloat("_Pulse", _pulse);
+        _mid = Mathf.Lerp(_mid, newMid, Time.unscaledDeltaTime * 7);
+        _treble = Mathf.Lerp(_treble, newTreble, Time.unscaledDeltaTime * 8);
+        SetShaderFloat("_Energy", _energy);
+        SetShaderFloat("_Bass", _bass);
+        SetShaderFloat("_Mid", _mid);
+        SetShaderFloat("_Treble", _treble);
+        SetShaderFloat("_Pulse", _pulse);
+        SetShaderFloat("_SongTime", (float)audio.PositionSeconds);
+        SetShaderFloat("_IsPlaying", audio.IsPlaying ? 1f : 0f);
         if (_promoting)
         {
             var t = Mathf.Clamp01((Time.unscaledTime - _promotionStarted) / 1.35f);
@@ -220,6 +239,11 @@ public sealed class StageVisualView
             }
         }
         UpdateTitleFragments();
+    }
+
+    private void SetShaderFloat(string property, float value)
+    {
+        if (_material.HasProperty(property)) _material.SetFloat(property, value);
     }
 
     private void ExplodeOldHeading(string title, string artist)

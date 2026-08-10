@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#09020f">
+  <meta name="description" content="How to add music-reactive Unity background shaders to Neon Stage.">
+  <title>Background shaders — Neon Stage</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    .shader-doc{max-width:1040px;margin:auto;padding:90px 28px 140px}.shader-doc h1{font-size:clamp(52px,8vw,100px);line-height:.9;letter-spacing:-.06em;max-width:900px}.shader-doc h2{margin-top:65px;font-size:32px}.shader-doc h3{margin-top:36px}.shader-doc p,.shader-doc li{color:var(--muted);line-height:1.75}.shader-doc code{color:var(--acid)}.shader-doc pre{overflow:auto;padding:20px;border:1px solid #37d6ff32;border-radius:9px;background:#050209;line-height:1.65}.shader-doc pre code{color:#d8f8ff}.shader-doc table{width:100%;border-collapse:collapse;margin:28px 0}.shader-doc td,.shader-doc th{text-align:left;vertical-align:top;padding:14px;border-bottom:1px solid #ffffff18}.shader-doc th{color:var(--pink)}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:36px 0}.flow span{padding:18px;border:1px solid #ffffff1c;border-radius:10px;background:#12091a;text-align:center;color:#dfd4e4}.flow b{display:block;color:var(--acid);margin-bottom:7px}.notice{padding:20px;border-left:3px solid var(--pink);background:#ff3cbd0b;border-radius:0 10px 10px 0}.contract{padding:24px;border:1px solid #dfff0037;border-radius:14px;background:#dfff0007}.steps li{margin-bottom:12px}@media(max-width:760px){.flow{grid-template-columns:1fr 1fr}.shader-doc table{font-size:13px}.shader-doc td,.shader-doc th{padding:10px 6px}}@media(max-width:460px){.flow{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"></div>
+  <header class="nav"><a class="brand" href="index.html"><i>NS</i> NEON STAGE</a><nav><a href="index.html">Home</a><a href="releases.html">Releases</a><a href="legal.html">Legal</a></nav></header>
+  <main class="shader-doc">
+    <p class="eyebrow">UNITY STAGE · MUSIC REACTIVE · EXTENSIBLE</p>
+    <h1>Build a new background</h1>
+    <p class="lead">Neon Stage exposes a small, stable shader contract. Add one Unity shader, register one catalog entry, and receive smoothed music bands, bass transients, and the seek-safe song clock every frame.</p>
+    <p class="notice">Shaders are compiled into the Stage build. Neon Stage never downloads executable shader code from the server, which keeps Linux and Android releases deterministic and reviewable.</p>
+
+    <div class="flow" aria-label="Background shader data flow"><span><b>01</b>Stage audio</span><span><b>02</b>Spectrum analysis</span><span><b>03</b>Shared properties</span><span><b>04</b>Full-screen shader</span></div>
+
+    <h2>Quick integration</h2>
+    <ol class="steps">
+      <li>Create <code>Assets/Resources/BackgroundShaders/MyBackground.shader</code> inside <code>src/Karaoke.Stage.Unity</code>.</li>
+      <li>Use a unique shader name such as <code>NeonStage/Background/MyBackground</code>.</li>
+      <li>Declare any shared music properties your effect needs.</li>
+      <li>Add a stable ID and resource path to <code>Assets/Resources/NeonStageBackgrounds.json</code>. Omit the file extension.</li>
+      <li>Build and launch the Stage with the new ID.</li>
+    </ol>
+    <pre><code>{
+  "id": "my-background",
+  "displayName": "My Background",
+  "resource": "BackgroundShaders/MyBackground"
+}</code></pre>
+    <pre><code>./scripts/linux/build-unity-stage-linux.sh
+./scripts/linux/start-unity-stage.sh --background-shader my-background
+
+# Equivalent Linux environment variable:
+NEONSTAGE_BACKGROUND_SHADER=my-background \
+  ./scripts/linux/start-unity-stage.sh</code></pre>
+
+    <h2>The music contract</h2>
+    <div class="contract"><p>The Stage checks every property before writing it, so a shader may implement only the inputs it consumes. Property names are case-sensitive.</p></div>
+    <table><thead><tr><th>Property</th><th>Value</th><th>Use</th></tr></thead><tbody>
+      <tr><td><code>_Energy</code></td><td>0–1</td><td>Smoothed full-spectrum energy</td></tr>
+      <tr><td><code>_Bass</code></td><td>0–1</td><td>Low-frequency movement and weight</td></tr>
+      <tr><td><code>_Mid</code></td><td>0–1</td><td>Voice, guitars, and central musical motion</td></tr>
+      <tr><td><code>_Treble</code></td><td>0–1</td><td>High-frequency detail and sparkle</td></tr>
+      <tr><td><code>_Pulse</code></td><td>0–1</td><td>Fast bass onset followed by a short decay</td></tr>
+      <tr><td><code>_SongTime</code></td><td>seconds</td><td>Playback position that follows pause, resume, and seek</td></tr>
+      <tr><td><code>_IsPlaying</code></td><td>0/1</td><td>Whether the audio clock is running</td></tr>
+    </tbody></table>
+    <p>Bands are normalized against decaying local peaks, making one shader respond sensibly to quiet and heavily mastered tracks. For transport-synchronized motion use <code>_SongTime</code>; Unity's <code>_Time</code> continues while paused.</p>
+
+    <h2>Minimal shader</h2>
+    <pre><code>Shader "NeonStage/Background/MyBackground"
+{
+ Properties {
+  _Energy("Energy",Range(0,1))=0
+  _Bass("Bass",Range(0,1))=0
+  _Pulse("Pulse",Range(0,1))=0
+ }
+ SubShader { Tags { "Queue"="Background" }
+  Cull Off ZWrite Off ZTest Always
+  Pass { CGPROGRAM
+   #pragma target 3.0
+   #pragma vertex vert
+   #pragma fragment frag
+   #include "UnityCG.cginc"
+   struct appdata { float4 vertex:POSITION; float2 uv:TEXCOORD0; };
+   struct v2f { float4 vertex:SV_POSITION; float2 uv:TEXCOORD0; };
+   float _Energy,_Bass,_Pulse;
+   v2f vert(appdata v){v2f o;o.vertex=UnityObjectToClipPos(v.vertex);o.uv=v.uv;return o;}
+   fixed4 frag(v2f i):SV_Target {
+    float2 p=i.uv*2-1;
+    p.x*=_ScreenParams.x/_ScreenParams.y;
+    float glow=exp(-length(p)*(3-_Bass));
+    float ring=exp(-abs(length(p)-(.3+_Pulse*.12))*24);
+    float3 col=float3(.018,.004,.035);
+    col+=glow*float3(.45,.02,.6)*(.2+_Energy);
+    col+=ring*float3(.85,1,.03);
+    return fixed4(col,1);
+   }
+  ENDCG }
+ }
+}</code></pre>
+    <p>The repository includes <code>NeonPulseRings.shader</code> as a complete example using all bands and the song clock.</p>
+
+    <h2>Selection and Android</h2>
+    <p>Selection priority is command line, <code>NEONSTAGE_BACKGROUND_SHADER</code>, Unity PlayerPrefs key <code>NeonStage.BackgroundShader</code>, then the catalog's <code>defaultId</code>. Unknown IDs fall back safely to the default.</p>
+    <p>Android launchers normally cannot provide environment variables. Set <code>defaultId</code> in the JSON catalog before building the APK. This keeps the same shader contract available for a future Stage settings screen.</p>
+
+    <h2>Performance and readability</h2>
+    <ul>
+      <li>Keep the central lyric area dark and reserve bright values for short accents.</li>
+      <li>Use <code>_Pulse</code> sparingly; repeated full-screen flashes hurt readability.</li>
+      <li>Prefer smooth functions over divergent branches and cap every loop.</li>
+      <li>Begin with shader target 3.0 and test the ARM32 Android build on real hardware.</li>
+      <li>Return opaque color and avoid implicit network or cover-art dependencies.</li>
+      <li>Check licenses before including third-party shader code.</li>
+    </ul>
+
+    <h2>Validation and troubleshooting</h2>
+    <ol class="steps">
+      <li>Check the Unity console for compile errors.</li>
+      <li>Verify idle, countdown, playback, pause, resume, and seek.</li>
+      <li>Test quiet and loud masters and keep lyrics, QR code, next-song card, and controls readable.</li>
+      <li>Inspect the player log for <code>Neon Stage background shader:</code>.</li>
+    </ol>
+    <p>A pink screen means Unity found the asset but could not compile it for the active graphics API. A silent fallback to Neon Grid usually means the catalog ID or resource path is wrong. If animation works but ignores playback, verify the exact property names and use <code>_SongTime</code> instead of <code>_Time</code>.</p>
+
+    <div class="actions"><a class="primary" href="https://github.com/bmachuletz/NeonStageKaraoke/blob/main/docs/background-shaders.md">Full repository guide</a><a class="secondary" href="index.html">Back to Neon Stage</a></div>
+  </main>
+  <footer><span>© <span id="year"></span> Neon Stage contributors · Apache-2.0</span><span>Built for Linux and Android Unity stages</span><nav><a href="releases.html">Releases</a><a href="legal.html">Legal</a></nav></footer>
+  <script src="site.js"></script>
+</body>
+</html>

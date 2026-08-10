@@ -1,0 +1,15 @@
+{
+  "defaultId": "neon-grid",
+  "backgrounds": [
+    {
+      "id": "neon-grid",
+      "displayName": "Neon Grid",
+      "resource": "NeonBackdrop"
+    },
+    {
+      "id": "pulse-rings",
+      "displayName": "Pulse Rings",
+      "resource": "BackgroundShaders/NeonPulseRings"
+    }
+  ]
+}

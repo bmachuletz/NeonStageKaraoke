@@ -284,7 +284,7 @@ Pipeline output can include enhanced LRC, `*.alignment.json`, vocal and instrume
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |
 | Verify release contents | `./scripts/release/verify-no-media.sh` |
 
-More examples: [`scripts/linux/README.md`](scripts/linux/README.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), and [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md).
+More examples: [`scripts/linux/README.md`](scripts/linux/README.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md), and the detailed [music-reactive background shader guide](docs/background-shaders.md).
 
 ## Release builds
 
