@@ -7,7 +7,8 @@ namespace Karaoke.Editor.Core;
 public static class LyricsDocumentImporter
 {
     public static LyricsEditorDocument Import(LyricsDto source, string? analysisRunId = null,
-        string? modelVersion = null, SegmentOrigin detailedOrigin = SegmentOrigin.GeneratedByAi)
+        string? modelVersion = null, SegmentOrigin detailedOrigin = SegmentOrigin.GeneratedByAi,
+        bool hasUltraStarTimingHeritage = false)
     {
         var document = new LyricsEditorDocument
         {
@@ -15,13 +16,25 @@ public static class LyricsDocumentImporter
             AnalysisRunId = analysisRunId,
             ModelVersion = modelVersion,
             Status = LyricsReviewStatus.NeedsReview,
+            HasUltraStarTimingHeritage = source.HasUltraStarTimingHeritage ||
+                hasUltraStarTimingHeritage || detailedOrigin == SegmentOrigin.ImportedFromUltraStar,
         };
         foreach (var line in source.Lines)
         {
+            var isStructureMarker = LyricsStructureMarker.IsMarker(line.Text);
             var lineSegment = Create(source.SongId, $"line:{line.Index}", null,
-                LyricSegmentType.Line, line.Start, line.End ?? line.Start, line.Text,
+                LyricSegmentType.Line, line.Start, line.End ?? line.Start,
+                isStructureMarker ? string.Empty : line.Text,
                 line.Words is { Count: > 0 } ? detailedOrigin : SegmentOrigin.ImportedLineLyrics,
                 null, analysisRunId, modelVersion);
+            lineSegment.VoiceLane = Math.Max(0, line.VoiceLane);
+            lineSegment.VoiceLabel = line.VoiceLabel;
+            if (isStructureMarker)
+            {
+                lineSegment.RequiresReview = false;
+                document.Lines.Add(lineSegment);
+                continue;
+            }
             foreach (var word in line.Words ?? [])
             {
                 var wordSegment = Create(source.SongId, $"line:{line.Index}:word:{word.Index}", lineSegment.Id,
@@ -38,6 +51,21 @@ public static class LyricsDocumentImporter
             document.Lines.Add(lineSegment);
         }
         return document;
+    }
+
+    /// <summary>Neutralizes section labels in old persisted drafts while retaining their timing boundary.</summary>
+    public static int IgnoreStructureMarkers(LyricsEditorDocument document)
+    {
+        var ignored = 0;
+        foreach (var line in document.Lines.Where(line => LyricsStructureMarker.IsMarker(line.Text)))
+        {
+            line.Text = string.Empty;
+            line.Children.Clear();
+            line.RequiresReview = false;
+            line.IsReviewed = true;
+            ignored++;
+        }
+        return ignored;
     }
 
     private static LyricSegment Create(Guid songId, string key, Guid? parentId,

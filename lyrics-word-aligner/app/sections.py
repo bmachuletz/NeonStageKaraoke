@@ -29,6 +29,9 @@ def plan_sections(lines: list, total_duration: float, *, pause_gap: float = 7.0,
                 audio_end = float(lines[next_first].timestamp) + post_roll
         else:
             audio_end = float(lines[end - 1].timestamp) + last_line_duration
+        phrase_boundary = getattr(lines[end - 1], "source_end_boundary", None)
+        if phrase_boundary is not None:
+            audio_end = min(audio_end, float(phrase_boundary))
         audio_end = min(total_duration, max(audio_start + 0.25, audio_end))
         sections.append({"first": first, "end": end, "audio_start": audio_start,
                          "audio_end": audio_end})

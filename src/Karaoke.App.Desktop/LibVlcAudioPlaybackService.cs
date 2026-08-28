@@ -14,6 +14,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     private Media? _vocalMedia;
     private int _requestedVocalVolume;
     private int _requestedMasterVolume = 100;
+    private double _requestedPlaybackRate = 1;
     private int _playGeneration;
     private readonly Timer _vocalSyncTimer;
     private int _vocalStartScheduled;
@@ -39,6 +40,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _vocalPlayer = new MediaPlayer(_libVlc);
         _vocalPlayer.Playing += (_, _) =>
         {
+            _vocalPlayer.SetRate((float)_requestedPlaybackRate);
             if (!_vocalAwaitingAlignment) return;
             if (Interlocked.Exchange(ref _vocalAlignmentScheduled, 1) == 0)
                 ThreadPool.QueueUserWorkItem(async _ => await AlignAndEnableVocalAsync(_playGeneration));
@@ -61,6 +63,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _player.Buffering += (_, eventArgs) => StateChanged?.Invoke(this, $"Audiostream wird gepuffert: {eventArgs.Cache:0}%");
         _player.Playing += (_, _) =>
         {
+            _player.SetRate((float)_requestedPlaybackRate);
             // Nie einen zweiten LibVLC-Player innerhalb eines LibVLC-Callbacks starten:
             // beide Player teilen interne Locks und der Master kann sonst im Buffering hängen.
             var generation = _playGeneration;
@@ -113,6 +116,16 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
             if (_vocalPlayer.IsPlaying) _vocalPlayer.Volume = _requestedVocalVolume;
         }
     }
+    public double PlaybackRate
+    {
+        get => _requestedPlaybackRate;
+        set
+        {
+            _requestedPlaybackRate = Math.Clamp(value, .1, 1);
+            _player.SetRate((float)_requestedPlaybackRate);
+            _vocalPlayer.SetRate((float)_requestedPlaybackRate);
+        }
+    }
     public bool IsPlaying => _player.IsPlaying;
     public bool IsSeekable => _player.IsSeekable;
     public event EventHandler<TimeSpan>? PositionChanged;
@@ -145,6 +158,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         }
         if (!_player.Play(_media))
             throw new InvalidOperationException("Der Audiostream konnte nicht gestartet werden.");
+        _player.SetRate((float)_requestedPlaybackRate);
         var generation = _playGeneration;
         WatchPlaybackStart(generation);
         if (startPosition is not null)
@@ -186,6 +200,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     {
         if (generation != _playGeneration || _vocalMedia is null) return;
         _vocalPlayer.Volume = 0;
+        _vocalPlayer.SetRate((float)_requestedPlaybackRate);
         _vocalAwaitingAlignment = true;
         if (!_vocalPlayer.Play(_vocalMedia))
             DisableVocalStem();

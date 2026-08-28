@@ -11,11 +11,23 @@ from app.micro_boundaries import (
     compare_timing_reference,
     refine_ipa_phone_path,
     refine_sustain_releases_with_voicing,
+    serialize_voicing_evidence,
     sustain_voicing_intervals,
 )
+from app.repair import constrain_final_words_to_source_boundaries
 
 
 class MicroBoundaryTests(unittest.TestCase):
+    def test_pyin_track_is_serialized_as_independent_f0_evidence(self):
+        track = VoicingTrack(
+            times=np.array([.1, .2]), f0=np.array([220.0, np.nan]),
+            probability=np.array([.9, .1]), voiced=np.array([True, False]),
+            sample_rate=16000, frame_length=1024, hop_length=160)
+        report = serialize_voicing_evidence(track, {"enabled": True})
+        self.assertEqual("pyin", report["family"])
+        self.assertEqual(220.0, report["track"][0]["f0_hz"])
+        self.assertIsNone(report["track"][1]["f0_hz"])
+
     def test_phone_classes_distinguish_singing_boundary_types(self):
         self.assertEqual("plosive", _phone_class("t"))
         self.assertEqual("fricative", _phone_class("ʃ"))
@@ -115,6 +127,49 @@ class MicroBoundaryTests(unittest.TestCase):
         self.assertEqual(1, report["applied_words"])
         self.assertGreater(line.words[0]["end"], 1.48)
         self.assertEqual(1.28, line.words[0]["pyin_release_original"])
+
+    def test_internal_word_cannot_extend_past_independent_vocal_activity(self):
+        times = np.arange(0, 2.5, .005, dtype=np.float64)
+        probability = np.zeros_like(times, dtype=np.float32)
+        probability[(times >= .90) & (times <= 1.48)] = .86
+        track = VoicingTrack(
+            times=times, f0=np.full_like(times, 220, dtype=np.float32),
+            probability=probability, voiced=probability >= .38,
+            sample_rate=16000, frame_length=1024, hop_length=80)
+        line = SimpleNamespace(words=[
+            {"word": "brennenden", "start": .7, "acoustic_end": 1.0,
+             "end": 1.28, "sustain_extension_ms": 280,
+             "sustain_activity_end": 1.10},
+            {"word": "Barrikaden", "start": 1.8, "end": 2.2},
+        ])
+
+        report = refine_sustain_releases_with_voicing(
+            [line], track, mode="select")
+
+        self.assertEqual(0, report["applied_words"])
+        self.assertEqual(1.28, line.words[0]["end"])
+        self.assertEqual("internal-release-beyond-vocal-activity",
+                         report["details"][0]["reason"])
+
+    def test_explicit_source_end_is_reapplied_after_voicing_sustain(self):
+        times = np.arange(0, 2.0, .005, dtype=np.float64)
+        probability = np.zeros_like(times, dtype=np.float32)
+        probability[(times >= .90) & (times <= 1.48)] = .86
+        track = VoicingTrack(
+            times=times, f0=np.full_like(times, 220, dtype=np.float32),
+            probability=probability, voiced=probability >= .38,
+            sample_rate=16000, frame_length=1024, hop_length=80)
+        line = SimpleNamespace(source_end_boundary=1.25, words=[{
+            "word": "lang", "start": .7, "acoustic_end": 1.0,
+            "end": 1.10, "sustain_extension_ms": 100,
+        }])
+
+        refine_sustain_releases_with_voicing([line], track, mode="select")
+        self.assertGreater(line.words[0]["end"], 1.25)
+        constrained = constrain_final_words_to_source_boundaries([line])
+
+        self.assertEqual(1, constrained)
+        self.assertEqual(1.25, line.words[0]["end"])
 
     def test_reference_report_makes_boundary_changes_measurable(self):
         current = [SimpleNamespace(words=[

@@ -3,7 +3,8 @@ import pytest
 
 from app.candidate_selection import (AudioAlignmentCandidate, CandidateSelectionConfig,
                                      blend_audio, select_alignment_candidate,
-                                     select_stage_stem_candidate)
+                                     select_stage_stem_candidate, transcript_score,
+                                     timed_anchor_alignment_quality)
 
 
 def candidate(name: str, value: float = 0.0, *, legacy: bool = False):
@@ -139,6 +140,31 @@ def test_blend_rejects_material_duration_mismatch():
         blend_audio(np.zeros(500, dtype=np.float32), np.zeros(100, dtype=np.float32), .1)
 
 
+def test_alignment_quality_is_optional_and_explicitly_reported():
+    without, without_parts = transcript_score(
+        comparison(.7)["comparison"], config(alignment_quality_weight=.15))
+    with_quality, with_parts = transcript_score(
+        comparison(.7)["comparison"], config(alignment_quality_weight=.15), .9)
+    assert without_parts["alignment_quality"] is None
+    assert with_parts["alignment_quality"] == .9
+    assert with_quality > without
+
+
+def test_untimed_lyrics_receive_no_anchor_quality_penalty():
+    line = type("Line", (), {"timed_input": False, "timestamp": 0.0,
+                             "source_timestamp": None})()
+    assert timed_anchor_alignment_quality([line], [(0.0, 1.0)]) is None
+
+
+def test_timed_anchor_quality_rewards_activity_near_line_anchors():
+    lines = [type("Line", (), {"timed_input": True, "timestamp": timestamp,
+                               "source_timestamp": timestamp})()
+             for timestamp in (1.0, 3.0, 5.0)]
+    near = timed_anchor_alignment_quality(lines, [(.98, 1.8), (2.98, 3.8), (4.98, 5.8)])
+    far = timed_anchor_alignment_quality(lines, [(10.0, 11.0)])
+    assert near > far
+
+
 @pytest.mark.parametrize("changes", [
     {"minimum_improvement": -0.1},
     {"minimum_improvement": 1.1},
@@ -146,6 +172,8 @@ def test_blend_rejects_material_duration_mismatch():
     {"blend_ratios": (1.0,)},
     {"coverage_weight": -1},
     {"coverage_weight": 0, "matching_weight": 0, "similarity_weight": 0},
+    {"alignment_quality_weight": -1},
+    {"pitch_quality_weight": .11},
 ])
 def test_invalid_configuration_is_rejected(changes):
     with pytest.raises(ValueError):

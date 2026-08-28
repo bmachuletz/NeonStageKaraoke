@@ -21,6 +21,7 @@ mkdir -p "$data_root" "$library_path" "$(dirname -- "$database_path")"
 
 export Karaoke__LibraryPath="$library_path"
 export Karaoke__DatabasePath="$database_path"
+export Karaoke__PublicBaseUrl=${Karaoke__PublicBaseUrl:-http://cloud.hdvtec.de:5274}
 export ASPNETCORE_URLS=${ASPNETCORE_URLS:-http://0.0.0.0:5274}
 export ASPNETCORE_ENVIRONMENT=${ASPNETCORE_ENVIRONMENT:-Production}
 

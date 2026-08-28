@@ -40,6 +40,19 @@ def load_audio(path: str | Path) -> np.ndarray:
     return np.ascontiguousarray(data, dtype=np.float32)
 
 
+def load_native_audio(path: str | Path) -> tuple[np.ndarray, int]:
+    """Load the exported signal without resampling for sub-frame boundaries.
+
+    Recognition models intentionally consume 16 kHz mono.  Quiet sung decays
+    and consonant releases, however, are final render boundaries and should be
+    measured on the exact native-rate Stage stem the singer will hear.
+    """
+    data, rate = sf.read(path, dtype="float32", always_2d=False)
+    if data.ndim > 1:
+        data = data.mean(axis=1)
+    return np.ascontiguousarray(data, dtype=np.float32), int(rate)
+
+
 def select_alignment_audio(vocals: np.ndarray, mix: np.ndarray,
                            *, minimum_rms_ratio: float = 0.05) -> tuple[np.ndarray, dict]:
     """Fall back to the mix when source separation removed nearly all vocals."""

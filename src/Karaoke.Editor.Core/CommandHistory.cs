@@ -91,16 +91,19 @@ public sealed class EditSegmentForestCommand : IEditorCommand
     }
 
     private sealed record ForestState(TimeSpan Start, TimeSpan End, string Text, SegmentOrigin Origin,
-        bool Adjusted, bool Reviewed, bool RequiresReview, int? HoldAfterMilliseconds, StageLineEffect StageEffect)
+        bool Adjusted, bool Reviewed, bool RequiresReview, int? HoldAfterMilliseconds,
+        StageLineEffect StageEffect, Guid? ParentId, int VoiceLane, string? VoiceLabel)
     {
         public static ForestState Capture(LyricSegment segment) => new(segment.Start, segment.End, segment.Text,
             segment.Origin, segment.IsManuallyAdjusted, segment.IsReviewed, segment.RequiresReview,
-            segment.HoldAfterMilliseconds, segment.StageEffect);
+            segment.HoldAfterMilliseconds, segment.StageEffect, segment.ParentId,
+            segment.VoiceLane, segment.VoiceLabel);
         public void Restore(LyricSegment segment)
         {
             segment.Start = Start; segment.End = End; segment.Text = Text; segment.Origin = Origin;
             segment.IsManuallyAdjusted = Adjusted; segment.IsReviewed = Reviewed; segment.RequiresReview = RequiresReview;
             segment.HoldAfterMilliseconds = HoldAfterMilliseconds; segment.StageEffect = StageEffect;
+            segment.ParentId = ParentId; segment.VoiceLane = VoiceLane; segment.VoiceLabel = VoiceLabel;
         }
     }
 }
@@ -181,16 +184,77 @@ public sealed class EditSegmentTreeCommand : IEditorCommand
     }
 
     private sealed record SegmentState(TimeSpan Start, TimeSpan End, string Text, SegmentOrigin Origin,
-        bool Adjusted, bool Reviewed, bool RequiresReview, int? HoldAfterMilliseconds, StageLineEffect StageEffect)
+        bool Adjusted, bool Reviewed, bool RequiresReview, int? HoldAfterMilliseconds,
+        StageLineEffect StageEffect, Guid? ParentId, int VoiceLane, string? VoiceLabel)
     {
         public static SegmentState Capture(LyricSegment segment) => new(segment.Start, segment.End, segment.Text,
             segment.Origin, segment.IsManuallyAdjusted, segment.IsReviewed, segment.RequiresReview,
-            segment.HoldAfterMilliseconds, segment.StageEffect);
+            segment.HoldAfterMilliseconds, segment.StageEffect, segment.ParentId,
+            segment.VoiceLane, segment.VoiceLabel);
         public void Restore(LyricSegment segment)
         {
             segment.Start = Start; segment.End = End; segment.Text = Text; segment.Origin = Origin;
             segment.IsManuallyAdjusted = Adjusted; segment.IsReviewed = Reviewed; segment.RequiresReview = RequiresReview;
             segment.HoldAfterMilliseconds = HoldAfterMilliseconds; segment.StageEffect = StageEffect;
+            segment.ParentId = ParentId; segment.VoiceLane = VoiceLane; segment.VoiceLabel = VoiceLabel;
+        }
+    }
+}
+
+/// <summary>
+/// Atomic snapshot for edits that can reparent words and add/remove lyric
+/// lines. Object identities of the original hierarchy survive Undo/Redo, so
+/// timeline selections and tracked loops remain valid.
+/// </summary>
+public sealed class EditLyricsStructureCommand : IEditorCommand
+{
+    private readonly LyricsEditorDocument _document;
+    private readonly Action _edit;
+    private readonly LyricSegment[] _lines;
+    private readonly Dictionary<LyricSegment, LyricSegment[]> _children;
+    private readonly Dictionary<LyricSegment, StructureState> _states;
+
+    public EditLyricsStructureCommand(LyricsEditorDocument document, string description, Action edit)
+    {
+        _document = document;
+        Description = description;
+        _edit = edit;
+        _lines = document.Lines.ToArray();
+        var segments = document.Segments.ToArray();
+        _children = segments.ToDictionary(segment => segment, segment => segment.Children.ToArray());
+        _states = segments.ToDictionary(segment => segment, StructureState.Capture);
+    }
+
+    public string Description { get; }
+    public void Execute() => _edit();
+    public void Undo()
+    {
+        _document.Lines.Clear();
+        _document.Lines.AddRange(_lines);
+        foreach (var (segment, state) in _states) state.Restore(segment);
+        foreach (var (segment, children) in _children)
+        {
+            segment.Children.Clear();
+            segment.Children.AddRange(children);
+        }
+    }
+
+    private sealed record StructureState(TimeSpan Start, TimeSpan End, string Text,
+        SegmentOrigin Origin, bool Adjusted, bool Reviewed, bool RequiresReview,
+        Guid? ParentId, int VoiceLane, string? VoiceLabel)
+    {
+        public static StructureState Capture(LyricSegment segment) => new(
+            segment.Start, segment.End, segment.Text, segment.Origin,
+            segment.IsManuallyAdjusted, segment.IsReviewed, segment.RequiresReview,
+            segment.ParentId, segment.VoiceLane, segment.VoiceLabel);
+
+        public void Restore(LyricSegment segment)
+        {
+            segment.Start = Start; segment.End = End; segment.Text = Text;
+            segment.Origin = Origin; segment.IsManuallyAdjusted = Adjusted;
+            segment.IsReviewed = Reviewed; segment.RequiresReview = RequiresReview;
+            segment.ParentId = ParentId; segment.VoiceLane = VoiceLane;
+            segment.VoiceLabel = VoiceLabel;
         }
     }
 }

@@ -1,5 +1,6 @@
 using Karaoke.Contracts;
 using Karaoke.Editor.Core;
+using NeonStage.Presentation;
 
 var viewport = new TimelineViewport(100, TimeSpan.FromSeconds(10));
 Assert(viewport.TimeToPixel(TimeSpan.FromSeconds(12)) == 200, "Zeit wird korrekt in Pixel umgerechnet.");
@@ -14,6 +15,35 @@ viewport.ShowWindow(TimeSpan.FromSeconds(7.92), TimeSpan.FromSeconds(30), 1200);
 Assert(viewport.Offset == TimeSpan.FromSeconds(7.92) && viewport.PixelsPerSecond == 40 &&
        viewport.VisibleRange(1200).End == TimeSpan.FromSeconds(37.92),
     "Die initiale Editoransicht beginnt am ersten Vocal und zeigt exakt 30 Sekunden.");
+
+var trackedLoopDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var trackedLoopLine = Segment("Loop me", LyricSegmentType.Line, 10, 13);
+var trackedLoopWord = Segment("Loop", LyricSegmentType.Word, 10.25, 11.1, trackedLoopLine.Id);
+trackedLoopLine.Children.Add(trackedLoopWord);
+trackedLoopDocument.Lines.Add(trackedLoopLine);
+var trackedWordLoop = new TrackedWordLoop();
+Assert(trackedWordLoop.Bind(trackedLoopWord) &&
+       trackedWordLoop.TryGetRange(trackedLoopDocument, out var initialWordLoop) &&
+       initialWordLoop == (TimeSpan.FromSeconds(10.25), TimeSpan.FromSeconds(11.1)),
+    "Ein Wort kann als dynamische Loop-Grenze gebunden werden.");
+trackedLoopWord.Start = TimeSpan.FromSeconds(10.5);
+trackedLoopWord.End = TimeSpan.FromSeconds(11.75);
+Assert(trackedWordLoop.TryGetRange(trackedLoopDocument, out var editedWordLoop) &&
+       editedWordLoop == (trackedLoopWord.Start, trackedLoopWord.End),
+    "Die Loop-Grenze folgt dem Verschieben und Skalieren des gebundenen Wortes.");
+var replacementWord = new LyricSegment
+{
+    Id = trackedLoopWord.Id, ParentId = trackedLoopLine.Id, Type = LyricSegmentType.Word, Text = "Loop",
+    Start = TimeSpan.FromSeconds(10.75), End = TimeSpan.FromSeconds(12),
+    OriginalStart = TimeSpan.FromSeconds(10.75), OriginalEnd = TimeSpan.FromSeconds(12), OriginalText = "Loop"
+};
+trackedLoopLine.Children[0] = replacementWord;
+Assert(trackedWordLoop.TryGetRange(trackedLoopDocument, out var replacedWordLoop) &&
+       replacedWordLoop == (replacementWord.Start, replacementWord.End),
+    "Die Loop-Bindung bleibt auch nach einem Dokument-Snapshot anhand der Wort-ID erhalten.");
+trackedLoopLine.Children.Clear();
+Assert(!trackedWordLoop.TryGetRange(trackedLoopDocument, out _) && !trackedWordLoop.IsBound,
+    "Beim Löschen des gebundenen Wortes wird die dynamische Loop-Bindung aufgehoben.");
 
 var parent = Segment("Wort", LyricSegmentType.Word, 1, 3);
 var left = Segment("Sil", LyricSegmentType.Syllable, 1, 2, parent.Id);
@@ -32,6 +62,23 @@ history.Execute(new SetReviewStateCommand(left, true));
 Assert(left.IsReviewed && !left.RequiresReview, "Ein Segment kann nachvollziehbar als geprüft markiert werden.");
 history.Undo();
 Assert(!left.IsReviewed && left.RequiresReview, "Der Prüfstatus ist vollständig rückgängig machbar.");
+
+var markerSource = new LyricsDto(Guid.NewGuid(),
+[
+    new(TimeSpan.FromSeconds(10), "Verse 1", TimeSpan.FromSeconds(12), 0,
+        [new(TimeSpan.FromSeconds(10), "Verse", TimeSpan.FromSeconds(11), 0)]),
+    new(TimeSpan.FromSeconds(12), "Das ist echter Text", TimeSpan.FromSeconds(15), 1)
+]);
+var markerDocument = LyricsDocumentImporter.Import(markerSource);
+Assert(markerDocument.Lines[0].Text == string.Empty && markerDocument.Lines[0].Children.Count == 0 &&
+       markerDocument.Lines[1].Text == "Das ist echter Text",
+    "Strukturmarker werden als unsichtbare Zeitgrenze statt als singbarer Text importiert.");
+var legacyMarker = Segment("[Refrain]", LyricSegmentType.Line, 20, 21);
+legacyMarker.Children.Add(Segment("Refrain", LyricSegmentType.Word, 20, 21, legacyMarker.Id));
+markerDocument.Lines.Add(legacyMarker);
+Assert(LyricsDocumentImporter.IgnoreStructureMarkers(markerDocument) == 1 &&
+       legacyMarker.Text == string.Empty && legacyMarker.Children.Count == 0,
+    "Bereits gespeicherte Review-Dokumente werden beim Laden von Strukturmarkern bereinigt.");
 
 var scalableWord = Segment("Hallo", LyricSegmentType.Word, 10, 12);
 var firstSyllable = Segment("Hal", LyricSegmentType.Syllable, 10, 11, scalableWord.Id);
@@ -97,6 +144,37 @@ catch (InvalidOperationException)
     Console.WriteLine("OK: Ein globaler Versatz darf keine Lyrics vor den Songanfang schieben.");
 }
 
+var transformFirstLine = Segment("Erste Zeile", LyricSegmentType.Line, 4, 6);
+var transformFirstWord = Segment("Erste", LyricSegmentType.Word, 4.5, 5.5, transformFirstLine.Id);
+var transformFirstSyllable = Segment("Erste", LyricSegmentType.Syllable, 4.5, 5.5, transformFirstWord.Id);
+transformFirstWord.Children.Add(transformFirstSyllable);
+transformFirstLine.Children.Add(transformFirstWord);
+var transformSecondLine = Segment("Zweite Zeile", LyricSegmentType.Line, 8, 10);
+var transformSecondWord = Segment("Zweite", LyricSegmentType.Word, 8.5, 9.5, transformSecondLine.Id);
+transformSecondLine.Children.Add(transformSecondWord);
+var transformDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+transformDocument.Lines.AddRange([transformFirstLine, transformSecondLine]);
+Assert(TimelineEditing.ShiftSelection(transformDocument, transformDocument.Lines,
+           TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(30)) == 2 &&
+       transformFirstLine.Start == TimeSpan.FromSeconds(5) &&
+       transformFirstSyllable.Start == TimeSpan.FromSeconds(5.5) &&
+       transformSecondLine.End == TimeSpan.FromSeconds(11),
+    "Eine Mehrfachauswahl wird mit allen Unterelementen um einen gemeinsamen Offset verschoben.");
+Assert(TimelineEditing.ScaleSelection(transformDocument, transformDocument.Lines, 0.5,
+           SelectionScaleAnchor.Start, TimeSpan.FromSeconds(30)) == 2 &&
+       transformFirstLine.Start == TimeSpan.FromSeconds(5) &&
+       transformFirstWord.Start == TimeSpan.FromSeconds(5.25) &&
+       transformSecondLine.Start == TimeSpan.FromSeconds(7) &&
+       transformSecondLine.End == TimeSpan.FromSeconds(8),
+    "Mehrere Zeilen, Abstände, Wörter und Silben werden gemeinsam proportional um den festen Anfang skaliert.");
+var centeredStart = transformFirstLine.Start;
+var centeredEnd = transformSecondLine.End;
+TimelineEditing.ScaleSelection(transformDocument, transformDocument.Lines, 2,
+    SelectionScaleAnchor.Center, TimeSpan.FromSeconds(30));
+Assert(transformFirstLine.Start == centeredStart - TimeSpan.FromSeconds(1.5) &&
+       transformSecondLine.End == centeredEnd + TimeSpan.FromSeconds(1.5),
+    "Beim Skalieren um die Mitte bleibt der Mittelpunkt der Auswahl fest.");
+
 var syncDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
 var syncLine = Segment("Wir singen heute", LyricSegmentType.Line, 20, 26);
 var syncFirstWord = Segment("Wir", LyricSegmentType.Word, 20, 21, syncLine.Id);
@@ -160,6 +238,52 @@ Assert(syncHistory.Undo() && coarseLine.Start == TimeSpan.FromSeconds(30) && coa
     "Das Synchronisieren eines Textbereichs ist als ein atomarer Schritt rückgängig machbar.");
 Assert(syncHistory.Redo() && coarseLine.Start == TimeSpan.FromSeconds(35) && coarseWord.Start == TimeSpan.FromSeconds(36),
     "Das Synchronisieren eines Textbereichs ist vollständig wiederholbar.");
+
+var acousticDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var acousticLine = Segment("hello world", LyricSegmentType.Line, 0, 6);
+var acousticFirstWord = Segment("hello", LyricSegmentType.Word, 1, 2, acousticLine.Id);
+var acousticSecondWord = Segment("world", LyricSegmentType.Word, 2, 3, acousticLine.Id);
+acousticFirstWord.Children.AddRange([
+    Segment("hel", LyricSegmentType.Syllable, 1, 1.55, acousticFirstWord.Id),
+    Segment("lo", LyricSegmentType.Syllable, 1.55, 2, acousticFirstWord.Id)
+]);
+acousticSecondWord.Children.AddRange([
+    Segment("wor", LyricSegmentType.Syllable, 2, 2.55, acousticSecondWord.Id),
+    Segment("ld", LyricSegmentType.Syllable, 2.55, 3, acousticSecondWord.Id)
+]);
+acousticLine.Children.AddRange([acousticFirstWord, acousticSecondWord]);
+acousticDocument.Lines.Add(acousticLine);
+var acousticSamples = new float[6000];
+Array.Fill(acousticSamples, .7f, 1000, 1350);
+Array.Fill(acousticSamples, .65f, 2650, 2350);
+var acousticWaveform = WaveformPyramid.Create(acousticSamples, 1000, 1);
+var acousticResult = TimelineEditing.FitSelectionToWaveformRange(acousticDocument,
+    [acousticFirstWord, acousticSecondWord], TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), acousticWaveform);
+Assert(acousticResult.UsedWaveform && acousticResult.AcousticBoundaries >= 1,
+    "Synchronisieren nutzt deutliche Aktivitätsübergänge der Vocal-Waveform.");
+Assert(acousticFirstWord.End < TimeSpan.FromSeconds(2.85) &&
+       acousticSecondWord.Start < TimeSpan.FromSeconds(2.85) &&
+       acousticSecondWord.Start >= acousticFirstWord.End,
+    "Die Wortgrenze wird vom rein proportionalen Mittelpunkt in das akustische Tal verschoben.");
+Assert(acousticFirstWord.Children.All(syllable => syllable.Start >= acousticFirstWord.Start &&
+       syllable.End <= acousticFirstWord.End) &&
+       acousticSecondWord.Children.All(syllable => syllable.Start >= acousticSecondWord.Start &&
+       syllable.End <= acousticSecondWord.End),
+    "Silben bleiben nach der akustischen Wortanpassung vollständig in ihrem Wort.");
+
+var flatDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var flatLine = Segment("flat signal", LyricSegmentType.Line, 0, 6);
+var flatFirst = Segment("flat", LyricSegmentType.Word, 1, 2, flatLine.Id);
+var flatSecond = Segment("signal", LyricSegmentType.Word, 2, 3, flatLine.Id);
+flatLine.Children.AddRange([flatFirst, flatSecond]);
+flatDocument.Lines.Add(flatLine);
+var flatSamples = Enumerable.Repeat(.4f, 6000).ToArray();
+var flatResult = TimelineEditing.FitSelectionToWaveformRange(flatDocument,
+    [flatFirst, flatSecond], TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5),
+    WaveformPyramid.Create(flatSamples, 1000, 1));
+Assert(!flatResult.UsedWaveform && flatFirst.End == TimeSpan.FromSeconds(3) &&
+       flatSecond.Start == TimeSpan.FromSeconds(3),
+    "Ohne eindeutige Waveform-Dynamik bleibt die sichere proportionale Einpassung erhalten.");
 
 var clipboardLine = Segment("Hallo Welt", LyricSegmentType.Line, 50, 54);
 clipboardLine.StageEffect = StageLineEffect.EmberBurst;
@@ -249,12 +373,46 @@ Assert(earlierLine.End == laterLine.Start && TimelineEditing.ValidateLineSequenc
 laterLine.Start = earlierLine.End - TimeSpan.FromMilliseconds(20);
 Assert(TimelineEditing.ValidateLineSequence(lineSequence).Count == 1,
     "Eine vorhandene Zeilenüberschneidung wird als nicht speicherbarer Konflikt erkannt.");
+laterLine.VoiceLane = 1;
+Assert(TimelineEditing.ValidateLineSequence(lineSequence).Count == 0,
+    "Zeitgleicher Gesang ist in einer unabhängigen zweiten Gesangsspur zulässig.");
+laterLine.VoiceLane = 0;
 laterLine.Start = earlierLine.End;
 var overflowingWord = Segment("Ausklang", LyricSegmentType.Word, 2.8, 4.2, earlierLine.Id);
 earlierLine.Children.Add(overflowingWord);
 Assert(TimelineEditing.ValidateLineSequence(lineSequence).Count == 1,
     "Auch ein Wort außerhalb des Zeilenrahmens darf nicht in die nächste Zeile ragen.");
 earlierLine.Children.Clear();
+
+var voiceMoveDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var voiceMoveLine = Segment("Eins Zwei Drei", LyricSegmentType.Line, 10, 13);
+var voiceMoveOne = Segment("Eins", LyricSegmentType.Word, 10, 11, voiceMoveLine.Id);
+var voiceMoveTwo = Segment("Zwei", LyricSegmentType.Word, 11, 12, voiceMoveLine.Id);
+var voiceMoveThree = Segment("Drei", LyricSegmentType.Word, 12, 13, voiceMoveLine.Id);
+voiceMoveLine.Children.AddRange([voiceMoveOne, voiceMoveTwo, voiceMoveThree]);
+voiceMoveDocument.Lines.Add(voiceMoveLine);
+var movedVoiceWords = Array.Empty<LyricSegment>();
+var voiceMoveHistory = new CommandHistory();
+voiceMoveHistory.Execute(new EditLyricsStructureCommand(voiceMoveDocument,
+    "Wort zur anderen Stimme", () => movedVoiceWords =
+        TimelineEditing.MoveToOtherVoice(voiceMoveDocument, [voiceMoveTwo]).ToArray()));
+var backingLine = voiceMoveDocument.Lines.Single(line => line.VoiceLane == 1);
+Assert(backingLine.Text == "Zwei" && backingLine.Children.Single() == voiceMoveTwo &&
+       voiceMoveTwo.ParentId == backingLine.Id && voiceMoveLine.Text == "Eins Drei",
+    "Ein Wort wird als echte Hierarchie in die zweite Gesangsspur verschoben.");
+Assert(voiceMoveHistory.Undo() && voiceMoveDocument.Lines.Count == 1 &&
+       voiceMoveLine.Children.SequenceEqual([voiceMoveOne, voiceMoveTwo, voiceMoveThree]) &&
+       voiceMoveTwo.ParentId == voiceMoveLine.Id,
+    "Das Verschieben eines Wortes zur anderen Stimme ist vollständig rückgängig machbar.");
+Assert(voiceMoveHistory.Redo() && voiceMoveDocument.Lines.Count == 2 &&
+       voiceMoveDocument.Lines.Single(line => line.VoiceLane == 1).Children.Contains(voiceMoveTwo),
+    "Das Verschieben eines Wortes zur anderen Stimme kann wiederholt werden.");
+var wholeVoiceDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var movedBackingLine = Segment("Komplette Stimme", LyricSegmentType.Line, 20, 22);
+wholeVoiceDocument.Lines.Add(movedBackingLine);
+TimelineEditing.MoveToOtherVoice(wholeVoiceDocument, [movedBackingLine]);
+Assert(movedBackingLine.VoiceLane == 1,
+    "Eine vollständige Zeile kann zwischen Stimme 1 und Stimme 2 umgeschaltet werden.");
 
 var songId = Guid.NewGuid();
 var dto = new LyricsDto(songId, [new LyricsLineDto(TimeSpan.FromSeconds(1), "Hallo", TimeSpan.FromSeconds(2), 0,
@@ -264,6 +422,16 @@ var dto = new LyricsDto(songId, [new LyricsLineDto(TimeSpan.FromSeconds(1), "Hal
 var imported = LyricsDocumentImporter.Import(dto, "run-1", "model-1");
 Assert(imported.Lines[0].Children[0].Children.Count == 2, "KI-Hierarchie wird vollständig importiert.");
 Assert(imported.Segments.All(segment => segment.OriginalStart == segment.Start), "KI-Originalzeiten bleiben erhalten.");
+var voiceDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var voiceLine = Segment("Woho", LyricSegmentType.Line, 10, 12);
+voiceLine.VoiceLane = 1;
+voiceLine.VoiceLabel = "Zweite Stimme";
+voiceLine.Children.Add(Segment("Woho", LyricSegmentType.Word, 10, 12, voiceLine.Id));
+voiceDocument.Lines.Add(voiceLine);
+var voiceLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(voiceDocument);
+Assert(voiceLrc.Contains("[neon-voice:1:", StringComparison.Ordinal) &&
+       voiceLrc.Contains("<00:10.000,00:12.000>Woho", StringComparison.Ordinal),
+    "Mehrstimmen-Metadaten werden verlustfrei in Enhanced LRC exportiert.");
 Assert(TimelineEditing.ValidateHierarchy(imported).Count == 0, "Importierte Hierarchie ist gültig.");
 var stagePreview = new StageLyricsPreview(imported);
 var beforeEntry = stagePreview.Evaluate(TimeSpan.FromMilliseconds(500));
@@ -283,14 +451,112 @@ var insertedPreview = new StageLyricsPreview(imported).Evaluate(TimeSpan.FromSec
 Assert(insertedPreview.Lines[0].Text == "Hallo toys" && insertedPreview.Lines[0].Progress is > .7 and < .9,
     "Ein eingefügtes Wort erscheint sofort in Text und fortlaufender Karaoke-Markierung.");
 
-var holdDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
-var heldLine = Segment("Erste Zeile", LyricSegmentType.Line, 1, 2);
-heldLine.HoldAfterMilliseconds = 200;
-holdDocument.Lines.Add(heldLine);
-holdDocument.Lines.Add(Segment("Zweite Zeile", LyricSegmentType.Line, 2.3, 3.2));
-var heldFrame = new StageLyricsPreview(holdDocument).Evaluate(TimeSpan.FromSeconds(2.25));
-Assert(heldFrame.Lines.Count == 1 && heldFrame.Lines[0].Text == "Zweite Zeile",
-    "Eine manuelle Haltezeit beendet den Absatz an der konfigurierten Zeile.");
+var presentationWindowLines = new[]
+{
+    new StagePresentationLine(1, 2, "Erste Zeile",
+        [new StagePresentationWord(1, 2, "Erste Zeile", [], .9)], null, "Automatic", 0, "Lead"),
+    new StagePresentationLine(5, 6, "Zweite Zeile",
+        [new StagePresentationWord(5, 6, "Zweite Zeile", [], .9)], null, "Automatic", 0, "Lead")
+};
+var automaticWindow = new StagePresentationEngine(presentationWindowLines);
+Assert(automaticWindow.Evaluate(2.4).Lines[0].Text == "Erste Zeile" &&
+       automaticWindow.Evaluate(2.4).Alpha > 0 && automaticWindow.Evaluate(2.9).Alpha == 0,
+    "Nach dem letzten Wort bleibt eine Zeile für die Wahrnehmungszeit stehen und blendet danach aus.");
+Assert(automaticWindow.Evaluate(3.4).Lines[0].Text == "Zweite Zeile" &&
+       automaticWindow.Evaluate(3.4).Alpha is > 0 and < 1,
+    "Die nächste Zeile wird automatisch vor ihrem ersten Wort eingeblendet.");
+var extendedWindow = new StagePresentationEngine(
+[
+    new StagePresentationLine(1, 3.1, "Erste Zeile",
+        [new StagePresentationWord(1, 2, "Erste Zeile", [], .9)], null, "Automatic", 0, "Lead"),
+    presentationWindowLines[1]
+]);
+Assert(extendedWindow.Evaluate(2.8).Alpha > 0,
+    "Ein nach rechts verlängerter Zeilenbalken übersteuert den automatischen Nachlauf.");
+var earlyWindow = new StagePresentationEngine(
+[
+    presentationWindowLines[0],
+    new StagePresentationLine(3, 6, "Zweite Zeile",
+        [new StagePresentationWord(5, 6, "Zweite Zeile", [], .9)], null, "Automatic", 0, "Lead")
+]);
+Assert(earlyWindow.Evaluate(3.05).Lines[0].Text == "Zweite Zeile",
+    "Ein nach links verlängerter Zeilenbalken blendet die nächste Zeile entsprechend früher ein.");
+var protectedPageBreak = new StagePresentationEngine(
+[
+    new StagePresentationLine(0, 1, "Erste laufende Zeile",
+        [new StagePresentationWord(0, 1, "Erste laufende Zeile", [], .9)], null, "Automatic", 0, "Lead"),
+    new StagePresentationLine(1, 2, "Zweite laufende Zeile",
+        [new StagePresentationWord(1, 2, "Zweite laufende Zeile", [], .9)], null, "Automatic", 0, "Lead"),
+    new StagePresentationLine(2, 3, "Gefährdete Schlusszeile",
+        [new StagePresentationWord(2, 3, "Gefährdete Schlusszeile", [], .9)], null, "Automatic", 0, "Lead"),
+    new StagePresentationLine(3.05, 4, "Erste Zeile der Folgeseite",
+        [new StagePresentationWord(3.05, 4, "Erste Zeile der Folgeseite", [], .9)], null, "Automatic", 0, "Lead")
+]);
+Assert(protectedPageBreak.Evaluate(1.9).Lines.Any(line => line.Text == "Zweite laufende Zeile"),
+    "Der Vorlauf einer Folgeseite darf die noch gesungene aktuelle Seite niemals abschneiden.");
+var carriedPage = protectedPageBreak.Evaluate(2.1);
+Assert(carriedPage.Lines.Any(line => line.Text == "Gefährdete Schlusszeile") &&
+       carriedPage.Lines.Any(line => line.Text == "Erste Zeile der Folgeseite"),
+    "Eine gefährdete Schlusszeile wird bei ausreichendem Platz auf die Folgeseite umgehängt.");
+
+var sharedPresentation = new StagePresentationEngine(
+[
+    new StagePresentationLine(1, 3, "Hallo Welt",
+    [
+        new StagePresentationWord(1, 2, "Hallo",
+        [
+            new StagePresentationSyllable(1, 1.5, "Hal", .9),
+            new StagePresentationSyllable(1.5, 2, "lo", .9)
+        ], .9),
+        new StagePresentationWord(2.2, 3, "Welt", [], .9)
+    ], null, "Pulse", 0, "Lead"),
+    new StagePresentationLine(1.5, 2.7, "Zweite Stimme",
+    [
+        new StagePresentationWord(1.5, 2, "Zweite", [], .8),
+        new StagePresentationWord(2.1, 2.7, "Stimme", [], .8)
+    ], null, "Automatic", 1, "Backing"),
+    new StagePresentationLine(5, 6, "Nach der Pause", [], .25, "Automatic", 0, "Lead"),
+    new StagePresentationLine(6.4, 7, "Danach", [], null, "Automatic", 0, "Lead")
+]);
+var sharedCue = sharedPresentation.Evaluate(0);
+Assert(sharedCue.ShowEntryCue && sharedCue.ShowEntryCountdown &&
+       Math.Abs(sharedCue.EntryCueRemainingSeconds - 1) < .001,
+    "Editor und Unity erhalten denselben gemeinsamen Einsatz- und Countdown-Zustand.");
+var perceptualPresentation = new StagePresentationEngine(
+[
+    new StagePresentationLine(1, 2, "Einsatz", [new StagePresentationWord(1, 2, "Einsatz", [], .9)],
+        null, "Automatic", 0, "Lead")
+], StagePresentationEngine.PerceptualHighlightLeadSeconds);
+var exactPresentation = new StagePresentationEngine(
+[
+    new StagePresentationLine(1, 2, "Einsatz", [new StagePresentationWord(1, 2, "Einsatz", [], .9)],
+        null, "Automatic", 0, "Lead")
+]);
+var karaokePresentation = new StagePresentationEngine(
+[
+    new StagePresentationLine(1, 2, "Einsatz", [new StagePresentationWord(1, 2, "Einsatz", [], .9)],
+        null, "Automatic", 0, "Lead")
+], StagePresentationEngine.PerceptualHighlightLeadSeconds, karaokeTimingEnabled: true);
+Assert(exactPresentation.Evaluate(.96).Lines[0].Progress == 0 &&
+       perceptualPresentation.Evaluate(.96).Lines[0].Progress > 0 &&
+       perceptualPresentation.Evaluate(.96).ShowEntryCue == exactPresentation.Evaluate(.96).ShowEntryCue,
+    "Der Wahrnehmungs-Vorlauf verschiebt nur die sichtbare Wortfüllung, nicht Einsatzsignal oder Lyrics-Timing.");
+Assert(exactPresentation.Evaluate(.86).Lines[0].Progress == 0 &&
+       perceptualPresentation.Evaluate(.86).Lines[0].Progress == 0 &&
+       karaokePresentation.Evaluate(.86).Lines[0].Progress > 0 &&
+       karaokePresentation.Evaluate(.86).ShowEntryCue == exactPresentation.Evaluate(.86).ShowEntryCue,
+    "Das adaptive Karaoke-Timing bereitet einen Phraseneinsatz früher vor, ohne Einsatzsignal oder kanonische Zeit zu verschieben.");
+var sharedDuet = sharedPresentation.Evaluate(1.75);
+Assert(sharedDuet.Lines.Count == 2 && sharedDuet.Lines[0].VoiceLane == 0 &&
+       sharedDuet.Lines[1].VoiceLane == 1 && sharedDuet.Lines[0].StageEffect == "Pulse",
+    "Die gemeinsame Engine erhält parallele Stimmen und Stage-Effekte im selben Frame.");
+var sharedFrameBeforeSeek = sharedPresentation.Evaluate(2.35);
+_ = sharedPresentation.Evaluate(6.7);
+var sharedFrameAfterSeek = sharedPresentation.Evaluate(2.35);
+Assert(sharedFrameBeforeSeek.PageIndex == sharedFrameAfterSeek.PageIndex &&
+       sharedFrameBeforeSeek.Lines.Count == sharedFrameAfterSeek.Lines.Count &&
+       Math.Abs(sharedFrameBeforeSeek.Lines[0].Progress - sharedFrameAfterSeek.Lines[0].Progress) < .000001,
+    "Die gemeinsame Stage-Timeline ist zustandslos und liefert nach beliebigem Seek denselben Frame.");
 
 var samples = Enumerable.Range(0, 32768).Select(index => (float)Math.Sin(index / 20d)).ToArray();
 var waveform = WaveformPyramid.Create(samples, 8000, 8);
@@ -302,6 +568,10 @@ const string relativeUltraStar = """
 #TITLE:Timing Demo
 #ARTIST:Example Artist
 #MP3:demo.mp3
+#YEAR:2024
+#LANGUAGE:English
+#CREATOR:Test Author
+#EDITION:Studio
 #RELATIVE:yes
 #BPM:120,0
 #GAP:1000
@@ -318,20 +588,73 @@ Assert(UltraStarLyricsImporter.LooksLikeUltraStar("#BPM:120\n: invalid"),
     "Auch ein beschädigtes UltraStar-Dokument wird erkannt, damit es nicht als Plaintext importiert wird.");
 var ultraStar = UltraStarLyricsImporter.Parse(relativeUltraStar);
 Assert(ultraStar.Metadata is { Title: "Timing Demo", Artist: "Example Artist", Relative: true } &&
+       ultraStar.Metadata is { Year: "2024", Language: "English", Creator: "Test Author", Edition: "Studio" } &&
        ultraStar.Metadata.Bpm == 120 && ultraStar.Metadata.GapMilliseconds == 1000,
-    "UltraStar-Metadaten, Dezimalkomma, GAP und RELATIVE werden übernommen.");
+    "UltraStar-Metadaten, Versionseigenschaften, Dezimalkomma, GAP und RELATIVE werden übernommen.");
 Assert(ultraStar.Lines.Count == 2 && ultraStar.Lines[0].Start == TimeSpan.FromSeconds(1) &&
        ultraStar.Lines[1].Start == TimeSpan.FromSeconds(2),
     "Relative UltraStar-Beats werden mit der offiziellen Viertelbeat-Zeitbasis umgerechnet.");
+var declaredEndImport = UltraStarLyricsImporter.Parse(relativeUltraStar.Replace(
+    "#GAP:1000", "#GAP:1000\n#END:123456", StringComparison.Ordinal));
+Assert(declaredEndImport.Metadata.DeclaredEndMilliseconds == 123456,
+    "Die deklarierte UltraStar-Medienlänge #END bleibt für den Aufnahmevergleich erhalten.");
 Assert(ultraStar.Lines[0].Words is [{ Text: "Hello", Syllables.Count: 2 }] &&
        ultraStar.Lines[1].Words is [{ Text: "New" }, { Text: "line" }],
     "UltraStar-Noten werden anhand ihrer Leerzeichen zu Wörtern und Silben zusammengesetzt.");
+
+const string longUltraStarTiming = "#BPM:123.456\n#GAP:321.5\n: 0 1 60 start\n- 1\n: 987654 1 60 end\nE";
+var longTimingImport = UltraStarLyricsImporter.Parse(longUltraStarTiming);
+var expectedLongTiming = TimeSpan.FromMilliseconds(321.5 + 987654 * 15_000d / 123.456);
+Assert(longTimingImport.Lines[1].Start == expectedLongTiming,
+    "UltraStar-Beats werden auch weit hinten absolut berechnet; es entsteht keine kumulative Rundungsdrift.");
+
+const string ultraStarMelisma = """
+#TITLE:Melisma Test
+#ARTIST:Example
+#BPM:120
+#GAP:0
+: 0 2 60 hea
+: 2 2 62 ~rts
+: 4 2 64 ~
+: 6 2 64  beat
+: 8 2 65  fi~
+: 10 4 67 ~re
+- 14
+E
+""";
+var melismaImport = UltraStarLyricsImporter.Parse(ultraStarMelisma);
+var melismaWords = melismaImport.Lines.Single().Words!;
+Assert(melismaWords.Select(word => word.Text).SequenceEqual(["hearts", "beat", "fire"]) &&
+       melismaWords.SelectMany(word => word.Syllables!).All(syllable => !syllable.Text.Contains('~')),
+    "UltraStar-Melismazeichen erscheinen weder als Wort noch als sichtbare Silbe.");
+Assert(melismaWords[0].Syllables!.Count == 1 && melismaWords[0].Syllables![0].Text == "hearts" &&
+       melismaWords[0].Start == TimeSpan.Zero && melismaWords[0].End == TimeSpan.FromMilliseconds(750) &&
+       melismaWords[2].Syllables!.Count == 1 && melismaWords[2].Text == "fire",
+    "Alleinstehende und texttragende Tilden verlängern dieselbe Silbe über ihre zusätzlichen Noten.");
 var ultraStarDocument = ultraStar.ToEditorDocument(Guid.NewGuid());
 Assert(ultraStarDocument.Segments.All(segment => segment.Origin == SegmentOrigin.ImportedFromUltraStar) &&
+       ultraStarDocument.UsesUltraStarTiming &&
+       ReferenceEquals(KaraokeTimingProjection.Create(ultraStarDocument, [1, 1.5, 2]), ultraStarDocument) &&
        TimelineEditing.ValidateLineSequence(ultraStarDocument).Count == 0,
     "Der Editor erhält eine vollständige, kollisionsfreie UltraStar-Hierarchie mit nachvollziehbarer Herkunft.");
+var beatProjectionDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
+var beatProjectionLine = Segment("Beat Test", LyricSegmentType.Line, 1.08, 1.9);
+beatProjectionLine.Children.Add(Segment("Beat", LyricSegmentType.Word, 1.08, 1.42, beatProjectionLine.Id));
+beatProjectionLine.Children.Add(Segment("Test", LyricSegmentType.Word, 1.53, 1.9, beatProjectionLine.Id));
+beatProjectionDocument.Lines.Add(beatProjectionLine);
+var karaokeProjection = KaraokeTimingProjection.Create(beatProjectionDocument, [1, 1.5, 2]);
+Assert(karaokeProjection.Lines[0].Children[0].Start == TimeSpan.FromSeconds(1.125) &&
+       beatProjectionDocument.Lines[0].Children[0].Start == TimeSpan.FromSeconds(1.08),
+    "Die Karaoke-Vorschau quantisiert plausible Grenzen auf musikalische Unterteilungen, ohne den Arbeitsstand zu verändern.");
+beatProjectionDocument.Lines[0].Children[0].KaraokeTimingLocked = true;
+var lockedKaraokeProjection = KaraokeTimingProjection.Create(beatProjectionDocument, [1, 1.5, 2]);
+Assert(lockedKaraokeProjection.Lines[0].Children[0].Start == TimeSpan.FromSeconds(1.08) &&
+       lockedKaraokeProjection.Lines[0].Children[0].End == TimeSpan.FromSeconds(1.42),
+    "Eine im Beat-Modus editierte Wortgrenze bleibt bei späteren Vorschauen exakt erhalten.");
 Assert(ultraStar.ToEnhancedLrc().Contains("<00:01.000,00:01.500>Hello", StringComparison.Ordinal),
     "Der Server kann UltraStar-Timing verlustarm als Enhanced LRC an die Pipeline übergeben.");
+Assert(ultraStar.ToEnhancedLrc().Contains("[neon-editor-syllables:", StringComparison.Ordinal),
+    "UltraStar-Noten bleiben als starke Silbenreferenzen für den nachgelagerten Aligner erhalten.");
 
 var exportedEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditorDocument
 {
@@ -354,6 +677,59 @@ var exportedEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditor
 });
 Assert(exportedEditorLrc == "[01:01.250]<01:01.250,01:01.800>Sing <01:02.100,01:03.000>loud" + Environment.NewLine,
     "Editor revisions should export their exact word windows as enhanced LRC");
+var manualEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditorDocument
+{
+    SongId = Guid.NewGuid(),
+    Lines =
+    [
+        new LyricSegment
+        {
+            Id = Guid.NewGuid(), Type = LyricSegmentType.Line,
+            Start = TimeSpan.FromSeconds(10), End = TimeSpan.FromSeconds(12), Text = "Keep timing",
+            IsManuallyAdjusted = true
+        }
+    ]
+});
+Assert(manualEditorLrc.StartsWith("[neon-manual:10.0000000,12.0000000]" + Environment.NewLine,
+        StringComparison.Ordinal),
+    "Manually adjusted editor lines carry an immutable timing range into realignment");
+var manualSyllableLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditorDocument
+{
+    SongId = Guid.NewGuid(),
+    Lines =
+    [
+        new LyricSegment
+        {
+            Id = Guid.NewGuid(), Type = LyricSegmentType.Line,
+            Start = TimeSpan.FromSeconds(20), End = TimeSpan.FromSeconds(21), Text = "Träume",
+            Children =
+            [
+                new LyricSegment
+                {
+                    Id = Guid.NewGuid(), Type = LyricSegmentType.Word,
+                    Start = TimeSpan.FromSeconds(20), End = TimeSpan.FromSeconds(21), Text = "Träume",
+                    Children =
+                    [
+                        new LyricSegment { Id = Guid.NewGuid(), Type = LyricSegmentType.Syllable,
+                            Start = TimeSpan.FromSeconds(20), End = TimeSpan.FromSeconds(20.61),
+                            Text = "Träu", IsManuallyAdjusted = true },
+                        new LyricSegment { Id = Guid.NewGuid(), Type = LyricSegmentType.Syllable,
+                            Start = TimeSpan.FromSeconds(20.61), End = TimeSpan.FromSeconds(21),
+                            Text = "me", IsManuallyAdjusted = true }
+                    ]
+                }
+            ]
+        }
+    ]
+});
+Assert(manualSyllableLrc.StartsWith("[neon-manual:20.0000000,21.0000000]" + Environment.NewLine,
+        StringComparison.Ordinal) &&
+       manualSyllableLrc.Contains("[neon-editor-syllables:", StringComparison.Ordinal) &&
+       manualSyllableLrc.IndexOf("[neon-editor-syllables:", StringComparison.Ordinal) <
+       manualSyllableLrc.IndexOf("[00:20.000]", StringComparison.Ordinal) &&
+       manualSyllableLrc.Contains(Environment.NewLine + "[00:20.000]<00:20.000,00:21.000>Träume",
+           StringComparison.Ordinal),
+    "Manual syllable edits recursively mark their line and are serialized for realignment");
 
 const string absoluteUltraStar = """
 #TITLE:Absolute Demo
@@ -392,6 +768,49 @@ Assert(replaceHistory.Undo() && ReferenceEquals(replacedDocument, ultraStarDocum
     "Das vollständige Ersetzen der Lyrics ist rückgängig machbar.");
 Assert(replaceHistory.Redo() && ReferenceEquals(replacedDocument, replacementDocument),
     "Das vollständige Ersetzen der Lyrics kann wiederholt werden.");
+
+var pitchEvidence = AlignmentPitchEvidence.Parse("""
+{
+  "basic_pitch_evidence": {
+    "pitch_timeline": {
+      "events": [
+        { "start": 1.25, "end": 1.75, "midi": 64, "amplitude": 0.8, "line": 2 },
+        { "start": 2.0, "end": 1.9, "midi": 60, "amplitude": 0.5 }
+      ]
+    }
+  }
+}
+""");
+Assert(pitchEvidence is [{ Midi: 64, Line: 2 }] &&
+       pitchEvidence[0].Start == TimeSpan.FromSeconds(1.25) &&
+       pitchEvidence[0].End == TimeSpan.FromSeconds(1.75),
+    "Die Editor-Pitch-Spur übernimmt nur gültige Basic-Pitch-Noten aus dem technischen Bericht.");
+Assert(AlignmentPitchEvidence.Parse("kein JSON").Count == 0,
+    "Ein beschädigter älterer Alignment-Bericht deaktiviert die Pitch-Spur sicher.");
+var structuredPitch = AlignmentPitchEvidence.Parse("""
+{
+  "basic_pitch_analysis": {
+    "notes": [{
+      "start": 1.1, "end": 1.8, "midi": 67, "confidence": 0.91,
+      "track_id": "basic-pitch", "singer_id": null,
+      "contour": [{ "time": 1.2, "midi": 67.2, "confidence": 0.8 }]
+    }]
+  }
+}
+""");
+Assert(structuredPitch is [{ Midi: 67, SingerId: null, NoteTrackId: "basic-pitch" }] &&
+       structuredPitch[0].Contour is [{ Midi: 67.2 }],
+    "Strukturierte Noten behalten Track, leere Singer-ID und Pitch-Contour.");
+var pitchDocument = new LyricsEditorDocument { SongId = Guid.CreateVersion7() };
+var pitchLine = Segment("line", LyricSegmentType.Line, 1, 2);
+var pitchWord = Segment("word", LyricSegmentType.Word, 1, 2, pitchLine.Id);
+var pitchSyllable = Segment("syllable", LyricSegmentType.Syllable, 1, 2, pitchWord.Id);
+pitchWord.Children.Add(pitchSyllable);
+pitchLine.Children.Add(pitchWord);
+pitchDocument.Lines.Add(pitchLine);
+Assert(AlignmentPitchEvidence.AttachToSyllables(pitchDocument, structuredPitch) == 1 &&
+       pitchSyllable.Notes.Count == 1,
+    "Noten werden über Zeitüberlappung an vorhandene Silben gebunden, ohne Silben zu erzeugen.");
 
 if (args is ["--usdx-corpus", var corpusPath])
 {

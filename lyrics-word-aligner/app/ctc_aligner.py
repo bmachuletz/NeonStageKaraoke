@@ -11,6 +11,14 @@ import numpy as np
 
 HEURISTIC_SOURCES = {"vocal-activity-repair", "anchor-context-vocal-activity",
                      "anchor-tail-vocal-activity", "geometric-repair"}
+# The wav2vec2 feature extractor starts with a kernel of ten samples over a
+# stack of strided convolutions. An empty or near-empty window makes it raise
+# "Calculated padded input size per channel: (0)" instead of returning nothing,
+# and that exception used to abort the whole verification pass.
+MINIMUM_ALIGN_SAMPLES = 400
+# Windows shorter than this cannot carry a phrase. The heuristic pass already
+# used this bound; the section and pair passes now share it.
+MINIMUM_WINDOW_SECONDS = 0.15
 MODEL_BUNDLES = {
     "de": "VOXPOPULI_ASR_BASE_10K_DE",
     "en": "WAV2VEC2_ASR_BASE_960H",
@@ -131,10 +139,16 @@ class CtcPhraseAligner:
             self.torch.cuda.empty_cache()
 
     def align(self, audio, text: str, base_seconds: float) -> list[dict]:
-        torch = self.torch
         words = _clean_words(text, self.dictionary)
         if not words:
             return []
+        # A degenerate line can produce an empty or sub-kernel window. Report
+        # "no alignment" the way every other rejection does instead of letting
+        # the convolution stack raise and take the remaining lines with it.
+        # Both checks precede every model access so they cost nothing.
+        if audio is None or len(audio) < MINIMUM_ALIGN_SAMPLES:
+            return []
+        torch = self.torch
         separator = self.dictionary.get("|")
         target: list[int] = []
         word_ranges: list[tuple[int, int]] = []
@@ -190,6 +204,7 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                 "accepted_lines": 0, "accepted_words": 0}
     aligner = CtcPhraseAligner(language, device)
     attempted = accepted_lines = accepted_words = contextual_pairs = section_passes = 0
+    failed_lines = 0
     diagnostics = []
     section_diagnostics = []
     candidate_ids = {id(line) for line in candidates}
@@ -214,11 +229,20 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
             for candidate_padding in dict.fromkeys((padding, 0.75, 1.2)):
                 start = max(lower, original_start - candidate_padding)
                 end = min(upper, original_end + candidate_padding)
-                if end - start < 0.15:
+                if end - start < MINIMUM_WINDOW_SECONDS:
                     attempts.append({"padding": candidate_padding, "status": "window-too-short"})
                     continue
                 chunk = audio[int(start * 16000):int(end * 16000)]
-                trial = aligner.align(chunk, line.text, start)
+                # One unusable line must never cost the remaining lines their
+                # independent verification.
+                try:
+                    trial = aligner.align(chunk, line.text, start)
+                except (RuntimeError, ValueError) as align_error:
+                    failed_lines += 1
+                    attempts.append({"padding": candidate_padding,
+                                     "status": "align-failed",
+                                     "error": str(align_error)[:200]})
+                    continue
                 if len(trial) != len(line.words):
                     attempts.append({"padding": candidate_padding, "status": "word-count-mismatch",
                                      "aligned_words": len(trial), "expected_words": len(line.words)})
@@ -290,6 +314,8 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                 continue
             start = max(0.0, original_ranges[id(section[0])][0] - 0.75)
             end = min(len(audio) / 16000, original_ranges[id(section[-1])][1] + 0.75)
+            if end - start < MINIMUM_WINDOW_SECONDS:
+                continue
             aligned = aligner.align(audio[int(start * 16000):int(end * 16000)],
                                     " ".join(line.text for line in section), start)
             expected = sum(len(line.words) for line in section)
@@ -390,6 +416,8 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
                 continue
             start = max(0.0, float(previous.words[0]["start"]) - padding)
             end = min(len(audio) / 16000, float(current.words[-1]["end"]) + padding)
+            if end - start < MINIMUM_WINDOW_SECONDS:
+                continue
             chunk = audio[int(start * 16000):int(end * 16000)]
             aligned = aligner.align(chunk, previous.text + " " + current.text, start)
             expected = len(previous.words) + len(current.words)
@@ -413,6 +441,7 @@ def realign_heuristic_lines(audio, lines: list, language: str, device: str,
         aligner.close()
     return {"enabled": True, "model": model, "attempted_lines": attempted,
             "accepted_lines": accepted_lines, "accepted_words": accepted_words,
+            "failed_lines": failed_lines,
             "contextual_boundary_pairs": contextual_pairs,
             "section_alignment_passes": section_passes,
             "minimum_confidence": minimum_confidence,
@@ -451,6 +480,8 @@ def realign_overlapping_line_pairs(audio, lines: list, language: str, device: st
                 continue
             start = max(0.0, float(previous.words[0]["start"]) - padding)
             end = min(duration, float(current.words[-1]["end"]) + padding)
+            if end - start < MINIMUM_WINDOW_SECONDS:
+                continue
             aligned = aligner.align(audio[int(start * 16000):int(end * 16000)],
                                     previous.text + " " + current.text, start)
             expected = len(previous.words) + len(current.words)

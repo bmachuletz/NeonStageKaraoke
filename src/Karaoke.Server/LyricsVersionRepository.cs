@@ -1,4 +1,6 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Karaoke.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -35,8 +37,10 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt,alignmentReportJson FROM lyrics_versions WHERE id=$id AND songId=$song";
         command.Parameters.AddWithValue("$id", versionId.ToString());
         command.Parameters.AddWithValue("$song", songId.ToString());
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+        LyricsVersionDto? version;
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+            version = await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+        return version is null ? null : await ApplyUltraStarHeritageAsync(connection, version, ct);
     }
 
     public async Task<LyricsVersionDto?> GetLatestDraftAsync(Guid songId, CancellationToken ct)
@@ -46,8 +50,10 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         var command = connection.CreateCommand();
         command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt,alignmentReportJson FROM lyrics_versions WHERE songId=$song AND status NOT IN ('Superseded','Rejected','Generated') ORDER BY updatedAt DESC LIMIT 1";
         command.Parameters.AddWithValue("$song", songId.ToString());
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+        LyricsVersionDto? version;
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+            version = await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+        return version is null ? null : await ApplyUltraStarHeritageAsync(connection, version, ct);
     }
 
     public async Task<LyricsVersionDto?> GetRuntimeAsync(Guid songId, CancellationToken ct)
@@ -57,8 +63,55 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         var command = connection.CreateCommand();
         command.CommandText = "SELECT id,songId,revision,status,documentJson,analysisRunId,createdAt,updatedAt,alignmentReportJson FROM lyrics_versions WHERE songId=$song AND status='Published' ORDER BY updatedAt DESC LIMIT 1";
         command.Parameters.AddWithValue("$song", songId.ToString());
-        await using var reader = await command.ExecuteReaderAsync(ct);
-        return await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+        LyricsVersionDto? version;
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+            version = await reader.ReadAsync(ct) ? ReadVersion(reader) : null;
+        return version is null ? null : await ApplyUltraStarHeritageAsync(connection, version, ct);
+    }
+
+    private static async Task<LyricsVersionDto> ApplyUltraStarHeritageAsync(
+        SqliteConnection connection, LyricsVersionDto version, CancellationToken ct)
+    {
+        if (!await ResolveUltraStarHeritageAsync(connection, version.SongId, version.DocumentJson,
+                version.AnalysisRunId, ct, 0))
+            return version;
+        var root = JsonNode.Parse(version.DocumentJson)?.AsObject();
+        if (root is null) return version;
+        root["hasUltraStarTimingHeritage"] = true;
+        return version with { DocumentJson = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) };
+    }
+
+    private static async Task<bool> ResolveUltraStarHeritageAsync(SqliteConnection connection, Guid songId,
+        string documentJson, string? analysisRunId, CancellationToken ct, int depth)
+    {
+        if (depth > 8) return false;
+        using var document = JsonDocument.Parse(documentJson);
+        var root = document.RootElement;
+        if (root.TryGetProperty("hasUltraStarTimingHeritage", out var explicitFlag) &&
+            explicitFlag.ValueKind == JsonValueKind.True) return true;
+        if (analysisRunId?.StartsWith("usdb:", StringComparison.OrdinalIgnoreCase) == true ||
+            (root.TryGetProperty("modelVersion", out var model) && model.ValueKind == JsonValueKind.String &&
+             model.GetString()?.Contains("UltraStar", StringComparison.OrdinalIgnoreCase) == true)) return true;
+        var sourceMatch = Regex.Match(analysisRunId ?? string.Empty,
+            @":editor-(?:basis|guided):r(?<revision>\d+)", RegexOptions.CultureInvariant);
+        if (!sourceMatch.Success || !long.TryParse(sourceMatch.Groups["revision"].Value, out var revision))
+            return false;
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT documentJson,analysisRunId FROM lyrics_versions WHERE songId=$song AND revision=$revision LIMIT 1";
+        command.Parameters.AddWithValue("$song", songId.ToString());
+        command.Parameters.AddWithValue("$revision", revision);
+        string? sourceJson = null;
+        string? sourceRun = null;
+        await using (var reader = await command.ExecuteReaderAsync(ct))
+        {
+            if (await reader.ReadAsync(ct))
+            {
+                sourceJson = reader.GetString(0);
+                sourceRun = reader.IsDBNull(1) ? null : reader.GetString(1);
+            }
+        }
+        return sourceJson is not null && await ResolveUltraStarHeritageAsync(
+            connection, songId, sourceJson, sourceRun, ct, depth + 1);
     }
 
     public async Task<LyricsVersionDto> CreateAsync(Guid songId, CreateLyricsVersionRequest request, CancellationToken ct)
@@ -320,16 +373,19 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
             throw new ArgumentException("Das Editor-Dokument gehört nicht zu diesem Song.");
         if (!root.TryGetProperty("lines", out var lines) || lines.ValueKind != JsonValueKind.Array)
             throw new ArgumentException("Das Editor-Dokument enthält keine Lyrics-Zeilen.");
-        TimeSpan? previousEnd = null;
+        var previousEndByLane = new Dictionary<int, TimeSpan>();
         foreach (var line in lines.EnumerateArray().OrderBy(ReadEffectiveStart))
         {
             var start = ReadEffectiveStart(line);
             var end = ReadEffectiveEnd(line);
+            var lane = line.TryGetProperty("voiceLane", out var laneValue) && laneValue.TryGetInt32(out var parsedLane)
+                ? Math.Max(0, parsedLane) : 0;
             if (end <= start)
                 throw new ArgumentException("Lyrics-Zeilen müssen eine positive Dauer besitzen.");
-            if (!allowTimingConflicts && previousEnd is { } boundary && start < boundary - TimeSpan.FromMilliseconds(1))
-                throw new ArgumentException("Lyrics-Zeilen einschließlich ihrer Wörter und Silben dürfen sich zeitlich nicht überschneiden.");
-            previousEnd = end;
+            if (!allowTimingConflicts && previousEndByLane.TryGetValue(lane, out var boundary) &&
+                start < boundary - TimeSpan.FromMilliseconds(1))
+                throw new ArgumentException($"Lyrics-Zeilen einschließlich ihrer Wörter und Silben dürfen sich innerhalb derselben Gesangsspur {lane + 1} zeitlich nicht überschneiden.");
+            previousEndByLane[lane] = end;
         }
     }
 

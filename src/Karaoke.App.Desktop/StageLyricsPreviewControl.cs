@@ -13,6 +13,10 @@ public sealed class StageLyricsPreviewControl : Control
         AvaloniaProperty.Register<StageLyricsPreviewControl, TimeSpan>(nameof(Position));
     public static readonly StyledProperty<long> RevisionProperty =
         AvaloniaProperty.Register<StageLyricsPreviewControl, long>(nameof(Revision));
+    public static readonly StyledProperty<bool> PerceptualLeadEnabledProperty =
+        AvaloniaProperty.Register<StageLyricsPreviewControl, bool>(nameof(PerceptualLeadEnabled), true);
+    public static readonly StyledProperty<bool> KaraokeTimingEnabledProperty =
+        AvaloniaProperty.Register<StageLyricsPreviewControl, bool>(nameof(KaraokeTimingEnabled), true);
     private StageLyricsPreview? _preview;
 
     static StageLyricsPreviewControl()
@@ -20,12 +24,22 @@ public sealed class StageLyricsPreviewControl : Control
         AffectsRender<StageLyricsPreviewControl>(DocumentProperty, PositionProperty);
         DocumentProperty.Changed.AddClassHandler<StageLyricsPreviewControl>((control, change) =>
         {
-            control._preview = change.NewValue is LyricsEditorDocument document ? new StageLyricsPreview(document) : null;
+            control.RebuildPreview(change.NewValue as LyricsEditorDocument);
             control.InvalidateVisual();
         });
         RevisionProperty.Changed.AddClassHandler<StageLyricsPreviewControl>((control, _) =>
         {
-            control._preview = control.Document is { } document ? new StageLyricsPreview(document) : null;
+            control.RebuildPreview(control.Document);
+            control.InvalidateVisual();
+        });
+        PerceptualLeadEnabledProperty.Changed.AddClassHandler<StageLyricsPreviewControl>((control, _) =>
+        {
+            control.RebuildPreview(control.Document);
+            control.InvalidateVisual();
+        });
+        KaraokeTimingEnabledProperty.Changed.AddClassHandler<StageLyricsPreviewControl>((control, _) =>
+        {
+            control.RebuildPreview(control.Document);
             control.InvalidateVisual();
         });
     }
@@ -33,6 +47,20 @@ public sealed class StageLyricsPreviewControl : Control
     public LyricsEditorDocument? Document { get => GetValue(DocumentProperty); set => SetValue(DocumentProperty, value); }
     public TimeSpan Position { get => GetValue(PositionProperty); set => SetValue(PositionProperty, value); }
     public long Revision { get => GetValue(RevisionProperty); set => SetValue(RevisionProperty, value); }
+    public bool PerceptualLeadEnabled
+    {
+        get => GetValue(PerceptualLeadEnabledProperty);
+        set => SetValue(PerceptualLeadEnabledProperty, value);
+    }
+    public bool KaraokeTimingEnabled
+    {
+        get => GetValue(KaraokeTimingEnabledProperty);
+        set => SetValue(KaraokeTimingEnabledProperty, value);
+    }
+
+    private void RebuildPreview(LyricsEditorDocument? document) =>
+        _preview = document is null ? null : new StageLyricsPreview(
+            document, PerceptualLeadEnabled, KaraokeTimingEnabled);
 
     public override void Render(DrawingContext context)
     {

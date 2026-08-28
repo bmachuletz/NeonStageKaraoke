@@ -5,8 +5,10 @@ from typing import Iterable
 import numpy as np
 import torch
 from transformers import AutoModelForTokenClassification, AutoProcessor
+from .model_loading import from_pretrained_local_first
 from .models import AlignmentConfig, LrcLine
 from .sections import plan_sections
+from .window_edges import mark_leading_window_edge_fallback
 
 MODEL_ID = "Qwen/Qwen3-ForcedAligner-0.6B-hf"
 SAMPLE_RATE = 16000
@@ -19,8 +21,9 @@ class QwenWordAligner:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
         self.dtype = torch.bfloat16 if device == "cuda" else torch.float32
-        self.processor = AutoProcessor.from_pretrained(model_id)
-        self.model = AutoModelForTokenClassification.from_pretrained(model_id, dtype=self.dtype)
+        self.processor = from_pretrained_local_first(AutoProcessor, model_id)
+        self.model = from_pretrained_local_first(
+            AutoModelForTokenClassification, model_id, dtype=self.dtype)
         self.model.to(device)
         self.model.eval()
         self.timestamp_token_id = self.model.config.timestamp_token_id
@@ -40,8 +43,12 @@ class QwenWordAligner:
             next_start = lines[index + 1].timestamp if index + 1 < len(lines) else min(
                 total_duration, line.timestamp + cfg.last_line_duration
             )
+            if line.source_end_boundary is not None:
+                next_start = min(float(next_start), float(line.source_end_boundary))
             start = max(0.0, line.timestamp - cfg.pre_roll)
             end = min(total_duration, max(line.timestamp + 0.25, next_start + cfg.post_roll))
+            if line.source_end_boundary is not None:
+                end = min(end, max(line.timestamp + 0.25, float(line.source_end_boundary)))
             chunk = np.ascontiguousarray(audio[int(start*SAMPLE_RATE):int(end*SAMPLE_RATE)], dtype=np.float32)
             jobs.append((line, start, chunk))
 
@@ -67,7 +74,7 @@ class QwenWordAligner:
                 timestamp_token_id=self.timestamp_token_id,
             )
             for (line, base, _), tokens in zip(batch, decoded):
-                line.words = [
+                words = [
                     {
                         "word": token["text"],
                         "start": round(float(token["start_time"]) + base, 3),
@@ -76,6 +83,17 @@ class QwenWordAligner:
                     }
                     for token in tokens
                 ]
+                # A decoder miss at the beginning of a bounded line window is
+                # represented by Qwen at timestamp zero.  After adding the
+                # window base this looks like a precise acoustic boundary even
+                # though it is merely the configured pre-roll edge.  Preserve
+                # the words, but mark that leading boundary as provisional so
+                # candidate fusion and the quality gate cannot treat it as a
+                # verified onset.
+                mark_leading_window_edge_fallback(
+                    words, line_timestamp=float(line.timestamp),
+                    window_base=base, pre_roll=cfg.pre_roll)
+                line.words = words
         return lines
 
     def align_full_song(self, audio: np.ndarray, lines: list[LrcLine], cfg: AlignmentConfig) -> list[LrcLine]:

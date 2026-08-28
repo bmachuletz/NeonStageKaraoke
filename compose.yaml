@@ -13,6 +13,7 @@ services:
       DOTNET_ENVIRONMENT: Production
       Karaoke__LibraryPath: /library
       Karaoke__DatabasePath: /data/karaoke.db
+      Karaoke__PublicBaseUrl: ${NEON_STAGE_PUBLIC_URL:-http://cloud.hdvtec.de:5274}
       Spotify__ClientId: ${SPOTIFY_CLIENT_ID:-}
       Spotify__ClientSecret: ${SPOTIFY_CLIENT_SECRET:-}
       Spotify__RedirectUri: ${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:5274/api/spotify/callback}
@@ -22,6 +23,14 @@ services:
       Qobuz__UserAuthToken: ${QOBUZ_USER_AUTH_TOKEN:-}
       Qobuz__FormatId: ${QOBUZ_FORMAT_ID:-6}
       Qobuz__ApiBaseUrl: ${QOBUZ_API_BASE_URL:-https://www.qobuz.com/api.json/0.2}
+      Usdb__Enabled: ${USDB_ENABLED:-true}
+      Usdb__BaseUrl: ${USDB_BASE_URL:-https://usdb.eu}
+      Usdb__CachePath: /data/usdb-cache
+      Usdb__MaximumDurationDifferenceSeconds: ${USDB_MAX_DURATION_DIFFERENCE_SECONDS:-10}
+      Usdb__Animux__Enabled: ${USDB_ANIMUX_ENABLED:-true}
+      Usdb__Animux__BaseUrl: ${USDB_ANIMUX_BASE_URL:-https://usdb.animux.de}
+      Usdb__Animux__Username: ${USDB_ANIMUX_USERNAME:-}
+      Usdb__Animux__Password: ${USDB_ANIMUX_PASSWORD:-}
       LRC_ALIGNER_URL: ${LRC_ALIGNER_URL:-http://host.docker.internal:8081}
     extra_hosts:
       - host.docker.internal:host-gateway

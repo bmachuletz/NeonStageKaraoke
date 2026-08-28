@@ -13,15 +13,18 @@ namespace NeonStage.Stage
 internal static class StageBackgroundShaderCatalog
 {
     private const string CatalogResource = "NeonStageBackgrounds";
+    private const string PrivateCatalogResource = "NeonStageBackgrounds.private";
     private const string LegacyDefaultResource = "NeonBackdrop";
     private const string PreferenceKey = "NeonStage.BackgroundShader";
     private const string EnvironmentVariable = "NEONSTAGE_BACKGROUND_SHADER";
     private const string ArgumentName = "--background-shader";
 
-    internal static Material CreateMaterial()
+    internal static Material CreateMaterial(string? stageThemeId = null)
     {
         var catalog = LoadCatalog();
-        var requestedId = ResolveRequestedId(catalog.defaultId);
+        var requestedId = string.IsNullOrWhiteSpace(stageThemeId)
+            ? ResolveRequestedId(catalog.defaultId)
+            : MapStageTheme(stageThemeId, catalog.defaultId);
         var selected = Find(catalog, requestedId);
         if (selected == null && !string.Equals(requestedId, catalog.defaultId, StringComparison.OrdinalIgnoreCase))
             Debug.LogWarning($"Unknown background shader ID '{requestedId}'; using catalog default '{catalog.defaultId}'.");
@@ -35,8 +38,29 @@ internal static class StageBackgroundShaderCatalog
             throw new InvalidOperationException("Neon Stage could not load a background shader. Check NeonStageBackgrounds.json and Assets/Resources.");
 
         Debug.Log($"Neon Stage background shader: {selected?.id ?? LegacyDefaultResource} ({shader.name})");
-        return new Material(shader) { name = $"Neon Stage Background · {selected?.id ?? "legacy"}" };
+        var material = new Material(shader) { name = $"Neon Stage Background · {selected?.id ?? "legacy"}" };
+        if (selected != null && !string.IsNullOrWhiteSpace(selected.textureResource))
+        {
+            var texture = Resources.Load<Texture2D>(selected.textureResource);
+            if (texture != null && material.HasProperty("_LogoTex")) material.SetTexture("_LogoTex", texture);
+            else Debug.LogWarning($"Background texture '{selected.textureResource}' could not be loaded.");
+        }
+        return material;
     }
+
+    internal static string ResolveLyricsStyle(string? stageThemeId)
+    {
+        var catalog = LoadCatalog();
+        var requestedId = string.IsNullOrWhiteSpace(stageThemeId)
+            ? ResolveRequestedId(catalog.defaultId)
+            : MapStageTheme(stageThemeId, catalog.defaultId);
+        return Find(catalog, requestedId)?.lyricsStyle?.Trim() ?? "neon";
+    }
+
+    private static string MapStageTheme(string stageThemeId, string defaultId) =>
+        string.Equals(stageThemeId.Trim(), "standard", StringComparison.OrdinalIgnoreCase)
+            ? defaultId
+            : stageThemeId.Trim();
 
     private static StageBackgroundCatalog LoadCatalog()
     {
@@ -54,6 +78,17 @@ internal static class StageBackgroundShaderCatalog
         var catalog = JsonUtility.FromJson<StageBackgroundCatalog>(asset.text);
         if (catalog?.backgrounds == null || catalog.backgrounds.Length == 0)
             throw new InvalidOperationException($"Resources/{CatalogResource}.json does not contain any background shaders.");
+        var privateAsset = Resources.Load<TextAsset>(PrivateCatalogResource);
+        if (privateAsset != null)
+        {
+            var privateCatalog = JsonUtility.FromJson<StageBackgroundCatalog>(privateAsset.text);
+            if (privateCatalog?.backgrounds is { Length: > 0 })
+                catalog.backgrounds = catalog.backgrounds
+                    .Concat(privateCatalog.backgrounds)
+                    .GroupBy(item => item.id, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.Last())
+                    .ToArray();
+        }
         return catalog;
     }
 
@@ -94,6 +129,8 @@ internal static class StageBackgroundShaderCatalog
         public string id = "";
         public string displayName = "";
         public string resource = "";
+        public string textureResource = "";
+        public string lyricsStyle = "neon";
     }
 }
 }

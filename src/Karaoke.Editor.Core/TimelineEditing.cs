@@ -1,7 +1,132 @@
 namespace Karaoke.Editor.Core;
 
+public enum SelectionScaleAnchor
+{
+    Start,
+    Center,
+    End
+}
+
 public static class TimelineEditing
 {
+    public static IReadOnlyList<LyricSegment> MoveToOtherVoice(
+        LyricsEditorDocument document, IEnumerable<LyricSegment> selection)
+    {
+        var selected = selection.Distinct().ToArray();
+        if (selected.Length == 0 || selected.Any(item =>
+                item.Type is not (LyricSegmentType.Line or LyricSegmentType.Word)))
+            throw new InvalidOperationException(
+                "Bitte mindestens eine Zeile oder ein Wort derselben Ebene auswählen.");
+        if (selected.Select(item => item.Type).Distinct().Count() != 1)
+            throw new InvalidOperationException(
+                "Bitte Zeilen und Wörter nicht gemeinsam in eine andere Stimme verschieben.");
+
+        if (selected[0].Type == LyricSegmentType.Line)
+        {
+            foreach (var line in selected)
+            {
+                if (!document.Lines.Contains(line))
+                    throw new InvalidOperationException("Die ausgewählte Zeile gehört nicht zum aktuellen Song.");
+                line.VoiceLane = OtherVoice(line.VoiceLane);
+                line.VoiceLabel = line.VoiceLane == 0 ? "Lead Vocals" : "Backing Vocals";
+                MarkAdjusted(line);
+            }
+            EnsureValidVoiceLanes(document);
+            document.Lines.Sort(LineOrder);
+            return selected;
+        }
+
+        var affected = new List<LyricSegment>();
+        foreach (var sourceGroup in selected.GroupBy(word => FindLine(document, word)))
+        {
+            var source = sourceGroup.Key ?? throw new InvalidOperationException(
+                "Ein ausgewähltes Wort besitzt keine Lyrics-Zeile.");
+            var words = sourceGroup.OrderBy(word => word.Start).ToArray();
+            if (words.Any(word => !source.Children.Contains(word)))
+                throw new InvalidOperationException("Ein ausgewähltes Wort gehört nicht zum aktuellen Song.");
+            var targetLane = OtherVoice(source.VoiceLane);
+            var target = FindCompatibleTargetLine(document, source, words, targetLane)
+                         ?? CreateVoiceLine(source, words, targetLane);
+            if (!document.Lines.Contains(target)) document.Lines.Add(target);
+            foreach (var word in words)
+            {
+                source.Children.Remove(word);
+                word.ParentId = target.Id;
+                target.Children.Add(word);
+                MarkAdjusted(word);
+            }
+            NormalizeWordLine(target);
+            affected.AddRange(words);
+            if (source.Children.Count == 0)
+                document.Lines.Remove(source);
+            else
+                NormalizeWordLine(source);
+        }
+        EnsureValidVoiceLanes(document);
+        document.Lines.Sort(LineOrder);
+        return affected;
+    }
+
+    private static int OtherVoice(int lane) => lane == 0 ? 1 : 0;
+
+    private static LyricSegment? FindLine(LyricsEditorDocument document, LyricSegment child) =>
+        document.Lines.FirstOrDefault(line => line.Id == child.ParentId ||
+            line.DescendantsAndSelf().Any(item => item.Id == child.Id));
+
+    private static LyricSegment? FindCompatibleTargetLine(LyricsEditorDocument document,
+        LyricSegment source, IReadOnlyList<LyricSegment> words, int targetLane)
+    {
+        var start = words.Min(word => word.Start);
+        var end = words.Max(word => word.End);
+        return document.Lines
+            .Where(line => line != source && line.VoiceLane == targetLane &&
+                           line.End + TimeSpan.FromMilliseconds(350) >= start &&
+                           line.Start - TimeSpan.FromMilliseconds(350) <= end)
+            .Where(line => line.Children.Where(item => item.Type == LyricSegmentType.Word)
+                .All(existing => words.All(moved =>
+                    existing.End <= moved.Start || existing.Start >= moved.End)))
+            .OrderBy(line => Math.Abs(((line.Start + line.End) / 2 - (start + end) / 2).Ticks))
+            .FirstOrDefault();
+    }
+
+    private static LyricSegment CreateVoiceLine(LyricSegment source,
+        IReadOnlyList<LyricSegment> words, int targetLane) => new()
+    {
+        Id = Guid.NewGuid(), Type = LyricSegmentType.Line,
+        Start = words.Min(word => word.Start), End = words.Max(word => word.End),
+        Text = string.Join(" ", words.Select(word => word.Text)),
+        OriginalStart = words.Min(word => word.Start), OriginalEnd = words.Max(word => word.End),
+        OriginalText = string.Join(" ", words.Select(word => word.Text)),
+        Origin = SegmentOrigin.ManuallyAdjusted, IsManuallyAdjusted = true,
+        RequiresReview = true, VoiceLane = targetLane,
+        VoiceLabel = targetLane == 0 ? "Lead Vocals" : "Backing Vocals",
+        AnalysisRunId = source.AnalysisRunId, ModelVersion = source.ModelVersion,
+    };
+
+    private static void NormalizeWordLine(LyricSegment line)
+    {
+        line.Children.Sort((left, right) => left.Start.CompareTo(right.Start));
+        line.Start = line.Children.Min(word => word.Start);
+        line.End = line.Children.Max(word => word.End);
+        line.Text = string.Join(" ", line.Children.Select(word => word.Text));
+        MarkAdjusted(line);
+    }
+
+    private static void EnsureValidVoiceLanes(LyricsEditorDocument document)
+    {
+        var conflict = ValidateLineSequence(document).FirstOrDefault();
+        if (conflict is not null)
+            throw new InvalidOperationException(
+                "Die Zielstimme enthält in diesem Zeitraum bereits überlappenden Text. " +
+                "Bitte einen größeren zusammenhängenden Bereich auswählen oder die Grenzen zuerst korrigieren.");
+    }
+
+    private static int LineOrder(LyricSegment left, LyricSegment right)
+    {
+        var time = left.Start.CompareTo(right.Start);
+        return time != 0 ? time : left.VoiceLane.CompareTo(right.VoiceLane);
+    }
+
     public static void SynchronizeWordText(LyricSegment word)
     {
         if (word.Type != LyricSegmentType.Word || word.Children.Count == 0) return;
@@ -68,6 +193,75 @@ public static class TimelineEditing
             // review decisions. The original timing remains available in the
             // immutable OriginalStart/OriginalEnd provenance fields.
         }
+    }
+
+    /// <summary>
+    /// Moves the complete selected forest by one uniform offset. Descendants move with their
+    /// selected roots, while objects outside the selection remain unchanged.
+    /// </summary>
+    public static int ShiftSelection(LyricsEditorDocument document,
+        IEnumerable<LyricSegment> selection, TimeSpan delta, TimeSpan? audioDuration = null)
+    {
+        var (roots, sourceStart, sourceEnd) = SelectionEnvelope(document, selection);
+        var targetStart = sourceStart + delta;
+        var targetEnd = sourceEnd + delta;
+        ValidateAudioBounds(targetStart, targetEnd, audioDuration);
+        return FitSelectionToRange(document, roots, targetStart, targetEnd);
+    }
+
+    /// <summary>
+    /// Scales the complete selected forest with one shared affine transform. Relative gaps,
+    /// durations and descendant geometry are preserved. The requested anchor remains fixed.
+    /// </summary>
+    public static int ScaleSelection(LyricsEditorDocument document,
+        IEnumerable<LyricSegment> selection, double factor, SelectionScaleAnchor anchor,
+        TimeSpan? audioDuration = null)
+    {
+        if (!double.IsFinite(factor) || factor <= 0)
+            throw new InvalidOperationException("Der Skalierungsfaktor muss größer als null sein.");
+        var (roots, sourceStart, sourceEnd) = SelectionEnvelope(document, selection);
+        var sourceDuration = sourceEnd - sourceStart;
+        var targetDuration = TimeSpan.FromTicks((long)Math.Round(sourceDuration.Ticks * factor));
+        if (targetDuration <= TimeSpan.Zero)
+            throw new InvalidOperationException("Die skalierte Auswahl wäre zu kurz.");
+
+        var targetStart = anchor switch
+        {
+            SelectionScaleAnchor.Start => sourceStart,
+            SelectionScaleAnchor.Center => sourceStart + TimeSpan.FromTicks((sourceDuration - targetDuration).Ticks / 2),
+            SelectionScaleAnchor.End => sourceEnd - targetDuration,
+            _ => sourceStart
+        };
+        var targetEnd = targetStart + targetDuration;
+        ValidateAudioBounds(targetStart, targetEnd, audioDuration);
+        return FitSelectionToRange(document, roots, targetStart, targetEnd);
+    }
+
+    private static (IReadOnlyList<LyricSegment> Roots, TimeSpan Start, TimeSpan End) SelectionEnvelope(
+        LyricsEditorDocument document, IEnumerable<LyricSegment> selection)
+    {
+        var documentSegments = document.Segments.ToHashSet();
+        var selected = selection.Distinct().ToList();
+        if (selected.Count == 0)
+            throw new InvalidOperationException("Bitte zuerst mindestens eine Zeile, ein Wort oder eine Silbe auswählen.");
+        if (selected.Any(segment => !documentSegments.Contains(segment) ||
+                                    segment.Type is not (LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable)))
+            throw new InvalidOperationException("Die Auswahl enthält kein bearbeitbares Lyrics-Segment.");
+        var roots = selected.Where(segment => !selected.Any(parent => !ReferenceEquals(parent, segment) &&
+            parent.DescendantsAndSelf().Contains(segment))).ToArray();
+        var start = roots.Min(segment => segment.Start);
+        var end = roots.Max(segment => segment.End);
+        if (end <= start)
+            throw new InvalidOperationException("Die ausgewählten Segmente besitzen keine gültige Dauer.");
+        return (roots, start, end);
+    }
+
+    private static void ValidateAudioBounds(TimeSpan start, TimeSpan end, TimeSpan? audioDuration)
+    {
+        if (start < TimeSpan.Zero)
+            throw new InvalidOperationException("Die Transformation würde Lyrics vor den Songanfang verschieben.");
+        if (audioDuration is { } duration && duration > TimeSpan.Zero && end > duration)
+            throw new InvalidOperationException("Die Transformation würde Lyrics hinter das Songende verschieben.");
     }
 
     public static void MoveLineWithinNeighbors(LyricSegment line, TimeSpan delta,
@@ -216,6 +410,38 @@ public static class TimelineEditing
         return roots.Count;
     }
 
+    /// <summary>
+    /// Fits the selection into the marked range and then moves internal word and syllable
+    /// boundaries towards nearby low-energy transitions in the vocal waveform. A waveform
+    /// without useful dynamics deliberately keeps the exact affine result.
+    /// </summary>
+    public static WaveformSyncResult FitSelectionToWaveformRange(LyricsEditorDocument document,
+        IEnumerable<LyricSegment> selection, TimeSpan targetStart, TimeSpan targetEnd,
+        WaveformPyramid? waveform)
+    {
+        var selected = selection.Distinct().ToList();
+        var roots = selected.Where(segment => !selected.Any(parent =>
+            !ReferenceEquals(parent, segment) && parent.DescendantsAndSelf().Contains(segment))).ToList();
+        var snapshots = document.Segments.ToDictionary(segment => segment, segment => new TimingSnapshot(
+            segment.Start, segment.End, segment.Origin, segment.IsManuallyAdjusted, segment.RequiresReview));
+        var beforeErrors = ValidateHierarchy(document).Concat(ValidateLineSequence(document)).ToHashSet();
+        try
+        {
+            var count = FitSelectionToRange(document, roots, targetStart, targetEnd);
+            var boundaries = WaveformTimingAlignment.Refine(roots, waveform);
+            var newErrors = ValidateHierarchy(document).Concat(ValidateLineSequence(document))
+                .Where(error => !beforeErrors.Contains(error)).ToList();
+            if (newErrors.Count > 0)
+                throw new InvalidOperationException("Die akustische Anpassung würde mit einem nicht ausgewählten Segment kollidieren.");
+            return new(count, boundaries, boundaries > 0);
+        }
+        catch
+        {
+            foreach (var (segment, snapshot) in snapshots) snapshot.Restore(segment);
+            throw;
+        }
+    }
+
     public static void ResizeLineContainer(LyricSegment line, TimeSpan newStart, TimeSpan newEnd,
         TimeSpan minimumDuration)
     {
@@ -338,18 +564,21 @@ public static class TimelineEditing
     {
         var tolerance = TimeSpan.FromMilliseconds(1);
         var errors = new List<string>();
-        LyricSegment? previous = null;
-        TimeSpan previousEffectiveEnd = TimeSpan.Zero;
-        foreach (var line in document.Lines.OrderBy(EffectiveStart).ThenBy(EffectiveEnd))
+        foreach (var lane in document.Lines.GroupBy(line => Math.Max(0, line.VoiceLane)))
         {
-            var effectiveStart = EffectiveStart(line);
-            var effectiveEnd = EffectiveEnd(line);
-            if (effectiveEnd <= effectiveStart)
-                errors.Add($"{line.Id}: Zeile besitzt keine positive Dauer.");
-            if (previous is not null && effectiveStart < previousEffectiveEnd - tolerance)
-                errors.Add($"{line.Id}: Zeile oder ihr Wortinhalt überschneidet die vorherige Zeile um {(previousEffectiveEnd - effectiveStart).TotalMilliseconds:0} ms.");
-            previous = line;
-            previousEffectiveEnd = effectiveEnd;
+            LyricSegment? previous = null;
+            TimeSpan previousEffectiveEnd = TimeSpan.Zero;
+            foreach (var line in lane.OrderBy(EffectiveStart).ThenBy(EffectiveEnd))
+            {
+                var effectiveStart = EffectiveStart(line);
+                var effectiveEnd = EffectiveEnd(line);
+                if (effectiveEnd <= effectiveStart)
+                    errors.Add($"{line.Id}: Zeile besitzt keine positive Dauer.");
+                if (previous is not null && effectiveStart < previousEffectiveEnd - tolerance)
+                    errors.Add($"{line.Id}: Zeile oder ihr Wortinhalt überschneidet die vorherige Zeile in Gesangsspur {lane.Key + 1} um {(previousEffectiveEnd - effectiveStart).TotalMilliseconds:0} ms.");
+                previous = line;
+                previousEffectiveEnd = effectiveEnd;
+            }
         }
         return errors;
     }

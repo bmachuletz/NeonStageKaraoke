@@ -57,6 +57,8 @@ they are not included in the server image or editor AppImage.
 | EasyAligner 0.3.3 | MIT |
 | stable-ts 2.19.1 | MIT |
 | librosa | ISC; its transitive audio/scientific packages retain their own notices |
+| [Spotify Basic Pitch](https://github.com/spotify/basic-pitch) 0.4.0 | Apache-2.0; used only by the separately built experimental pitch-evidence sidecar. Its bundled ICASSP 2022 model and transitive TensorFlow Lite/scientific dependencies retain their accompanying notices. |
+| Asteroid / asteroid-filterbanks | MIT; used to instantiate the optional MedleyVox duet-separation checkpoint |
 | SOFA 1.0.3 code vendored in `lyrics-word-aligner/third_party/SOFA` | MIT; preserve its bundled LICENSE |
 
 Python packages bring transitive dependencies. A distributed alignment image
@@ -76,6 +78,7 @@ are ignored and never enter the application releases.
 | Silero VAD code/model shipped by its repository | MIT; the cached repository LICENSE is retained locally |
 | torchaudio `MMS_FA` / Meta MMS weights | **CC-BY-NC-4.0**; attribution and the non-commercial restriction apply. Do not use this optional verifier for a commercial deployment without separate permission. |
 | UVR / Roformer separation weights | model-author-specific terms; `python-audio-separator` being MIT does not relicense downloaded weights |
+| `Cyru5/MedleyVox` duet-separation checkpoint, pinned revision `5c9e4e0d909e5a006c992b3422901ed416f4e57f` | **CC-BY-4.0**; model by Carson Evans, derived from the MedleyVox research architecture. Attribution and the model license must accompany any redistributed model pack. The checkpoint is downloaded to the external model cache and is not committed to this repository. |
 | SOFA singing checkpoints and their training datasets | verify and retain the exact checkpoint and dataset-provider terms before redistribution; the MIT code license alone does not establish model/dataset rights |
 
 ## Engine, system tools, integrations, and services
@@ -94,6 +97,7 @@ are ignored and never enter the application releases.
 | Qobuz API | optional catalog matching and authorized purchase downloads | Qobuz API/partner and store terms; API access does not grant media rights, and only account-authorized `intent=download` responses are accepted |
 | LRCLIB API | lyrics lookup | service terms and copyright in individual lyrics remain applicable |
 | [UltraStar Deluxe TXT format](https://github.com/UltraStar-Deluxe/USDX) | optional lyrics import compatibility | UltraStar Deluxe itself is GPL-2.0-or-later. Neon Stage's parser is an independent implementation of the text format; no USDX source code, executable, song, audio, cover, or lyrics data is bundled. Imported user content retains its own rights and terms. |
+| [USDB Syncer](https://github.com/bohning/usdb_syncer) | protocol research reference for optional `usdb.animux.de` interoperability | GPL-3.0-only. Neon Stage neither links, vendors, copies, nor distributes Syncer code; its HTTP adapter is an independent .NET implementation. USDB accounts and downloaded content remain subject to their own terms and rights. |
 | Ko-fi widget | support link on the static project website | externally hosted Ko-fi JavaScript and Ko-fi terms/privacy policy; not bundled into application releases |
 
 ## Distribution checklist

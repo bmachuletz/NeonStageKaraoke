@@ -14,8 +14,12 @@ public sealed class EditorTimelineControl : Control
         AvaloniaProperty.Register<EditorTimelineControl, TimeSpan>(nameof(Playhead));
     public static readonly StyledProperty<WaveformPyramid?> WaveformProperty =
         AvaloniaProperty.Register<EditorTimelineControl, WaveformPyramid?>(nameof(Waveform));
+    public static readonly StyledProperty<IReadOnlyList<PitchNoteEvidence>?> PitchEvidenceProperty =
+        AvaloniaProperty.Register<EditorTimelineControl, IReadOnlyList<PitchNoteEvidence>?>(nameof(PitchEvidence));
     public static readonly StyledProperty<long> RevisionProperty =
         AvaloniaProperty.Register<EditorTimelineControl, long>(nameof(Revision));
+    public static readonly StyledProperty<bool> EditingEnabledProperty =
+        AvaloniaProperty.Register<EditorTimelineControl, bool>(nameof(EditingEnabled), true);
 
     private readonly TimelineViewport _viewport = new(115);
     private (LyricSegment Left, LyricSegment Right, TimeSpan LeftEnd, TimeSpan RightStart,
@@ -26,6 +30,8 @@ public sealed class EditorTimelineControl : Control
     private bool _showInitialVocalWindow;
     private TimeSpan? _loopStart;
     private TimeSpan? _loopEnd;
+    private readonly TrackedWordLoop _trackedWordLoop = new();
+    private LyricSegment? _contextSegment;
     private bool _selectingRange;
     private TimeSpan _rangeAnchor;
     private SegmentDragState? _segmentDrag;
@@ -37,32 +43,61 @@ public sealed class EditorTimelineControl : Control
     static EditorTimelineControl()
     {
         ClipToBoundsProperty.OverrideDefaultValue<EditorTimelineControl>(true);
-        AffectsRender<EditorTimelineControl>(DocumentProperty, PlayheadProperty, WaveformProperty, RevisionProperty);
-        DocumentProperty.Changed.AddClassHandler<EditorTimelineControl>((control, _) =>
+        AffectsRender<EditorTimelineControl>(DocumentProperty, PlayheadProperty, WaveformProperty,
+            PitchEvidenceProperty, RevisionProperty);
+        DocumentProperty.Changed.AddClassHandler<EditorTimelineControl>((control, change) =>
         {
-            control._viewport.Reset();
-            control._showInitialVocalWindow = true;
-            control.SelectedSegment = null;
-            control._selectedSegments.Clear();
+            var previous = change.GetOldValue<LyricsEditorDocument?>();
+            var current = change.GetNewValue<LyricsEditorDocument?>();
+            if (previous?.SongId != current?.SongId)
+            {
+                control._viewport.Reset();
+                control._showInitialVocalWindow = true;
+                control.SelectedSegment = null;
+                control._selectedSegments.Clear();
+                control._contextSegment = null;
+                control._trackedWordLoop.Clear();
+            }
+            else
+            {
+                control.SelectSegments(control._selectedSegments.ToArray());
+                control.RefreshTrackedWordLoop();
+            }
             control.InvalidateVisual();
         });
+        RevisionProperty.Changed.AddClassHandler<EditorTimelineControl>((control, _) =>
+            control.RefreshTrackedWordLoop());
         FocusableProperty.OverrideDefaultValue<EditorTimelineControl>(true);
     }
 
     public LyricsEditorDocument? Document { get => GetValue(DocumentProperty); set => SetValue(DocumentProperty, value); }
     public TimeSpan Playhead { get => GetValue(PlayheadProperty); set => SetValue(PlayheadProperty, value); }
     public WaveformPyramid? Waveform { get => GetValue(WaveformProperty); set => SetValue(WaveformProperty, value); }
+    public IReadOnlyList<PitchNoteEvidence>? PitchEvidence
+    {
+        get => GetValue(PitchEvidenceProperty);
+        set => SetValue(PitchEvidenceProperty, value);
+    }
     public long Revision { get => GetValue(RevisionProperty); set => SetValue(RevisionProperty, value); }
+    public bool EditingEnabled { get => GetValue(EditingEnabledProperty); set => SetValue(EditingEnabledProperty, value); }
     public CommandHistory? History { get; set; }
     public event EventHandler<TimeSpan>? PositionRequested;
     public event EventHandler<LyricSegment?>? SegmentSelected;
     public event EventHandler<(TimeSpan Start, TimeSpan End)>? RangeSelected;
+    public event EventHandler<(TimeSpan Start, TimeSpan End)>? TrackedWordLoopRangeChanged;
+    public event EventHandler? TrackedWordLoopCleared;
     public event EventHandler? SegmentEdited;
 
     public LyricSegment? SelectedSegment
     {
         get => _selectedSegment;
-        set { _selectedSegment = value; InvalidateVisual(); }
+        set
+        {
+            _selectedSegment = value is null || Document is null
+                ? value
+                : Document.Segments.FirstOrDefault(candidate => candidate.Id == value.Id);
+            InvalidateVisual();
+        }
     }
 
     public IReadOnlyList<LyricSegment> GetSelectedSegments()
@@ -75,6 +110,8 @@ public sealed class EditorTimelineControl : Control
 
     public void SelectOnly(LyricSegment? segment)
     {
+        if (segment is not null && Document is not null)
+            segment = Document.Segments.FirstOrDefault(candidate => candidate.Id == segment.Id);
         _selectedSegments.Clear();
         if (segment is not null) _selectedSegments.Add(segment);
         SelectedSegment = segment;
@@ -82,10 +119,91 @@ public sealed class EditorTimelineControl : Control
 
     public void SelectSegments(IEnumerable<LyricSegment> segments)
     {
-        var normalized = LyricsSegmentClipboard.NormalizeSelection(segments);
+        var source = Document is null
+            ? segments
+            : segments.Select(segment => Document.Segments.FirstOrDefault(candidate => candidate.Id == segment.Id))
+                .OfType<LyricSegment>();
+        var normalized = LyricsSegmentClipboard.NormalizeSelection(source);
         _selectedSegments.Clear();
         foreach (var segment in normalized) _selectedSegments.Add(segment);
         SelectedSegment = normalized.FirstOrDefault();
+    }
+
+    public (int Count, LyricSegmentType Type)? SelectAllAtCurrentLevel()
+    {
+        if (Document is null) return null;
+        var type = SelectedSegment?.Type is LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable
+            ? SelectedSegment.Type
+            : LyricSegmentType.Line;
+        var segments = type switch
+        {
+            LyricSegmentType.Line => Document.Lines.ToList(),
+            LyricSegmentType.Word => Document.Lines.SelectMany(line => line.Children).ToList(),
+            LyricSegmentType.Syllable => Document.Lines.SelectMany(line => line.Children)
+                .SelectMany(word => word.Children).ToList(),
+            _ => []
+        };
+        SelectSegments(segments);
+        SegmentSelected?.Invoke(this, SelectedSegment);
+        InvalidateVisual();
+        return (segments.Count, type);
+    }
+
+    public int SelectContextRange(bool toRight)
+    {
+        if (Document is null || _contextSegment is not { Type: LyricSegmentType.Line or LyricSegmentType.Word } context)
+            return 0;
+        IReadOnlyList<LyricSegment> candidates;
+        if (context.Type == LyricSegmentType.Line)
+            candidates = Document.Lines.OrderBy(line => line.Start).ToList();
+        else
+        {
+            var line = FindLine(context);
+            if (line is null) return 0;
+            candidates = line.Children.OrderBy(word => word.Start).ToList();
+        }
+        var index = candidates.ToList().FindIndex(segment => segment.Id == context.Id);
+        if (index < 0) return 0;
+        SelectSegments(toRight ? candidates.Skip(index) : candidates.Take(index + 1));
+        SegmentSelected?.Invoke(this, SelectedSegment);
+        InvalidateVisual();
+        return _selectedSegments.Count;
+    }
+
+    public int ShiftSelection(TimeSpan delta, TimeSpan? audioDuration)
+    {
+        EnsureEditingEnabled();
+        if (Document is null) throw new InvalidOperationException("Bitte zuerst einen Song laden.");
+        if (History is null) throw new InvalidOperationException("Die Änderungshistorie ist noch nicht bereit.");
+        var selected = GetSelectedSegments();
+        if (selected.Count == 0)
+            throw new InvalidOperationException("Bitte zuerst mindestens eine Zeile, ein Wort oder eine Silbe auswählen.");
+        var roots = Document.Lines.Where(line => selected.Any(segment =>
+            line.DescendantsAndSelf().Contains(segment))).Distinct().ToList();
+        var changed = 0;
+        History.Execute(new EditSegmentForestCommand(roots, "Lyrics-Auswahl verschieben", () =>
+            changed = TimelineEditing.ShiftSelection(Document, selected, delta, audioDuration)));
+        SegmentEdited?.Invoke(this, EventArgs.Empty);
+        InvalidateVisual();
+        return changed;
+    }
+
+    public int ScaleSelection(double factor, SelectionScaleAnchor anchor, TimeSpan? audioDuration)
+    {
+        EnsureEditingEnabled();
+        if (Document is null) throw new InvalidOperationException("Bitte zuerst einen Song laden.");
+        if (History is null) throw new InvalidOperationException("Die Änderungshistorie ist noch nicht bereit.");
+        var selected = GetSelectedSegments();
+        if (selected.Count == 0)
+            throw new InvalidOperationException("Bitte zuerst mindestens eine Zeile, ein Wort oder eine Silbe auswählen.");
+        var roots = Document.Lines.Where(line => selected.Any(segment =>
+            line.DescendantsAndSelf().Contains(segment))).Distinct().ToList();
+        var changed = 0;
+        History.Execute(new EditSegmentForestCommand(roots, "Lyrics-Auswahl proportional skalieren", () =>
+            changed = TimelineEditing.ScaleSelection(Document, selected, factor, anchor, audioDuration)));
+        SegmentEdited?.Invoke(this, EventArgs.Empty);
+        InvalidateVisual();
+        return changed;
     }
 
     public override void Render(DrawingContext context)
@@ -102,6 +220,7 @@ public sealed class EditorTimelineControl : Control
         context.FillRectangle(new SolidColorBrush(Color.Parse("#10131A")), bounds);
         DrawRuler(context, bounds.Width);
         DrawWaveform(context, bounds.Width);
+        DrawPitchEvidence(context, bounds.Width);
         if (Document is null) { DrawEmpty(context, bounds); return; }
         DrawTracks(context, bounds);
         DrawLoopRange(context, bounds);
@@ -130,6 +249,8 @@ public sealed class EditorTimelineControl : Control
         if (pointer.IsRightButtonPressed)
         {
             var contextHit = FindSegment(point);
+            _contextSegment = contextHit;
+            UpdateContextMenu(contextHit);
             if (contextHit is not null && !_selectedSegments.Contains(contextHit))
             {
                 _selectedSegments.Clear();
@@ -137,11 +258,21 @@ public sealed class EditorTimelineControl : Control
                 SelectedSegment = contextHit;
                 SegmentSelected?.Invoke(this, contextHit);
             }
+            // Das selbst gezeichnete Timeline-Control übernimmt die Pointer-
+            // Verarbeitung vollständig. Deshalb löst Avalonia hier nicht auf
+            // allen Plattformen automatisch ContextRequested aus.
+            if (ContextMenu is { } contextMenu)
+            {
+                if (contextMenu.IsOpen) contextMenu.Close();
+                contextMenu.Open(this);
+            }
+            e.Handled = true;
             return;
         }
         if (!pointer.IsLeftButtonPressed) return;
         if (e.KeyModifiers.HasFlag(KeyModifiers.Shift))
         {
+            _trackedWordLoop.Clear();
             _rangeAnchor = _viewport.PixelToTime(point.X);
             _loopStart = _loopEnd = _rangeAnchor;
             _selectingRange = true;
@@ -151,7 +282,7 @@ public sealed class EditorTimelineControl : Control
             return;
         }
         var boundary = FindBoundary(point);
-        if (boundary is not null)
+        if (boundary is not null && EditingEnabled)
         {
             _drag = (boundary.Value.Left, boundary.Value.Right, boundary.Value.Left.End, boundary.Value.Right.Start,
                 boundary.Value.Left.Origin, boundary.Value.Right.Origin,
@@ -180,6 +311,12 @@ public sealed class EditorTimelineControl : Control
             }
             SelectedSegment = hit;
             SegmentSelected?.Invoke(this, SelectedSegment);
+            if (!EditingEnabled)
+            {
+                PositionRequested?.Invoke(this, _viewport.PixelToTime(point.X));
+                e.Handled = true;
+                return;
+            }
             if (SelectedSegment is { Type: LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable } segment &&
                 FindLine(segment) is { } line)
             {
@@ -318,8 +455,58 @@ public sealed class EditorTimelineControl : Control
         InvalidateVisual();
     }
 
-    public int SynchronizeSelectionToRange()
+    public bool TryTrackContextWordLoop(out (TimeSpan Start, TimeSpan End) range)
     {
+        range = default;
+        var word = _contextSegment is { Type: LyricSegmentType.Word }
+            ? _contextSegment
+            : SelectedSegment is { Type: LyricSegmentType.Word } ? SelectedSegment : null;
+        if (!_trackedWordLoop.Bind(word) ||
+            !_trackedWordLoop.TryGetRange(Document, out range))
+            return false;
+        _loopStart = range.Start;
+        _loopEnd = range.End;
+        InvalidateVisual();
+        return true;
+    }
+
+    public void ClearTrackedWordLoop() => _trackedWordLoop.Clear();
+
+    private void RefreshTrackedWordLoop()
+    {
+        if (!_trackedWordLoop.IsBound) return;
+        if (!_trackedWordLoop.TryGetRange(Document, out var range))
+        {
+            _loopStart = null;
+            _loopEnd = null;
+            InvalidateVisual();
+            TrackedWordLoopCleared?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+        if (_loopStart == range.Start && _loopEnd == range.End) return;
+        _loopStart = range.Start;
+        _loopEnd = range.End;
+        InvalidateVisual();
+        TrackedWordLoopRangeChanged?.Invoke(this, range);
+    }
+
+    private void UpdateContextMenu(LyricSegment? contextHit)
+    {
+        if (ContextMenu is null) return;
+        foreach (var control in ContextMenu.Items.OfType<Control>())
+        {
+            if (Equals(control.Tag, "play-word-loop"))
+                control.IsVisible = contextHit?.Type == LyricSegmentType.Word;
+            if (Equals(control.Tag, "move-other-voice"))
+                control.IsVisible = contextHit?.Type is LyricSegmentType.Line or LyricSegmentType.Word;
+            if (Equals(control.Tag, "select-direction"))
+                control.IsVisible = contextHit?.Type is LyricSegmentType.Line or LyricSegmentType.Word;
+        }
+    }
+
+    public WaveformSyncResult SynchronizeSelectionToRange()
+    {
+        EnsureEditingEnabled();
         if (Document is null) throw new InvalidOperationException("Bitte zuerst einen Song laden.");
         if (_loopStart is not { } start || _loopEnd is not { } end || end - start < TimeSpan.FromMilliseconds(100))
             throw new InvalidOperationException("Bitte zuerst mit Shift + Ziehen einen Waveform-Bereich markieren.");
@@ -331,9 +518,9 @@ public sealed class EditorTimelineControl : Control
 
         var roots = Document.Lines.Where(line => normalized.Any(segment =>
             line.DescendantsAndSelf().Contains(segment))).Distinct().ToList();
-        var synchronizedCount = 0;
+        var result = new WaveformSyncResult();
         var command = new EditSegmentForestCommand(roots, "Auswahl mit Waveform-Bereich synchronisieren", () =>
-            synchronizedCount = TimelineEditing.FitSelectionToRange(Document, normalized, start, end));
+            result = TimelineEditing.FitSelectionToWaveformRange(Document, normalized, start, end, Waveform));
         try { History.Execute(command); }
         catch
         {
@@ -343,7 +530,15 @@ public sealed class EditorTimelineControl : Control
 
         SegmentEdited?.Invoke(this, EventArgs.Empty);
         InvalidateVisual();
-        return synchronizedCount;
+        return result;
+    }
+
+    private void EnsureEditingEnabled()
+    {
+        if (!EditingEnabled)
+            throw new InvalidOperationException(EditorLocale.German
+                ? "Die Beat-Vorschau ist nicht editierbar. Schalte Karaoke-Timing aus, um den Arbeitsstand zu bearbeiten."
+                : "The beat preview is read-only. Turn off Karaoke Timing to edit the working version.");
     }
 
     private void DrawLoopRange(DrawingContext context, Rect bounds)
@@ -381,17 +576,31 @@ public sealed class EditorTimelineControl : Control
     private void DrawTracks(DrawingContext context, Rect bounds)
     {
         var visible = _viewport.VisibleRange(bounds.Width);
-        DrawLaneBackground(context, 126, 76, "ZEILEN");
-        DrawLaneBackground(context, 210, 70, "WÖRTER");
-        DrawLaneBackground(context, 288, Math.Max(84, bounds.Height - 296), "SILBEN");
+        var laneCount = VoiceLaneCount();
+        if (laneCount == 1)
+        {
+            DrawLaneBackground(context, 126, 76, "ZEILEN");
+            DrawLaneBackground(context, 210, 70, "WÖRTER");
+            DrawLaneBackground(context, 288, Math.Max(84, bounds.Height - 296), "SILBEN");
+        }
+        else
+        {
+            for (var lane = 0; lane < laneCount; lane++)
+            {
+                var group = VoiceGroupRect(lane, bounds);
+                DrawLaneBackground(context, group.Y, group.Height,
+                    lane == 0 ? "STIMME 1 · LEAD" : $"STIMME {lane + 1}");
+            }
+        }
         foreach (var line in Document!.Lines.Where(segment => segment.End >= visible.Start && segment.Start <= visible.End))
         {
-            DrawSegment(context, line, 150, 42, Color.Parse("#3B465B"));
+            DrawSegment(context, line, SegmentTrackRect(line, bounds), Color.Parse("#3B465B"));
             foreach (var word in line.Children.Where(segment => segment.End >= visible.Start && segment.Start <= visible.End))
             {
-                DrawSegment(context, word, 231, 38, word.RequiresReview ? Color.Parse("#66502B") : Color.Parse("#31564D"));
+                DrawSegment(context, word, SegmentTrackRect(word, bounds),
+                    word.RequiresReview ? Color.Parse("#66502B") : Color.Parse("#31564D"));
                 foreach (var syllable in word.Children.Where(segment => segment.End >= visible.Start && segment.Start <= visible.End))
-                    DrawSegment(context, syllable, 315, 44,
+                    DrawSegment(context, syllable, SegmentTrackRect(syllable, bounds),
                         syllable.Confidence is < .65 ? Color.Parse("#733F48") : Color.Parse("#334E6A"));
             }
         }
@@ -419,6 +628,37 @@ public sealed class EditorTimelineControl : Control
         }
     }
 
+    private void DrawPitchEvidence(DrawingContext context, double width)
+    {
+        if (PitchEvidence is not { Count: > 0 } notes) return;
+        const double top = 38;
+        const double height = 80;
+        var visible = _viewport.VisibleRange(width);
+        var visibleNotes = notes.Where(note => note.End >= visible.Start && note.Start <= visible.End).ToArray();
+        if (visibleNotes.Length == 0) return;
+        // Keep the vertical scale stable while scrolling; a visible-window
+        // scale would make the same note jump vertically between viewports.
+        var minimum = Math.Max(24, notes.Min(note => note.Midi) - 2);
+        var maximum = Math.Min(108, notes.Max(note => note.Midi) + 2);
+        var span = Math.Max(24, maximum - minimum);
+        var center = (minimum + maximum) / 2d;
+        var lower = center - span / 2d;
+        foreach (var note in visibleNotes)
+        {
+            var x = _viewport.TimeToPixel(note.Start);
+            var noteWidth = Math.Max(2, _viewport.TimeToPixel(note.End) - x);
+            var normalized = Math.Clamp((note.Midi - lower) / span, 0, 1);
+            var y = top + height - 4 - normalized * (height - 8);
+            var alpha = (byte)Math.Clamp(55 + note.Amplitude * 120, 55, 175);
+            context.FillRectangle(new SolidColorBrush(Color.FromArgb(alpha, 255, 86, 210)),
+                new Rect(x, y, noteWidth, 3));
+        }
+        var label = new FormattedText("PITCH", System.Globalization.CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight, new Typeface("Inter", FontStyle.Normal, FontWeight.Bold), 8,
+            new SolidColorBrush(Color.FromArgb(170, 255, 86, 210)));
+        context.DrawText(label, new Point(8, top + 3));
+    }
+
     private void DrawLaneBackground(DrawingContext context, double y, double height, string label)
     {
         context.FillRectangle(new SolidColorBrush(Color.Parse("#141923")), new Rect(0, y, Bounds.Width, height));
@@ -429,11 +669,11 @@ public sealed class EditorTimelineControl : Control
         context.DrawText(text, new Point(8, y + 5));
     }
 
-    private void DrawSegment(DrawingContext context, LyricSegment segment, double y, double height, Color color)
+    private void DrawSegment(DrawingContext context, LyricSegment segment, Rect track, Color color)
     {
         var x = _viewport.TimeToPixel(segment.Start);
         var width = Math.Max(2, _viewport.TimeToPixel(segment.End) - x);
-        var rect = new Rect(x, y, width, height);
+        var rect = new Rect(x, track.Y, width, track.Height);
         var selected = SelectedSegment?.Id == segment.Id || _selectedSegments.Contains(segment);
         context.DrawRectangle(new SolidColorBrush(color),
             new Pen(selected ? new SolidColorBrush(Color.Parse("#DFFF28")) : new SolidColorBrush(color.Lighten(.2f)), selected ? 2.5 : 1),
@@ -441,16 +681,18 @@ public sealed class EditorTimelineControl : Control
         if (width < 18) return;
         var text = new FormattedText(segment.Text, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, new Typeface("Inter"), 12, Brushes.White)
-        { MaxTextWidth = Math.Max(1, width - 10), MaxTextHeight = height - 6, Trimming = TextTrimming.CharacterEllipsis };
-        context.DrawText(text, new Point(x + 5, y + (height - text.Height) / 2));
+        { MaxTextWidth = Math.Max(1, width - 10), MaxTextHeight = track.Height - 6, Trimming = TextTrimming.CharacterEllipsis };
+        context.DrawText(text, new Point(x + 5, track.Y + (track.Height - text.Height) / 2));
     }
 
     private (LyricSegment Left, LyricSegment Right)? FindBoundary(Point point)
     {
-        if (Document is null || point.Y < 294) return null;
+        if (Document is null) return null;
         var maximum = 7d;
         (LyricSegment Left, LyricSegment Right)? best = null;
         foreach (var word in Document.Lines.SelectMany(line => line.Children))
+        {
+            if (!SegmentTrackRect(word.Children.FirstOrDefault() ?? word, Bounds).Contains(point)) continue;
             for (var index = 0; index + 1 < word.Children.Count; index++)
             {
                 var distance = Math.Abs(_viewport.TimeToPixel(word.Children[index].End) - point.X);
@@ -458,22 +700,48 @@ public sealed class EditorTimelineControl : Control
                 maximum = distance;
                 best = (word.Children[index], word.Children[index + 1]);
             }
+        }
         return best;
     }
 
     private LyricSegment? FindSegment(Point point)
     {
         if (Document is null) return null;
-        IEnumerable<LyricSegment> candidates = point.Y switch
-        {
-            >= 150 and <= 192 => Document.Lines,
-            >= 231 and <= 269 => Document.Lines.SelectMany(line => line.Children),
-            >= 315 and <= 359 => Document.Lines.SelectMany(line => line.Children).SelectMany(word => word.Children),
-            _ => []
-        };
         var time = _viewport.PixelToTime(point.X);
-        return candidates.Where(segment => segment.Start <= time && segment.End >= time)
+        return Document.Segments.Where(segment =>
+                segment.Type is LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable &&
+                SegmentTrackRect(segment, Bounds).Contains(point) &&
+                segment.Start <= time && segment.End >= time)
             .OrderBy(segment => segment.End - segment.Start).FirstOrDefault();
+    }
+
+    private int VoiceLaneCount() => Math.Clamp(
+        (Document?.Lines.Select(line => line.VoiceLane).DefaultIfEmpty(0).Max() ?? 0) + 1, 1, 4);
+
+    private Rect VoiceGroupRect(int lane, Rect bounds)
+    {
+        var count = VoiceLaneCount();
+        var height = Math.Max(96, (bounds.Height - 126) / count);
+        return new Rect(0, 126 + lane * height, bounds.Width, height);
+    }
+
+    private Rect SegmentTrackRect(LyricSegment segment, Rect bounds)
+    {
+        if (VoiceLaneCount() == 1) return segment.Type switch
+        {
+            LyricSegmentType.Line => new Rect(0, 150, bounds.Width, 42),
+            LyricSegmentType.Word => new Rect(0, 231, bounds.Width, 38),
+            _ => new Rect(0, 315, bounds.Width, 44),
+        };
+        var line = FindLine(segment);
+        var group = VoiceGroupRect(Math.Clamp(line?.VoiceLane ?? 0, 0, VoiceLaneCount() - 1), bounds);
+        var usable = Math.Max(78, group.Height - 24);
+        return segment.Type switch
+        {
+            LyricSegmentType.Line => new Rect(0, group.Y + 20, bounds.Width, Math.Max(22, usable * .27)),
+            LyricSegmentType.Word => new Rect(0, group.Y + 22 + usable * .31, bounds.Width, Math.Max(22, usable * .27)),
+            _ => new Rect(0, group.Y + 24 + usable * .62, bounds.Width, Math.Max(24, usable * .32)),
+        };
     }
 
     private LyricSegment? FindLine(LyricSegment segment) => Document?.Lines.FirstOrDefault(line =>
@@ -566,7 +834,8 @@ public sealed class EditorTimelineControl : Control
             TimeSpan? outerEnd;
             if (segment.Type == LyricSegmentType.Line)
             {
-                siblings = state.Document.Lines.OrderBy(TimelineEditing.EffectiveStart).ToList();
+                siblings = state.Document.Lines.Where(candidate => candidate.VoiceLane == segment.VoiceLane)
+                    .OrderBy(TimelineEditing.EffectiveStart).ToList();
                 outerStart = TimeSpan.Zero;
                 outerEnd = null;
             }
@@ -631,7 +900,8 @@ public sealed class EditorTimelineControl : Control
 
     private (TimeSpan PreviousEnd, TimeSpan? NextStart) LineNeighborBounds(LyricSegment line)
     {
-        var ordered = Document?.Lines.OrderBy(candidate => candidate.Start).ThenBy(candidate => candidate.End).ToList() ?? [];
+        var ordered = Document?.Lines.Where(candidate => candidate.VoiceLane == line.VoiceLane)
+            .OrderBy(candidate => candidate.Start).ThenBy(candidate => candidate.End).ToList() ?? [];
         var index = ordered.IndexOf(line);
         return (index > 0 ? ordered[index - 1].End : TimeSpan.Zero,
             index >= 0 && index + 1 < ordered.Count ? ordered[index + 1].Start : null);

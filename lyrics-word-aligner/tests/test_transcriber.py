@@ -1,6 +1,7 @@
 import unittest
 
-from app.transcriber import language_code, merge_transcript_chunks
+from app.transcriber import (language_code, merge_transcript_chunks,
+                             reconcile_detected_language)
 
 
 class TranscriberLanguageTests(unittest.TestCase):
@@ -36,3 +37,66 @@ class TranscriberLanguageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LanguageReconciliationTests(unittest.TestCase):
+    """Canonical lyrics outrank a contradicting ASR language guess."""
+
+    GERMAN = ("Wollen wir noch ein bisschen zusammen rumhängen "
+              "Auf den Dächern dieser Stadt vergessen wieder mal die Zeit "
+              "Die Vögel singen es wird hell und wir singen mit "
+              "Nicht mehr lang dann geht die Sonne auf")
+    ENGLISH = ("We got a rose in the garden and the sun is on my face "
+               "I have not got the time to say what you want from me "
+               "And that is all we have in the end of it")
+
+    def test_unambiguous_german_lyrics_overrule_an_english_guess(self):
+        language, evidence = reconcile_detected_language("en", self.GERMAN)
+
+        self.assertEqual("de", language)
+        self.assertTrue(evidence["applied"])
+        self.assertEqual("canonical-lyrics-contradict-asr", evidence["reason"])
+        self.assertGreater(evidence["german_score"], evidence["english_score"])
+
+    def test_agreeing_text_leaves_the_detection_untouched(self):
+        language, evidence = reconcile_detected_language("de", self.GERMAN)
+
+        self.assertEqual("de", language)
+        self.assertFalse(evidence["applied"])
+        self.assertEqual("text-agrees-with-asr", evidence["reason"])
+
+    def test_english_lyrics_are_not_flipped_to_german(self):
+        language, evidence = reconcile_detected_language("en", self.ENGLISH)
+
+        self.assertEqual("en", language)
+        self.assertFalse(evidence["applied"])
+
+    def test_a_few_loan_words_never_flip_a_song(self):
+        language, evidence = reconcile_detected_language(
+            "en", "Baby you and me tonight und du")
+
+        self.assertEqual("en", language)
+        self.assertFalse(evidence["applied"])
+
+    def test_a_narrow_textual_lead_is_not_decisive_enough(self):
+        # German leads, but by too little to overrule an acoustic verdict.
+        language, evidence = reconcile_detected_language(
+            "en", "und du und wir mit dem Rest von dieser langen Nacht")
+
+        self.assertEqual("en", language)
+        self.assertFalse(evidence["applied"])
+        self.assertEqual("text-evidence-too-weak", evidence["reason"])
+        self.assertLess(evidence["margin"], evidence["minimum_margin"])
+
+    def test_a_language_without_markers_keeps_the_asr_verdict(self):
+        language, evidence = reconcile_detected_language(
+            "fr", "Je ne regrette rien de tout cela")
+
+        self.assertEqual("fr", language)
+        self.assertFalse(evidence["applied"])
+
+    def test_empty_lyrics_keep_the_asr_verdict(self):
+        language, evidence = reconcile_detected_language("en", "")
+
+        self.assertEqual("en", language)
+        self.assertFalse(evidence["applied"])

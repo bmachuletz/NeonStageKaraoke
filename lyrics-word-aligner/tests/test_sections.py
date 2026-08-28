@@ -16,3 +16,14 @@ class SectionPlanningTests(unittest.TestCase):
         sections = plan_sections(lines, 80.0, max_duration=20.0)
         self.assertGreater(len(sections), 2)
         self.assertTrue(all(section["audio_end"] > section["audio_start"] for section in sections))
+
+    def test_timestamped_empty_marker_caps_section_audio(self):
+        lines = [
+            LrcLine(132.15, "Previous", ""),
+            LrcLine(136.42, "Target", "", source_end_boundary=144.78),
+            LrcLine(178.98, "Following", ""),
+        ]
+
+        sections = plan_sections(lines, 230.0, pause_gap=7.0)
+
+        self.assertAlmostEqual(144.78, sections[0]["audio_end"])

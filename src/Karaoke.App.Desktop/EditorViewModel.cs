@@ -19,6 +19,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private readonly bool _loadVisualAssets;
     private SongDto? _selectedSong;
     private LyricsEditorDocument? _document;
+    private LyricsEditorDocument? _timingPreviewDocument;
+    private IReadOnlyList<double> _visualBeatTimes = [];
+    private readonly Dictionary<Guid, (TimeSpan Start, TimeSpan End)> _timingProjectionBaseline = [];
     private TimeSpan _playhead;
     private string _status = "Verbinde mit Neon Stage …";
     private bool _busy;
@@ -31,6 +34,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private long _serverRevision;
     private LyricsVersionStatus? _serverVersionStatus;
     private string? _alignmentReportJson;
+    private IReadOnlyList<PitchNoteEvidence> _pitchEvidence = [];
     private string _songFilter = string.Empty;
     private string _songStatusFilter = "In Review";
     private LyricSegment? _selectedSegment;
@@ -45,7 +49,10 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private bool _instrumentalEnabled;
     private int _instrumentalVolume = 65;
     private int _vocalVolume = 90;
+    private int _playbackSpeedPercent = 100;
     private long _previewRevision;
+    private bool _perceptualLeadEnabled = true;
+    private bool _karaokeTimingEnabled = true;
     private long _timelineRevision;
     private TimeSpan? _loopStart;
     private TimeSpan? _loopEnd;
@@ -103,7 +110,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             (_, _) =>
             {
                 if (!_audio.IsPlaying || _visualClockSuspended) return;
-                var interpolated = _positionAnchor + Stopwatch.GetElapsedTime(_positionAnchorTimestamp);
+                var elapsed = Stopwatch.GetElapsedTime(_positionAnchorTimestamp);
+                var interpolated = _positionAnchor + TimeSpan.FromTicks(
+                    (long)(elapsed.Ticks * (_playbackSpeedPercent / 100d)));
                 if (LoopEnabled && LoopStart is { } loopStart && LoopEnd is { } loopEnd && interpolated >= loopEnd)
                 {
                     if (Interlocked.Exchange(ref _loopSeekInProgress, 1) == 0)
@@ -126,12 +135,52 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     public ObservableCollection<SpotifyTrackDto> AdminWishSearchResults { get; } = [];
     public ObservableCollection<string> ConsoleLines { get; } = [];
     public ObservableCollection<EditorLyricsVersionItem> LyricsVersions { get; } = [];
-    public IReadOnlyList<string> SongStatusFilters { get; } = ["Alle", "In Review", "Freigegeben", "Ohne Lyrics / Without Lyrics"];
+    public IReadOnlyList<string> SongStatusFilters { get; } =
+    [
+        Localized("Alle", "All"),
+        "In Review",
+        Localized("Freigegeben", "Released"),
+        Localized("In Review · synchronisierte Lyrics", "In review · synchronized lyrics"),
+        Localized("In Review · keine synchronisierten Lyrics", "In review · no synchronized lyrics"),
+        Localized("Ohne Lyrics", "Without lyrics")
+    ];
     public Uri ServerAddress { get; }
     public CommandHistory History { get; } = new();
-    public SongDto? SelectedSong { get => _selectedSong; set => Set(ref _selectedSong, value); }
-    public LyricsEditorDocument? Document { get => _document; private set => Set(ref _document, value); }
+    public SongDto? SelectedSong
+    {
+        get => _selectedSong;
+        set
+        {
+            if (!Set(ref _selectedSong, value)) return;
+            OnPropertyChanged(nameof(SongReleaseActionLabel));
+        }
+    }
+    public string SongReleaseActionLabel => SelectedSong?.ReviewStatus == SongReviewStatus.Approved
+        ? Localized("↩ Zurück in Review", "↩ Return to review")
+        : Localized("✓ Song freigeben", "✓ Release song");
+    public LyricsEditorDocument? Document
+    {
+        get => _document;
+        private set
+        {
+            if (!Set(ref _document, value)) return;
+            RefreshTimingProjection();
+            OnPropertyChanged(nameof(KaraokeTimingAvailable));
+            OnPropertyChanged(nameof(KaraokeTimingActive));
+            OnPropertyChanged(nameof(KaraokeTimingDescription));
+        }
+    }
+    public LyricsEditorDocument? TimingPreviewDocument
+    {
+        get => _timingPreviewDocument;
+        private set => Set(ref _timingPreviewDocument, value);
+    }
     public WaveformPyramid? Waveform { get => _waveform; private set => Set(ref _waveform, value); }
+    public IReadOnlyList<PitchNoteEvidence> PitchEvidence
+    {
+        get => _pitchEvidence;
+        private set => Set(ref _pitchEvidence, value);
+    }
     public Bitmap? Cover
     {
         get => _cover;
@@ -225,7 +274,53 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             else _audio.Volume = value;
         }
     }
+    public int PlaybackSpeedPercent
+    {
+        get => _playbackSpeedPercent;
+        set
+        {
+            var normalized = Math.Clamp((int)Math.Round(value / 10d) * 10, 10, 100);
+            if (normalized == _playbackSpeedPercent) return;
+            var decoderPosition = _audio.IsSeekable ? _audio.Position : Playhead;
+            _playbackSpeedPercent = normalized;
+            _audio.PlaybackRate = normalized / 100d;
+            AnchorPosition(decoderPosition);
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PlaybackSpeedLabel));
+            Status = EditorLocale.German
+                ? $"Wiedergabegeschwindigkeit: {normalized} %"
+                : $"Playback speed: {normalized}%";
+        }
+    }
+    public string PlaybackSpeedLabel => $"{PlaybackSpeedPercent} %";
     public long PreviewRevision { get => _previewRevision; private set => Set(ref _previewRevision, value); }
+    public bool PerceptualLeadEnabled
+    {
+        get => _perceptualLeadEnabled;
+        set => Set(ref _perceptualLeadEnabled, value);
+    }
+    public bool KaraokeTimingEnabled
+    {
+        get => _karaokeTimingEnabled;
+        set
+        {
+            if (!Set(ref _karaokeTimingEnabled, value)) return;
+            RefreshTimingProjection();
+            OnPropertyChanged(nameof(KaraokeTimingActive));
+            OnPropertyChanged(nameof(KaraokeTimingDescription));
+            OnPropertyChanged(nameof(CanEditWord));
+            OnPropertyChanged(nameof(CanEditSyllable));
+            OnPropertyChanged(nameof(CanEditLine));
+            OnPropertyChanged(nameof(CanDeleteSegment));
+        }
+    }
+    public bool KaraokeTimingAvailable => Document is not null && !Document.UsesUltraStarTiming;
+    public bool KaraokeTimingActive => KaraokeTimingEnabled && KaraokeTimingAvailable;
+    public string KaraokeTimingDescription => Document?.UsesUltraStarTiming == true
+        ? Localized("UltraStar-Timing geschützt · keine Umrechnung",
+            "UltraStar timing protected · no conversion")
+        : Localized("Beat-/Wahrnehmungsgeometrie als Vorschau · gespeicherte Zeiten bleiben unverändert",
+            "Beat/perception geometry preview · stored timing remains unchanged");
     public long TimelineRevision { get => _timelineRevision; private set => Set(ref _timelineRevision, value); }
     public TimeSpan? LoopStart { get => _loopStart; private set => Set(ref _loopStart, value); }
     public TimeSpan? LoopEnd { get => _loopEnd; private set => Set(ref _loopEnd, value); }
@@ -259,8 +354,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(CanEditSyllable));
             OnPropertyChanged(nameof(CanEditLine));
             OnPropertyChanged(nameof(CanDeleteSegment));
-            OnPropertyChanged(nameof(SelectedHoldAfterText));
             OnPropertyChanged(nameof(SelectedStageEffect));
+            OnPropertyChanged(nameof(SelectedVoiceLane));
         }
     }
     public string SelectedSegmentHeading => SelectedSegment is null
@@ -276,11 +371,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     public bool CanEditSyllable => SelectedSegment?.Type == LyricSegmentType.Syllable;
     public bool CanEditLine => SelectedSegment?.Type == LyricSegmentType.Line;
     public bool CanDeleteSegment => CanEditLine || CanEditWord || CanEditSyllable;
-    public string SelectedHoldAfterText => SelectedSegment?.Type == LyricSegmentType.Line && SelectedSegment.HoldAfterMilliseconds is { } value
-        ? (value / 1000d).ToString("0.###", System.Globalization.CultureInfo.CurrentCulture) : string.Empty;
     public Array StageEffects { get; } = Enum.GetValues<StageLineEffect>();
     public StageLineEffect SelectedStageEffect => SelectedSegment?.Type == LyricSegmentType.Line
         ? SelectedSegment.StageEffect : StageLineEffect.Automatic;
+    public int SelectedVoiceLane => SelectedSegment?.Type == LyricSegmentType.Line
+        ? Math.Clamp(SelectedSegment.VoiceLane, 0, 3) : 0;
     public string SongHeading => SelectedSong is null ? "Kein Song ausgewählt" : $"{SelectedSong.Title}  ·  {SelectedSong.Artist}";
     public string ReviewSummary => Document is null ? "Kein Alignment geladen" :
         $"{Document.Segments.Count()} Segmente · {Document.Segments.Count(s => s.RequiresReview)} ungeprüft";
@@ -479,18 +574,23 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (version is null) throw new InvalidOperationException("Der Lyrics-Stand wurde nicht gefunden.");
             var document = JsonSerializer.Deserialize<LyricsEditorDocument>(version.DocumentJson, JsonOptions);
             if (document is null) throw new InvalidOperationException("Der Lyrics-Stand enthält kein lesbares Editor-Dokument.");
+            LyricsDocumentImporter.IgnoreStructureMarkers(document);
 
             _audio.Stop();
             _loadedAudioSongId = null;
             History.Clear();
             SelectedSegment = null;
             Document = document;
-            // Historische Stände bleiben unveränderlich. Der geladene Inhalt ist
-            // ein neuer Arbeitsstand und erhält erst beim Speichern eine neue ID.
-            _serverVersionId = null;
-            _serverRevision = 0;
-            _serverVersionStatus = null;
-            _alignmentReportJson = version.AlignmentReportJson;
+            // UpdateAsync überschreibt niemals eine Revision, sondern archiviert
+            // sie und legt beim Speichern einen neuen Stand an. Deshalb darf eine
+            // noch bearbeitbare generierte/reviewte Version als echte Basis des
+            // Arbeitsstands verbunden bleiben. Nur abgeschlossene historische
+            // oder veröffentlichte Stände werden als ungespeicherte Kopie geladen.
+            var connectedWorkingVersion = CanContinueAsWorkingVersion(version.Status);
+            _serverVersionId = connectedWorkingVersion ? version.Id : null;
+            _serverRevision = connectedWorkingVersion ? version.Revision : 0;
+            _serverVersionStatus = connectedWorkingVersion ? version.Status : null;
+            SetAlignmentReport(version.AlignmentReportJson);
             AnchorPosition(FirstVocalPosition());
             PreviewRevision++;
             TimelineRevision++;
@@ -498,7 +598,13 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(ReviewSummary));
             SaveLocalRecoverySnapshot();
             await RefreshLyricsVersionsAsync(cancellationToken, reportErrors: false);
-            Status = $"Revision {version.Revision} vom {EditorLyricsVersionItem.FormatTimestamp(version.CreatedAt)} als neuer Arbeitsstand geladen · noch nicht gespeichert";
+            Status = connectedWorkingVersion
+                ? Localized(
+                    $"Revision {version.Revision} vom {EditorLyricsVersionItem.FormatTimestamp(version.CreatedAt)} ist jetzt der Arbeitsstand · Speichern erzeugt eine neue Revision",
+                    $"Revision {version.Revision} from {EditorLyricsVersionItem.FormatTimestamp(version.CreatedAt)} is now the working version · saving creates a new revision")
+                : Localized(
+                    $"Revision {version.Revision} vom {EditorLyricsVersionItem.FormatTimestamp(version.CreatedAt)} als neue ungespeicherte Arbeitskopie geladen",
+                    $"Revision {version.Revision} from {EditorLyricsVersionItem.FormatTimestamp(version.CreatedAt)} loaded as a new unsaved working copy");
         }
         catch (Exception exception)
         {
@@ -801,6 +907,14 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             Status = "Bitte zuerst einen Song auswählen.";
             return;
         }
+        if (choice == AlignmentVariantChoice.BasicPitchAb && Document?.UsesUltraStarTiming == true)
+        {
+            Status = Localized(
+                "Basic-Pitch-A/B ist für Songs mit UltraStar-Timing-Herkunft ausgeschlossen.",
+                "Basic Pitch A/B excludes songs with UltraStar timing heritage.");
+            AppendConsole(Status);
+            return;
+        }
         if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
         {
             AppendConsole("Der aktuelle Editor-Stand konnte nicht als Alignment-Basis gespeichert werden.");
@@ -808,14 +922,26 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
         ConsoleVisible = true;
         _audio.Stop();
-        var (includeEditorBasis, includeOriginalLyrics) = AlignmentVariants(choice);
+        var (includeEditorBasis, includeOriginalLyrics, includeResearchShadow, includeEditorGuidance, includeBasicPitchAb) =
+            AlignmentVariants(choice);
         AppendConsole($"> GPU-Alignment: {song.Title} · {song.Artist}");
         if (includeEditorBasis) AppendConsole("  Variante 1.2: IPA-Mikroanalyse + Pitch-/Voicing-Ausklänge");
         if (includeOriginalLyrics) AppendConsole("  Variante 2: ursprüngliche LRCLIB-Lyrics + Volltranskript-Timing");
+        if (includeEditorGuidance) AppendConsole(Localized(
+            "  Referenzgestützt: manuelle Bereiche kalibrieren unbearbeitete Nachbarzeilen",
+            "  Reference-guided: manual regions calibrate untouched neighbouring lines"));
+        if (includeResearchShadow) AppendConsole(Localized(
+            "  Forschungs-Schattenlauf: unveränderte Original-Lyrics, keine Editor-Korrekturen",
+            "  Research shadow: immutable original lyrics, no editor corrections"));
+        if (includeBasicPitchAb) AppendConsole(Localized(
+            "  Basic Pitch A/B: unveränderte Kontrolle A + konservative Pitch-Evidenz B",
+            "  Basic Pitch A/B: unchanged control A + conservative pitch evidence B"));
         try
         {
             using var response = await _http.PostAsJsonAsync($"/api/admin/songs/{song.Id}/realign",
-                new SongRealignmentRequest(_serverVersionId, includeEditorBasis, includeOriginalLyrics),
+                new SongRealignmentRequest(_serverVersionId, includeEditorBasis,
+                    includeOriginalLyrics, includeResearchShadow, includeEditorGuidance,
+                    includeBasicPitchAb),
                 cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
             {
@@ -825,14 +951,81 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledRealignmentJob = null;
-            Status = choice == AlignmentVariantChoice.Both
-                ? $"Zwei GPU-Alignment-Varianten für {song.Title} laufen im Hintergrund …"
+            Status = choice == AlignmentVariantChoice.All
+                ? $"Vier GPU-Alignment-Varianten für {song.Title} laufen im Hintergrund …"
                 : $"Die ausgewählte GPU-Alignment-Variante für {song.Title} läuft im Hintergrund …";
             await RefreshRealignmentStatusAsync(cancellationToken);
         }
         catch (Exception exception)
         {
             Status = "Neuausrichtung konnte nicht gestartet werden: " + exception.Message;
+            AppendConsole(Status);
+        }
+    }
+
+    public async Task StartSelectedSongsRealignmentAsync(IReadOnlyList<SongDto> songs,
+        AlignmentVariantChoice choice, CancellationToken cancellationToken = default)
+    {
+        var selectedSongs = songs.DistinctBy(song => song.Id).ToArray();
+        if (selectedSongs.Length == 0)
+        {
+            Status = Localized("Bitte zuerst mindestens einen Song auswählen.",
+                "Select at least one song first.");
+            return;
+        }
+        if (selectedSongs.Length == 1)
+        {
+            if (SelectedSong?.Id != selectedSongs[0].Id) SelectedSong = selectedSongs[0];
+            await StartSelectedSongRealignmentAsync(choice, cancellationToken);
+            return;
+        }
+        if (Document is not null && !await SaveDraftAsync(
+                cancellationToken, allowTimingConflicts: true))
+        {
+            AppendConsole(Localized(
+                "Der aktuelle Editor-Stand konnte vor dem Auswahl-Alignment nicht gespeichert werden.",
+                "The current editor state could not be saved before aligning the selection."));
+            return;
+        }
+        ConsoleVisible = true;
+        _audio.Stop();
+        var (includeEditorBasis, includeOriginalLyrics, includeResearchShadow,
+            includeEditorGuidance, includeBasicPitchAb) = AlignmentVariants(choice);
+        AppendConsole(Localized(
+            $"> GPU-Neuausrichtung: {selectedSongs.Length} ausgewählte Songs",
+            $"> GPU realignment: {selectedSongs.Length} selected songs"));
+        foreach (var song in selectedSongs)
+            AppendConsole($"  • {song.Title} · {song.Artist}");
+        try
+        {
+            var alignment = new SongRealignmentRequest(
+                null, includeEditorBasis, includeOriginalLyrics, includeResearchShadow,
+                includeEditorGuidance, includeBasicPitchAb,
+                includeBasicPitchAb ? 5 : null);
+            using var response = await _http.PostAsJsonAsync(
+                "/api/admin/songs/realign-selection",
+                new SongSelectionRealignmentRequest(
+                    selectedSongs.Select(song => song.Id).ToArray(), alignment),
+                cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            {
+                AppendConsole(Localized("Es läuft bereits eine GPU-Neuausrichtung.",
+                    "A GPU realignment is already running."));
+                return;
+            }
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    await response.Content.ReadAsStringAsync(cancellationToken));
+            _handledRealignmentJob = null;
+            Status = Localized(
+                $"{selectedSongs.Length} ausgewählte Songs laufen nacheinander durch das GPU-Alignment …",
+                $"{selectedSongs.Length} selected songs are being processed by GPU alignment …");
+            await RefreshRealignmentStatusAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            Status = Localized("Auswahl-Alignment konnte nicht gestartet werden: ",
+                "Could not start selection alignment: ") + exception.Message;
             AppendConsole(Status);
         }
     }
@@ -847,14 +1040,26 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
         ConsoleVisible = true;
         _audio.Stop();
-        var (includeEditorBasis, includeOriginalLyrics) = AlignmentVariants(choice);
+        var (includeEditorBasis, includeOriginalLyrics, includeResearchShadow, includeEditorGuidance, includeBasicPitchAb) =
+            AlignmentVariants(choice);
         AppendConsole("> GPU-Neuausrichtung: gesamte Bibliothek");
         if (includeEditorBasis) AppendConsole("  Variante 1.2: IPA-Mikroanalyse + Pitch-/Voicing-Ausklänge");
         if (includeOriginalLyrics) AppendConsole("  Variante 2: LRCLIB + Volltranskript-Timing");
+        if (includeEditorGuidance) AppendConsole(Localized(
+            "  Referenzgestützt: lokale Kalibrierung aus manuellen Korrekturen",
+            "  Reference-guided: local calibration from manual corrections"));
+        if (includeResearchShadow) AppendConsole(Localized(
+            "  Forschungs-Schattenlauf: unveränderte Original-Lyrics, keine Editor-Korrekturen",
+            "  Research shadow: immutable original lyrics, no editor corrections"));
+        if (includeBasicPitchAb) AppendConsole(Localized(
+            "  Basic Pitch A/B: maximal fünf Songs ohne UltraStar-Herkunft",
+            "  Basic Pitch A/B: at most five songs without UltraStar heritage"));
         try
         {
             using var response = await _http.PostAsJsonAsync("/api/admin/songs/realign-all",
-                new SongRealignmentRequest(null, includeEditorBasis, includeOriginalLyrics), cancellationToken);
+                new SongRealignmentRequest(null, includeEditorBasis, includeOriginalLyrics,
+                    includeResearchShadow, includeEditorGuidance, includeBasicPitchAb,
+                    includeBasicPitchAb ? 5 : null), cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
             {
                 AppendConsole("Es läuft bereits eine GPU-Neuausrichtung.");
@@ -863,8 +1068,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledRealignmentJob = null;
-            Status = choice == AlignmentVariantChoice.Both
-                ? "Beide GPU-Alignment-Varianten der gesamten Bibliothek laufen im Hintergrund …"
+            Status = choice == AlignmentVariantChoice.All
+                ? "Alle vier GPU-Alignment-Varianten der gesamten Bibliothek laufen im Hintergrund …"
                 : "Die ausgewählte GPU-Alignment-Variante der gesamten Bibliothek läuft im Hintergrund …";
             await RefreshRealignmentStatusAsync(cancellationToken);
         }
@@ -875,12 +1080,16 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private static (bool IncludeEditorBasis, bool IncludeOriginalLyrics) AlignmentVariants(
+    private static (bool IncludeEditorBasis, bool IncludeOriginalLyrics,
+        bool IncludeResearchShadow, bool IncludeEditorGuidance, bool IncludeBasicPitchAb) AlignmentVariants(
         AlignmentVariantChoice choice) => choice switch
         {
-            AlignmentVariantChoice.Phoneme => (true, false),
-            AlignmentVariantChoice.FullTranscript => (false, true),
-            AlignmentVariantChoice.Both => (true, true),
+            AlignmentVariantChoice.Phoneme => (true, false, false, false, false),
+            AlignmentVariantChoice.EditorGuided => (false, false, false, true, false),
+            AlignmentVariantChoice.FullTranscript => (false, true, false, false, false),
+            AlignmentVariantChoice.ResearchShadow => (false, false, true, false, false),
+            AlignmentVariantChoice.BasicPitchAb => (false, false, false, false, true),
+            AlignmentVariantChoice.All => (true, true, true, true, false),
             _ => throw new ArgumentOutOfRangeException(nameof(choice), choice, null)
         };
 
@@ -1026,7 +1235,16 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 return;
             }
             await ReloadSongsAsync(cancellationToken);
-            if (status.SongId is { } songId)
+            if (status.SongIds is { Count: > 0 } selectedSongIds)
+            {
+                foreach (var selectedSongId in selectedSongIds)
+                    _realignedSongsPendingReview.Add(selectedSongId);
+                if (SelectedSong is { } selectedSong && selectedSongIds.Contains(selectedSong.Id))
+                    await RefreshLyricsVersionsAsync(cancellationToken, reportErrors: false);
+                Status = status.Message;
+                AppendConsole(Status);
+            }
+            else if (status.SongId is { } songId)
             {
                 if (SelectedSong?.Id == songId)
                 {
@@ -1060,12 +1278,13 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             ? LyricsDocumentImporter.Import(lyrics)
             : JsonSerializer.Deserialize<LyricsEditorDocument>(serverVersion.DocumentJson, JsonOptions);
         if (Document is null) throw new InvalidOperationException("Die neue Alignment-Version ist nicht lesbar.");
+        LyricsDocumentImporter.IgnoreStructureMarkers(Document);
         _loadedSourceFingerprint = JsonSerializer.Serialize(lyrics, JsonOptions);
         History.Clear();
         _serverVersionId = serverVersion?.Id;
         _serverRevision = serverVersion?.Revision ?? 0;
         _serverVersionStatus = serverVersion?.Status;
-        _alignmentReportJson = serverVersion?.AlignmentReportJson;
+        SetAlignmentReport(serverVersion?.AlignmentReportJson);
         SelectedSegment = null;
         LoopEnabled = false;
         LoopStart = null;
@@ -1192,15 +1411,26 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private bool MatchesSongFilter(SongDto song)
     {
         var needle = SongFilter.Trim();
-        var matchesStatus = SongStatusFilter switch
-        {
-            "In Review" => song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
-                           song.ReviewStatus == SongReviewStatus.InReview,
-            "Freigegeben" => song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
-                             song.ReviewStatus == SongReviewStatus.Approved,
-            "Ohne Lyrics / Without Lyrics" => song.LibraryCategory == SongLibraryCategory.WithoutLyrics,
-            _ => true
-        };
+        var matchesStatus = SongStatusFilter == "In Review"
+            ? song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
+              song.ReviewStatus == SongReviewStatus.InReview
+            : SongStatusFilter == Localized("Freigegeben", "Released")
+                ? song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
+                  song.ReviewStatus == SongReviewStatus.Approved
+                : SongStatusFilter == Localized(
+                    "In Review · synchronisierte Lyrics", "In review · synchronized lyrics")
+                    ? song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
+                      song.ReviewStatus == SongReviewStatus.InReview &&
+                      song.HasSynchronizedLyrics
+                    : SongStatusFilter == Localized(
+                        "In Review · keine synchronisierten Lyrics",
+                        "In review · no synchronized lyrics")
+                        ? song.LibraryCategory == SongLibraryCategory.KaraokeReady &&
+                          song.ReviewStatus == SongReviewStatus.InReview &&
+                          !song.HasSynchronizedLyrics
+                        : SongStatusFilter == Localized("Ohne Lyrics", "Without lyrics")
+                            ? song.LibraryCategory == SongLibraryCategory.WithoutLyrics
+                            : true;
         return matchesStatus && (needle.Length == 0 || song.Title.Contains(needle, StringComparison.CurrentCultureIgnoreCase) ||
                song.Artist.Contains(needle, StringComparison.CurrentCultureIgnoreCase) ||
                song.Album.Contains(needle, StringComparison.CurrentCultureIgnoreCase));
@@ -1209,6 +1439,27 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     public async Task ApproveSelectedSongAsync(CancellationToken cancellationToken = default)
     {
         if (SelectedSong is null) return;
+        if (SelectedSong.ReviewStatus == SongReviewStatus.Approved)
+        {
+            using var reviewResponse = await _http.PutAsJsonAsync(
+                $"/api/admin/songs/{SelectedSong.Id}/review-status",
+                new ChangeSongReviewStatusRequest(SongReviewStatus.InReview), cancellationToken);
+            if (!reviewResponse.IsSuccessStatusCode)
+            {
+                Status = Localized("Der Song konnte nicht zurück in Review gesetzt werden: ",
+                    "The song could not be returned to review: ") +
+                    await reviewResponse.Content.ReadAsStringAsync(cancellationToken);
+                return;
+            }
+            var reviewed = await reviewResponse.Content.ReadFromJsonAsync<SongDto>(cancellationToken: cancellationToken);
+            if (reviewed is null) return;
+            ReplaceSong(reviewed);
+            SelectedSong = reviewed;
+            ApplySongFilter();
+            Status = Localized("Song zurück in Review gesetzt – er ist nicht mehr auf der Stage verfügbar.",
+                "Song returned to review – it is no longer available on the stage.");
+            return;
+        }
         if (SelectedSong.LibraryCategory == SongLibraryCategory.WithoutLyrics ||
             !SelectedSong.HasLyrics || !SelectedSong.HasInstrumental || !SelectedSong.HasVocals)
         {
@@ -1318,9 +1569,10 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _serverVersionId = null;
         _serverRevision = 0;
         _serverVersionStatus = null;
-        _alignmentReportJson = null;
+        SetAlignmentReport(null);
         _loadedSourceFingerprint = null;
         History.Clear();
+        _visualBeatTimes = [];
         Document = null;
         Waveform = null;
         Cover = null;
@@ -1333,6 +1585,21 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             if (_loadVisualAssets) await LoadCoverAsync(song.Id, ct);
+            try
+            {
+                var visualization = await _http.GetFromJsonAsync<SongVisualizationDto>(
+                    $"/api/songs/{song.Id}/visualization", ct);
+                _visualBeatTimes = visualization?.Frames
+                    .Where(frame => frame.Beat)
+                    .Select(frame => frame.TimeSeconds)
+                    .OrderBy(value => value)
+                    .ToArray() ?? [];
+            }
+            catch (Exception exception) when (exception is HttpRequestException or JsonException)
+            {
+                // Waveform editing remains available when no beat analysis exists.
+                _visualBeatTimes = [];
+            }
             Status = "KI-Alignment wird geladen …";
             var stems = await _http.GetFromJsonAsync<StemAvailabilityDto>($"/api/songs/{song.Id}/stems", ct);
             _hasVocalStem = stems?.HasVocals == true;
@@ -1367,17 +1634,34 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (useRecovery)
             {
                 Document = JsonSerializer.Deserialize<LyricsEditorDocument>(recovery!.DocumentJson, JsonOptions);
-                // Fehlt die Version in der aktuell verbundenen Serverdatenbank,
-                // muss der Recovery-Entwurf dort neu angelegt statt gegen eine
-                // alte ID aktualisiert werden.
-                _serverVersionId = serverDraft?.Id;
-                _serverRevision = serverDraft?.Revision ?? 0;
-                _serverVersionStatus = serverDraft?.Status;
-                _alignmentReportJson = serverDraft?.AlignmentReportJson;
+                LyricsVersionDto? recoveryVersion = null;
+                if (recovery.ServerVersionId is { } recoveryVersionId)
+                {
+                    using var recoveryVersionResponse = await _http.GetAsync(
+                        $"/api/songs/{song.Id}/lyrics/versions/{recoveryVersionId}", ct);
+                    if (recoveryVersionResponse.IsSuccessStatusCode)
+                        recoveryVersion = await recoveryVersionResponse.Content
+                            .ReadFromJsonAsync<LyricsVersionDto>(cancellationToken: ct);
+                }
+                // Eine lokale Recovery darf niemals an einen anderen, nur zufällig
+                // neuesten Serverentwurf gebunden werden. Entweder gehört ihre
+                // exakte Version noch zu einem bearbeitbaren Stand, oder Speichern
+                // legt bewusst eine neue Revision an.
+                var connectedRecovery = recoveryVersion is not null &&
+                                        recoveryVersion.Revision == recovery.ServerRevision &&
+                                        CanContinueAsWorkingVersion(recoveryVersion.Status);
+                _serverVersionId = connectedRecovery ? recoveryVersion!.Id : null;
+                _serverRevision = connectedRecovery ? recoveryVersion!.Revision : 0;
+                _serverVersionStatus = connectedRecovery ? recoveryVersion!.Status : null;
+                SetAlignmentReport(connectedRecovery
+                    ? recoveryVersion!.AlignmentReportJson
+                    : serverDraft?.AlignmentReportJson);
                 _loadedSourceFingerprint = currentSourceFingerprint;
-                Status = serverDraft is null
-                    ? "Lokaler Recovery-Entwurf geladen – bitte erneut speichern."
-                    : "Neueren lokalen Recovery-Entwurf geladen – bitte erneut speichern.";
+                Status = connectedRecovery
+                    ? Localized("Lokalen Recovery-Arbeitsstand mit seiner Serverrevision geladen.",
+                        "Loaded the local recovery working version with its server revision.")
+                    : Localized("Lokale Recovery als ungespeicherte Arbeitskopie geladen – bitte speichern.",
+                        "Loaded local recovery as an unsaved working copy — please save it.");
             }
             else if (serverDraft is not null)
             {
@@ -1385,7 +1669,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _serverVersionId = serverDraft.Id;
                 _serverRevision = serverDraft.Revision;
                 _serverVersionStatus = serverDraft.Status;
-                _alignmentReportJson = serverDraft.AlignmentReportJson;
+                SetAlignmentReport(serverDraft.AlignmentReportJson);
                 _loadedSourceFingerprint = currentSourceFingerprint;
             }
             else
@@ -1403,14 +1687,20 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _serverVersionId = null;
                 _serverRevision = 0;
                 _serverVersionStatus = null;
-                _alignmentReportJson = null;
+                SetAlignmentReport(null);
             }
+            var ignoredStructureMarkers = Document is null
+                ? 0
+                : LyricsDocumentImporter.IgnoreStructureMarkers(Document);
             History.Clear();
             if (Document is { Lines.Count: > 0 })
                 AnchorPosition(Document.Lines.SelectMany(line => line.Children.Count > 0 ? line.Children : [line])
                     .Select(segment => segment.Start).DefaultIfEmpty(TimeSpan.Zero).Min());
             OnPropertyChanged(nameof(ReviewSummary));
-            Status = Document is null ? "Keine Lyrics verfügbar" : loadFreshAlignment
+            Status = ignoredStructureMarkers > 0
+                ? Localized($"Alignment bereit – {ignoredStructureMarkers} Strukturmarker ignoriert.",
+                    $"Alignment ready — ignored {ignoredStructureMarkers} structure marker(s).")
+                : Document is null ? "Keine Lyrics verfügbar" : loadFreshAlignment
                 ? "Neues GPU-Alignment als Review-Stand geladen"
                 : "Alignment bereit zur Prüfung";
             await RefreshLyricsVersionsAsync(ct, reportErrors: false);
@@ -1547,7 +1837,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _serverVersionId = saved?.Id;
                 _serverRevision = saved?.Revision ?? _serverRevision;
                 _serverVersionStatus = saved?.Status;
-                _alignmentReportJson = saved?.AlignmentReportJson;
+                SetAlignmentReport(saved?.AlignmentReportJson);
                 Document.Revision = _serverRevision;
                 if (saved is null) throw new InvalidOperationException("Server hat keine gespeicherte Revision zurückgegeben.");
                 var verified = await _http.GetFromJsonAsync<LyricsVersionDto>(
@@ -1698,6 +1988,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 
     private void RefreshAfterHistory(string status)
     {
+        CommitBeatPreviewEdits();
         if (SelectedSegment is not null && Document is not null &&
             !Document.Segments.Any(segment => segment.Id == SelectedSegment.Id))
             SelectedSegment = null;
@@ -1712,7 +2003,54 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         SaveLocalRecoverySnapshot();
     }
 
-    public void SelectSegment(LyricSegment? segment) => SelectedSegment = segment;
+    public void SelectSegment(LyricSegment? segment)
+    {
+        SelectedSegment = segment is null || Document is null
+            ? null
+            : Document.Segments.FirstOrDefault(candidate => candidate.Id == segment.Id);
+    }
+
+    private void RefreshTimingProjection()
+    {
+        TimingPreviewDocument = KaraokeTimingEnabled && Document is { UsesUltraStarTiming: false } document
+            ? KaraokeTimingProjection.Create(document, _visualBeatTimes)
+            : Document;
+        CaptureTimingProjectionBaseline();
+        PreviewRevision++;
+        TimelineRevision++;
+    }
+
+    private void CaptureTimingProjectionBaseline()
+    {
+        _timingProjectionBaseline.Clear();
+        if (!KaraokeTimingActive || TimingPreviewDocument is null ||
+            ReferenceEquals(TimingPreviewDocument, Document)) return;
+        foreach (var segment in TimingPreviewDocument.Segments)
+            _timingProjectionBaseline[segment.Id] = (segment.Start, segment.End);
+    }
+
+    private int CommitBeatPreviewEdits()
+    {
+        if (!KaraokeTimingActive || Document is null || TimingPreviewDocument is null ||
+            ReferenceEquals(Document, TimingPreviewDocument)) return 0;
+        var canonical = Document.Segments.ToDictionary(segment => segment.Id);
+        var changed = 0;
+        foreach (var preview in TimingPreviewDocument.Segments)
+        {
+            if (!_timingProjectionBaseline.TryGetValue(preview.Id, out var baseline) ||
+                (preview.Start == baseline.Start && preview.End == baseline.End) ||
+                !canonical.TryGetValue(preview.Id, out var target)) continue;
+            target.Start = preview.Start;
+            target.End = preview.End;
+            target.KaraokeTimingLocked = true;
+            target.IsManuallyAdjusted = true;
+            target.Origin = SegmentOrigin.ManuallyAdjusted;
+            target.RequiresReview = true;
+            changed++;
+        }
+        CaptureTimingProjectionBaseline();
+        return changed;
+    }
 
     public void SelectNextReviewSegment()
     {
@@ -2110,34 +2448,61 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         segments.AddRange(ordered);
     }
 
-    public void DeleteSelected()
+    public void DeleteSelected(IEnumerable<LyricSegment>? selection = null)
     {
-        if (SelectedSegment is not { Type: LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable } segment ||
-            FindLine(segment) is not { } line) return;
-        if (segment.Type == LyricSegmentType.Line)
+        if (Document is null) return;
+        var roots = LyricsSegmentClipboard.NormalizeSelection(selection ??
+            (SelectedSegment is null ? [] : [SelectedSegment])).ToList();
+        if (roots.Count == 0) return;
+        if (roots.Any(segment => segment.Type != roots[0].Type))
+            throw new InvalidOperationException("Bitte nur Segmente derselben Ebene gemeinsam löschen.");
+        var documentSegments = Document.Segments.ToHashSet();
+        if (roots.Any(segment => !documentSegments.Contains(segment)))
+            throw new InvalidOperationException("Die Auswahl gehört nicht zum aktuellen Song.");
+
+        if (roots[0].Type == LyricSegmentType.Line)
         {
-            if (Document!.Lines.Count <= 1) { Status = "Der letzte Zeilenblock kann nicht gelöscht werden."; return; }
-            var next = Document.Lines.ElementAtOrDefault(Document.Lines.IndexOf(line) + 1) ??
-                       Document.Lines.ElementAtOrDefault(Document.Lines.IndexOf(line) - 1);
-            History.Execute(new EditLineCollectionCommand(Document.Lines, "Zeilenblock löschen", () => Document.Lines.Remove(line)));
-            SelectedSegment = next;
-            RefreshEditor();
-            return;
-        }
-        var parent = segment.Type == LyricSegmentType.Word ? line : FindParentWord(segment);
-        if (parent is null || parent.Children.Count <= 1) { Status = "Das letzte Segment kann nicht gelöscht werden."; return; }
-        History.Execute(new EditSegmentTreeCommand(line, "Segment löschen", () =>
-        {
-            parent.Children.Remove(segment);
-            if (parent.Type == LyricSegmentType.Word)
+            if (Document.Lines.Count - roots.Count < 1)
+                throw new InvalidOperationException("Der letzte Zeilenblock kann nicht gelöscht werden.");
+            History.Execute(new EditLineCollectionCommand(Document.Lines, "Zeilenblöcke löschen", () =>
             {
-                TimelineEditing.FitParentToChildren(parent);
-                TimelineEditing.SynchronizeWordText(parent);
-            }
-            TimelineEditing.SynchronizeLineText(line);
-            TimelineEditing.MarkAdjusted(parent);
-        }));
-        SelectedSegment = parent.Type == LyricSegmentType.Word ? parent : line;
+                foreach (var line in roots) Document.Lines.Remove(line);
+            }));
+            SelectedSegment = Document.Lines.OrderBy(line => line.Start).FirstOrDefault();
+        }
+        else
+        {
+            var lines = roots.Select(segment => FindLine(segment) ??
+                throw new InvalidOperationException("Ein ausgewähltes Segment besitzt keine Zeile."))
+                .Distinct().ToList();
+            if (roots[0].Type == LyricSegmentType.Word &&
+                roots.GroupBy(FindLine).Any(group => group.Key is null || group.Key.Children.Count <= group.Count()))
+                throw new InvalidOperationException("Das letzte Wort einer Zeile kann nicht gelöscht werden.");
+            if (roots[0].Type == LyricSegmentType.Syllable &&
+                roots.GroupBy(FindParentWord).Any(group => group.Key is null || group.Key.Children.Count <= group.Count()))
+                throw new InvalidOperationException("Die letzte Silbe eines Wortes kann nicht gelöscht werden.");
+            History.Execute(new EditSegmentForestCommand(lines, "Lyrics-Segmente löschen", () =>
+            {
+                if (roots[0].Type == LyricSegmentType.Word)
+                    foreach (var group in roots.GroupBy(segment => FindLine(segment)!))
+                    {
+                        foreach (var word in group) group.Key.Children.Remove(word);
+                        TimelineEditing.SynchronizeLineText(group.Key);
+                        TimelineEditing.MarkAdjusted(group.Key);
+                    }
+                else
+                    foreach (var group in roots.GroupBy(segment => FindParentWord(segment)!))
+                    {
+                        foreach (var syllable in group) group.Key.Children.Remove(syllable);
+                        TimelineEditing.FitParentToChildren(group.Key);
+                        TimelineEditing.SynchronizeWordText(group.Key);
+                        if (FindLine(group.Key) is { } line) TimelineEditing.SynchronizeLineText(line);
+                        TimelineEditing.MarkAdjusted(group.Key);
+                    }
+            }));
+            SelectedSegment = lines[0];
+        }
+        Status = roots.Count == 1 ? "Lyrics-Segment gelöscht." : $"{roots.Count} Lyrics-Segmente gelöscht.";
         RefreshEditor();
     }
 
@@ -2157,40 +2522,79 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         RefreshEditor();
     }
 
-    public void ChangeLinePresentation(string holdText, StageLineEffect effect)
+    public void ChangeLinePresentation(StageLineEffect effect, int voiceLane)
     {
         if (SelectedSegment is not { Type: LyricSegmentType.Line } line) return;
-        int? hold = null;
-        if (!string.IsNullOrWhiteSpace(holdText))
-        {
-            if (!double.TryParse(holdText, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.CurrentCulture, out var seconds) || seconds < 0 || seconds > 10)
-            {
-                Status = "Haltezeit bitte zwischen 0 und 10 Sekunden eingeben.";
-                return;
-            }
-            hold = (int)Math.Round(seconds * 1000);
-        }
-        if (line.HoldAfterMilliseconds == hold && line.StageEffect == effect) return;
+        voiceLane = Math.Clamp(voiceLane, 0, 3);
+        if (line.HoldAfterMilliseconds is null && line.StageEffect == effect && line.VoiceLane == voiceLane) return;
         History.Execute(new EditSegmentTreeCommand(line, "Stage-Darstellung ändern", () =>
         {
-            line.HoldAfterMilliseconds = hold;
+            // Numeric holds are legacy data now. The freely editable line
+            // container is the single presentation window.
+            line.HoldAfterMilliseconds = null;
             line.StageEffect = effect;
+            line.VoiceLane = voiceLane;
             TimelineEditing.MarkAdjusted(line);
         }));
         RefreshEditor();
-        OnPropertyChanged(nameof(SelectedHoldAfterText));
         OnPropertyChanged(nameof(SelectedStageEffect));
+        OnPropertyChanged(nameof(SelectedVoiceLane));
+    }
+
+    public IReadOnlyList<LyricSegment> MoveToOtherVoice(IEnumerable<LyricSegment> selection)
+    {
+        if (Document is null)
+            throw new InvalidOperationException("Bitte zuerst einen Song laden.");
+        var normalized = LyricsSegmentClipboard.NormalizeSelection(selection);
+        var moved = Array.Empty<LyricSegment>();
+        var command = new EditLyricsStructureCommand(Document,
+            "Lyrics zur anderen Stimme verschieben", () =>
+                moved = TimelineEditing.MoveToOtherVoice(Document, normalized).ToArray());
+        try { History.Execute(command); }
+        catch
+        {
+            command.Undo();
+            throw;
+        }
+        SelectedSegment = moved.FirstOrDefault();
+        RefreshEditor();
+        Status = EditorLocale.German
+            ? $"{moved.Length} Segment(e) zur anderen Stimme verschoben."
+            : $"Moved {moved.Length} segment(s) to the other voice.";
+        return moved;
     }
 
     public void SetLoopRange(TimeSpan start, TimeSpan end)
     {
         if (end < start) (start, end) = (end, start);
-        if (end - start < TimeSpan.FromMilliseconds(100)) return;
+        if (end <= start) return;
         LoopStart = start;
         LoopEnd = end;
         LoopEnabled = true;
         Status = $"Loop {start:mm\\:ss\\.fff} – {end:mm\\:ss\\.fff}";
+    }
+
+    public void UpdateTrackedWordLoopRange(TimeSpan start, TimeSpan end)
+    {
+        if (end <= start) return;
+        LoopStart = start;
+        LoopEnd = end;
+        LoopEnabled = true;
+    }
+
+    public void ClearLoopRange()
+    {
+        LoopEnabled = false;
+        LoopStart = null;
+        LoopEnd = null;
+    }
+
+    public async Task PlayLoopRangeAsync(TimeSpan start, TimeSpan end)
+    {
+        SetLoopRange(start, end);
+        Seek(start);
+        await _pendingSeek;
+        if (!_audio.IsPlaying) await PlayPauseAsync();
     }
 
     public void ToggleLoop()
@@ -2201,15 +2605,62 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 
     public void NotifyTimelineEdit()
     {
+        var beatChanges = CommitBeatPreviewEdits();
         if (Document is not null) Document.ModifiedAt = DateTimeOffset.UtcNow;
         PreviewRevision++;
         TimelineRevision++;
         OnPropertyChanged(nameof(SelectedSegmentTiming));
         OnPropertyChanged(nameof(ReviewSummary));
         SaveLocalRecoverySnapshot();
+        if (beatChanges > 0)
+            Status = Localized(
+                $"{beatChanges} Beat-Grenze(n) in den Arbeitsstand übernommen.",
+                $"Committed {beatChanges} beat boundary/boundaries to the working version.");
     }
 
     public void ReportTimelineStatus(string status) => Status = status;
+
+    public async Task<BaseLyricsSourceDto?> LoadBaseLyricsSourceAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (SelectedSong is not { } song) return null;
+        Status = Localized("Base-Lyrics werden geladen …", "Loading base lyrics …");
+        using var response = await _http.GetAsync(
+            $"/api/admin/songs/{song.Id}/lyrics/base-source", cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            Status = Localized("Für diesen Song sind keine Base-Lyrics vorhanden.",
+                "No base lyrics are available for this song.");
+            return null;
+        }
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+        var source = await response.Content.ReadFromJsonAsync<BaseLyricsSourceDto>(cancellationToken: cancellationToken);
+        if (source is null)
+            throw new InvalidOperationException(Localized(
+                "Der Server hat keine lesbaren Base-Lyrics geliefert.",
+                "The server returned no readable base lyrics."));
+        return source;
+    }
+
+    public async Task SaveBaseLyricsSourceAsync(string lyrics,
+        CancellationToken cancellationToken = default)
+    {
+        if (SelectedSong is not { } song) return;
+        using var response = await _http.PutAsJsonAsync(
+            $"/api/admin/songs/{song.Id}/lyrics/base-source",
+            new UpdateBaseLyricsSourceRequest(lyrics), cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+        Status = Localized(
+            "Base-Lyrics gespeichert. Sie werden bei der nächsten Neuausrichtung verwendet; die aktuelle Timeline blieb unverändert.",
+            "Base lyrics saved. They will be used by the next realignment; the current timeline was not changed.");
+    }
+
+    public void PauseEditorPlaybackForCatalogPreview()
+    {
+        if (_audio.IsPlaying) _audio.Pause();
+    }
 
     public async Task ImportUltraStarLyricsAsync(UltraStarLyricsImport imported,
         CancellationToken cancellationToken = default)
@@ -2241,7 +2692,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _serverVersionId = null;
         _serverRevision = 0;
         _serverVersionStatus = null;
-        _alignmentReportJson = null;
+        SetAlignmentReport(null);
         _loadedSourceFingerprint = null;
         if (replacement.Lines.Count > 0) AnchorPosition(replacement.Lines.Min(line => line.Start));
         PreviewRevision++;
@@ -2327,6 +2778,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private static bool CanContinueAsWorkingVersion(LyricsVersionStatus status) => status is
+        LyricsVersionStatus.Generated or LyricsVersionStatus.NeedsReview or
+        LyricsVersionStatus.InReview or LyricsVersionStatus.Reviewed or
+        LyricsVersionStatus.Approved;
+
     private void ApplySongFilter()
     {
         FilteredSongs.Clear();
@@ -2342,6 +2798,12 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         field = value;
         OnPropertyChanged(property);
         return true;
+    }
+
+    private void SetAlignmentReport(string? json)
+    {
+        _alignmentReportJson = json;
+        PitchEvidence = AlignmentPitchEvidence.Parse(json);
     }
 
     private void OnPropertyChanged([CallerMemberName] string? property = null) =>
@@ -2400,6 +2862,18 @@ public sealed record EditorLyricsVersionItem(LyricsVersionSummaryDto Version, bo
             EditorLocale.German ? "VARIANTE · LETZTER EDITOR-STAND" : "VARIANT · LATEST EDITOR VERSION",
         { } value when value.Contains(":lrclib-full-transcript", StringComparison.Ordinal) =>
             EditorLocale.German ? "VARIANTE · LRCLIB + VOLLTRANSKRIPT" : "VARIANT · LRCLIB + FULL TRANSCRIPT",
+        { } value when value.Contains(":research-shadow:", StringComparison.Ordinal) =>
+            EditorLocale.German
+                ? "FORSCHUNGS-SCHATTENLAUF · OHNE EDITOR-BASIS"
+                : "RESEARCH SHADOW · NO EDITOR BASIS",
+        { } value when value.Contains(":basic-pitch-ab-control:", StringComparison.Ordinal) =>
+            EditorLocale.German
+                ? "BASIC PITCH A · UNVERÄNDERTE KONTROLLE"
+                : "BASIC PITCH A · UNCHANGED CONTROL",
+        { } value when value.Contains(":basic-pitch-ab-treatment:", StringComparison.Ordinal) =>
+            EditorLocale.German
+                ? "BASIC PITCH B · PITCH-EVIDENZ"
+                : "BASIC PITCH B · PITCH EVIDENCE",
         _ => string.Empty
     };
     public bool CanDelete => Version.Status != LyricsVersionStatus.Published;
@@ -2424,7 +2898,7 @@ public sealed record EditorImportStatus(bool IsRunning, Guid? JobId, string? Tit
     IReadOnlyList<string> RecentOutput);
 public sealed record EditorRealignmentStatus(bool IsRunning, Guid? JobId, Guid? SongId, string? SongTitle,
     int Percent, string Message, DateTimeOffset? StartedAt, DateTimeOffset? FinishedAt, int? ExitCode,
-    IReadOnlyList<string> RecentOutput);
+    IReadOnlyList<string> RecentOutput, IReadOnlyList<Guid>? SongIds = null);
 public sealed record EditorLyricsRecognitionStatus(bool IsRunning, Guid? JobId, Guid? SongId,
     string? SongTitle, int Percent, string Message, DateTimeOffset? StartedAt,
     DateTimeOffset? FinishedAt, int? ExitCode, IReadOnlyList<string> RecentOutput);

@@ -9,7 +9,9 @@ namespace NeonStage.Stage
 {
 public sealed class StageVisualView
 {
-    private readonly Material _material;
+    private Material _material;
+    private readonly RawImage _background;
+    private string _stageThemeId = "standard";
     private readonly RawImage _cover;
     private readonly float[] _spectrum = new float[128];
     private readonly GameObject _nextCard;
@@ -37,12 +39,12 @@ public sealed class StageVisualView
     public StageVisualView(GameObject host)
     {
         var backgroundCanvas = CreateCanvas("Stage Backdrop", host.transform, -20);
-        var background = CreateImage("Audio Reactive Shader", backgroundCanvas.transform);
-        background.rectTransform.anchorMin = Vector2.zero;
-        background.rectTransform.anchorMax = Vector2.one;
-        background.rectTransform.offsetMin = background.rectTransform.offsetMax = Vector2.zero;
-        _material = StageBackgroundShaderCatalog.CreateMaterial();
-        background.material = _material;
+        _background = CreateImage("Audio Reactive Shader", backgroundCanvas.transform);
+        _background.rectTransform.anchorMin = Vector2.zero;
+        _background.rectTransform.anchorMax = Vector2.one;
+        _background.rectTransform.offsetMin = _background.rectTransform.offsetMax = Vector2.zero;
+        _material = StageBackgroundShaderCatalog.CreateMaterial("standard");
+        _background.material = _material;
 
         var coverCanvas = CreateCanvas("Album Art Canvas", host.transform, 8);
         _cover = CreateImage("Album Art", coverCanvas.transform);
@@ -108,6 +110,17 @@ public sealed class StageVisualView
             _nextCard.SetActive(false);
             _cover.gameObject.SetActive(false);
         }
+    }
+
+    public void SetStageTheme(string? stageThemeId)
+    {
+        var normalized = string.IsNullOrWhiteSpace(stageThemeId) ? "standard" : stageThemeId.Trim();
+        if (string.Equals(_stageThemeId, normalized, System.StringComparison.OrdinalIgnoreCase)) return;
+        var previous = _material;
+        _material = StageBackgroundShaderCatalog.CreateMaterial(normalized);
+        _background.material = _material;
+        _stageThemeId = normalized;
+        if (previous != null) Object.Destroy(previous);
     }
 
     public async Task LoadQrAsync(string server, bool force = false)

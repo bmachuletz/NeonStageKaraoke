@@ -6,11 +6,36 @@ import numpy as np
 
 from app.repeated_phrase_refinement import (
     _complete_repeated_unit,
+    _initial_phone_class,
+    _pronounced_initial_phone_class,
+    _repetition_periodicity,
     refine_repeated_phrase_words,
 )
 
 
 class RepeatedPhraseRefinementTests(unittest.TestCase):
+    def test_lexically_matching_but_musically_irregular_repeat_is_rejected(self):
+        result = _repetition_periodicity(
+            [36.880, 37.185, 37.475, 38.325,
+             38.597, 39.180, 39.742, 40.633], 2, 4)
+
+        self.assertFalse(result["verified"])
+        self.assertEqual("period-outlier", result["reason"])
+
+    def test_regular_repeat_period_is_accepted(self):
+        result = _repetition_periodicity(
+            [36.880, 37.150, 38.012, 38.290,
+             39.106, 39.393, 40.299, 40.621], 2, 4)
+
+        self.assertTrue(result["verified"])
+
+    def test_pronounced_onset_handles_language_specific_silent_letters(self):
+        _pronounced_initial_phone_class.cache_clear()
+        completed = SimpleNamespace(stdout="n_aɪ_t\n")
+        with patch("app.repeated_phrase_refinement.subprocess.run",
+                   return_value=completed):
+            self.assertEqual("nasal", _initial_phone_class("knight", "en"))
+
     def test_detects_only_complete_repeated_lines(self):
         self.assertEqual((2, 3), _complete_repeated_unit(
             ["träum", "weiter"] * 3))

@@ -85,6 +85,21 @@ internal sealed class LyricsVersionReportService(
         AddIntegerMetric(text, quality, "geometrically_repaired_lines", german ? "Geometrisch reparierte Zeilen" : "Geometrically repaired lines");
 
         Section(text, german ? "Verwendete Analyse" : "Analysis used");
+        AddStringMetric(text, technical, "alignment_profile",
+            german ? "Alignment-Profil" : "Alignment profile");
+        if (TryObject(technical, "research_shadow_input", out var shadowInput) &&
+            TryBool(shadowInput, "enabled", out var shadowEnabled) && shadowEnabled)
+        {
+            AddStringMetric(text, shadowInput, "method",
+                german ? "Clean-Room-Eingabe" : "Clean-room input");
+            AddIntegerMetric(text, shadowInput, "removed_word_timing_records",
+                german ? "Verworfene vorhandene Wortzeiten" : "Discarded existing word timings");
+            AddIntegerMetric(text, shadowInput, "removed_editor_headers",
+                german ? "Verworfene Editor-Metadaten" : "Discarded editor metadata records");
+            Bullet(text, german
+                ? "Manuelle Editor-Timings hatten in diesem Lauf keine Autorität."
+                : "Manual editor timings had no authority in this run.");
+        }
         AddStringMetric(text, technical, "alignment_selected", german ? "Gewählter Pfad" : "Selected path");
         AddStringMetric(text, technical, "alignment_mode", german ? "Alignment-Modus" : "Alignment mode");
         AddStringMetric(text, technical, "alignment_device", german ? "Rechengerät" : "Compute device");
@@ -118,10 +133,191 @@ internal sealed class LyricsVersionReportService(
             AddDoubleMetric(text, voicing, "analyzed_seconds",
                 german ? "Analysierte Ausklangdauer" : "Analyzed release duration", " s");
         }
+        if (TryObject(technical, "multiple_singing_voices", out var multipleVoices))
+        {
+            Section(text, german ? "Mehrstimmen-Analyse" : "Multi-voice analysis");
+            AddStringMetric(text, multipleVoices, "mode", german ? "Modus" : "Mode");
+            AddStringMetric(text, multipleVoices, "method", german ? "Methode" : "Method");
+            AddIntegerMetric(text, multipleVoices, "analyzed_windows",
+                german ? "Untersuchte Mehrstimmen-Fenster" : "Analyzed multi-voice windows");
+            AddIntegerMetric(text, multipleVoices, "overlap_candidates",
+                german ? "Fenster mit gleichzeitigem Gesang" : "Windows with concurrent singing");
+            AddIntegerMetric(text, multipleVoices, "accepted_lane_proposals",
+                german ? "Automatisch zugeordnete Backing-Phrasen" : "Automatically assigned backing phrases");
+            AddIntegerMetric(text, multipleVoices, "automatic_backing_source",
+                german ? "Songweit bestätigte Backing-Quelle" : "Song-wide confirmed backing source");
+            if (TryObject(multipleVoices, "solo_voice_clustering", out var soloVoices))
+            {
+                AddStringMetric(text, soloVoices, "reason",
+                    german ? "Ergebnis der Sänger-Clusterung" : "Singer clustering outcome");
+                AddIntegerMetric(text, soloVoices, "analyzed_lines",
+                    german ? "Auf Sängerwechsel untersuchte Zeilen" : "Lines analyzed for singer changes");
+                AddIntegerMetric(text, soloVoices, "accepted_lines",
+                    german ? "Sicher einer zweiten Stimme zugeordnete Zeilen" :
+                    "Lines reliably assigned to a second singer");
+            }
+            if (TryArray(multipleVoices, "manual_lane_anchors", out var anchors))
+            {
+                var acceptedAnchors = anchors.EnumerateArray().Count(anchor =>
+                    TryBool(anchor, "accepted", out var accepted) && accepted);
+                Metric(text, german ? "Belastbare manuelle Stimmenanker" : "Reliable manual voice anchors",
+                    acceptedAnchors.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+
+        if (TryObject(technical, "analysis_stem_selection", out var analysisStem))
+        {
+            Section(text, german ? "Analyse-Audiospur" : "Analysis audio stem");
+            AddStringMetric(text, analysisStem, "model", german ? "Separator-Modell" : "Separator model");
+            AddStringMetric(text, analysisStem, "selected_candidate",
+                german ? "Gewählter Kandidat" : "Selected candidate");
+            AddStringMetric(text, analysisStem, "reason", german ? "Auswahlgrund" : "Selection reason");
+            AddDoubleMetric(text, analysisStem, "candidate_score",
+                german ? "Kandidatenbewertung" : "Candidate score");
+        }
+        if (TryObject(technical, "stage_stem_selection", out var stageStem))
+        {
+            Section(text, german ? "Stage-Audiospuren" : "Stage audio stems");
+            AddStringMetric(text, stageStem, "separator_model",
+                german ? "Karaoke-Separator" : "Karaoke separator");
+            AddStringMetric(text, stageStem, "reason", german ? "Auswahlgrund" : "Selection reason");
+        }
+        if (TryObject(technical, "evidence_fusion", out var evidenceFusion))
+        {
+            Section(text, german ? "Evidenzfusion" : "Evidence fusion");
+            AddStringMetric(text, evidenceFusion, "mode", german ? "Modus" : "Mode");
+            AddIntegerMetric(text, evidenceFusion, "candidate_boundaries",
+                german ? "Geprüfte Silbengrenzen" : "Evaluated syllable boundaries");
+            AddIntegerMetric(text, evidenceFusion, "selected_boundaries",
+                german ? "Übernommene Silbengrenzen" : "Selected syllable boundaries");
+        }
+        if (TryObject(technical, "note_alignment", out var noteAlignment))
+        {
+            AddIntegerMetric(text, noteAlignment, "note_events",
+                german ? "Musikalische Notenereignisse" : "Musical note events");
+            AddIntegerMetric(text, noteAlignment, "assignments",
+                german ? "Noten-/Silben-Zuordnungen" : "Note/syllable assignments");
+        }
+
+        if (TryObject(technical, "basic_pitch_evidence", out var basicPitch))
+        {
+            Section(text, german ? "Basic-Pitch-Evidenz" : "Basic Pitch evidence");
+            AddStringMetric(text, basicPitch, "service", german ? "Dienst" : "Service");
+            AddStringMetric(text, basicPitch, "reason", german ? "Ergebnis" : "Outcome");
+            AddIntegerMetric(text, basicPitch, "note_events",
+                german ? "Erkannte Notenereignisse" : "Detected note events");
+            AddIntegerMetric(text, basicPitch, "raw_onset_peaks",
+                german ? "Roh erkannte Toneinsätze" : "Raw pitch onsets");
+            AddIntegerMetric(text, basicPitch, "applied_onsets",
+                german ? "Übernommene Phraseneinsätze" : "Applied phrase onsets");
+            AddIntegerMetric(text, basicPitch, "applied_releases",
+                german ? "Übernommene Ausklänge" : "Applied releases");
+            AddStringMetric(text, basicPitch, "internal_word_mode",
+                german ? "Innere Wortgrenzen" : "Internal word boundaries");
+            AddIntegerMetric(text, basicPitch, "supported_internal_boundaries",
+                german ? "Akustisch unterstützte innere Wortgrenzen" : "Acoustically supported internal word boundaries");
+            AddIntegerMetric(text, basicPitch, "confirmed_internal_boundaries",
+                german ? "Unverändert bestätigte Wortgrenzen" : "Unchanged confirmed word boundaries");
+            AddIntegerMetric(text, basicPitch, "applied_internal_boundaries",
+                german ? "Übernommene innere Wortgrenzen" : "Applied internal word boundaries");
+            AddStringMetric(text, basicPitch, "syllable_mode",
+                german ? "Silbengrenzen" : "Syllable boundaries");
+            AddIntegerMetric(text, basicPitch, "confirmed_syllable_boundaries",
+                german ? "Unverändert bestätigte Silbengrenzen" : "Unchanged confirmed syllable boundaries");
+            AddIntegerMetric(text, basicPitch, "applied_syllable_boundaries",
+                german ? "Übernommene Silbengrenzen" : "Applied syllable boundaries");
+            if (TryObject(basicPitch, "pitch_timeline", out var pitchTimeline))
+            {
+                AddIntegerMetric(text, pitchTimeline, "event_count",
+                    german ? "Noten in der Editor-Pitch-Spur" : "Notes in editor pitch track");
+                AddIntegerMetric(text, pitchTimeline, "midi_min",
+                    german ? "Tiefste erkannte MIDI-Note" : "Lowest detected MIDI note");
+                AddIntegerMetric(text, pitchTimeline, "midi_max",
+                    german ? "Höchste erkannte MIDI-Note" : "Highest detected MIDI note");
+            }
+            if (TryObject(basicPitch, "word_pitch_evidence", out var wordPitch))
+            {
+                AddIntegerMetric(text, wordPitch, "words_with_pitch",
+                    german ? "Wörter mit Pitch-Abdeckung" : "Words with pitch coverage");
+                AddIntegerMetric(text, wordPitch, "sustained_words",
+                    german ? "Erkannte gehaltene Wörter" : "Detected sustained words");
+            }
+            if (TryObject(basicPitch, "alignment_confidence", out var pitchConfidence))
+            {
+                AddIntegerMetric(text, pitchConfidence, "measured_lines",
+                    german ? "Zeilen mit Pitch-Evidenz" : "Lines with pitch evidence");
+                AddIntegerMetric(text, pitchConfidence, "strongly_supported_lines",
+                    german ? "Mehrfach stark bestätigte Zeilen" : "Strongly supported lines");
+                if (TryArray(pitchConfidence, "review_lines", out var pitchReviewLines))
+                    Metric(text, german ? "Pitch-Prüfhinweise" : "Pitch review notes",
+                        pitchReviewLines.GetArrayLength().ToString(CultureInfo.InvariantCulture));
+            }
+            if (TryObject(basicPitch, "repetition_fingerprints", out var repetitions))
+            {
+                AddIntegerMetric(text, repetitions, "repeated_groups",
+                    german ? "Verglichene Wiederholungsgruppen" : "Compared repetition groups");
+                if (TryArray(repetitions, "groups", out var repetitionGroups))
+                {
+                    foreach (var group in repetitionGroups.EnumerateArray().Take(12))
+                    {
+                        var label = String(group, "text");
+                        var occurrences = Integer(group, "occurrences");
+                        var similarity = Number(group, "median_similarity");
+                        Bullet(text, german
+                            ? $"Wiederholung „{label}“: {occurrences} Vorkommen, mediane Melodieähnlichkeit {similarity:P1}."
+                            : $"Repetition “{label}”: {occurrences} occurrences, median melody similarity {similarity:P1}.");
+                    }
+                }
+            }
+            Bullet(text, german
+                ? "Pitch-Confidence beschreibt unabhängige Unterstützung, nicht automatisch die musikalische Wahrheit. Shadow-Kandidaten verändern keine Lyrics-Zeit."
+                : "Pitch confidence describes independent support, not automatic musical truth. Shadow candidates do not alter lyric timing.");
+        }
 
         Section(text, german ? "Automatische Korrekturen" : "Automatic corrections");
         AddNestedIntegerMetric(text, technical, "stage_vocal_boundaries", "release_corrections",
             german ? "Wortenden an Vocal-Ausklang korrigiert" : "Word endings corrected to vocal release");
+        AddNestedIntegerMetric(text, technical, "phoneme_ctc_alignment", "stem_contrast_release_repairs",
+            german ? "Instrumental-Übersprechen aus Wortausklängen entfernt" : "Word releases trimmed against instrumental bleed");
+        AddNestedIntegerMetric(text, technical, "phoneme_ctc_alignment", "cross_line_transition_repairs",
+            german ? "Leise Zeilenübergänge nach Refrains repariert" : "Quiet post-chorus line transitions repaired");
+        AddNestedIntegerMetric(text, technical, "phoneme_ctc_alignment", "isolated_internal_onset_repairs",
+            german ? "Starke innere Worteinsätze einzeln übernommen" : "Strong internal word onsets retained individually");
+        AddNestedIntegerMetric(text, technical, "phoneme_ctc_alignment", "coherent_late_phrase_repairs",
+            german ? "Verspätete vollständige Phrasen per IPA repariert" : "Complete delayed phrases repaired by IPA");
+        AddNestedIntegerMetric(text, technical, "stage_vocal_boundaries", "phrase_onset_corrections",
+            german ? "Phraseneinsätze nach echten Gesangspausen korrigiert" : "Phrase onsets corrected after real vocal pauses");
+        AddNestedIntegerMetric(text, technical, "stage_vocal_boundaries", "silent_prefix_recovery",
+            "corrected_lines",
+            german ? "Vollständig in Stille platzierte Zeilen verschoben" : "Lines placed entirely in silence relocated");
+        AddNestedIntegerMetric(text, technical, "stage_vocal_boundaries", "silent_prefix_recovery",
+            "rejected_lines",
+            german ? "Verworfene Zeilenverschiebungen" : "Rejected line relocations");
+        AddNestedIntegerMetric(text, technical, "collapsed_line_repair", "repaired_lines",
+            german ? "Unmöglich gestauchte Zeilen neu verteilt" : "Impossibly compressed lines redistributed");
+        AddNestedIntegerMetric(text, technical, "collapsed_line_repair", "collapsed_runs",
+            german ? "Erkannte gestauchte Zeilenblöcke" : "Detected compressed line runs");
+        if (TryObject(technical, "stable_ts", out var stableTs) &&
+            TryObject(stableTs, "coverage", out var stableCoverage) &&
+            TryDouble(stableCoverage, "uncovered_seconds", out var uncovered) && uncovered > 0.5)
+        {
+            Metric(text, german ? "Gesang ohne erkannten Text" : "Singing without recognized text",
+                $"{uncovered.ToString("0.0", CultureInfo.InvariantCulture)} s");
+        }
+        if (TryObject(technical, "stable_ts", out var stableRuns) &&
+            TryObject(stableRuns, "hallucination", out var hallucination))
+        {
+            AddIntegerMetric(text, hallucination, "hallucinated_words",
+                german ? "Erfundene Transkriptwörter verworfen" : "Invented transcript words discarded");
+        }
+        if (TryObject(technical, "language_reconciliation", out var languageCheck) &&
+            TryBool(languageCheck, "applied", out var languageApplied) && languageApplied)
+        {
+            Metric(text, german ? "Sprache anhand der Lyrics korrigiert" : "Language corrected from lyrics",
+                $"{String(languageCheck, "detected")} → {String(languageCheck, "winner")}");
+        }
+        AddNestedIntegerMetric(text, technical, "final_repetition_anchors", "rescaled_following_tail_words",
+            german ? "Textwörter nach Refrainankern neu verteilt" : "Lexical tail words rescaled after refrain anchors");
         AddNestedIntegerMetric(text, technical, "sustain_refinement", "adjusted_words",
             german ? "Lang gehaltene Wörter verfeinert" : "Sustained words refined");
         AddNestedIntegerMetric(text, technical, "lyrics_completeness", "targeted_reanalysis", "recovered_lines",
@@ -142,6 +338,10 @@ internal sealed class LyricsVersionReportService(
             german ? "Kollabierte Wörter gemeinsam per IPA repariert" : "Collapsed words jointly repaired by IPA");
         AddNestedIntegerMetric(text, technical, "phoneme_ctc_alignment", "ipa_vocal_hole_words_repaired",
             german ? "Akustisch belegte Wortlücken per IPA geschlossen" : "Acoustically occupied word gaps closed by IPA");
+        AddNestedIntegerMetric(text, technical, "phoneme_ctc_alignment", "local_duration_inversion_words_repaired",
+            german ? "Vertauschte Nachbarwort-Dauern lokal per IPA repariert" : "Swapped neighboring word durations repaired locally by IPA");
+        AddNestedIntegerMetric(text, technical, "phoneme_ctc_alignment", "connected_ipa_blank_repairs",
+            german ? "Kurze CTC-Lücken in verbundenem Gesang überbrückt" : "Short CTC blanks bridged in connected singing");
         AddNestedIntegerMetric(text, technical, "repeated_phrase_refinement", "refined_words",
             german ? "Wörter in identischen Refrainrufen einzeln verankert" : "Words independently anchored in identical chorus calls");
 

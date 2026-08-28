@@ -1,5 +1,8 @@
 import unittest
 
+import numpy as np
+
+from app.chunk_ownership import move_ownership_seams_to_quiet_audio
 from app.models import LrcLine
 from app.stable_transcriber import _chunk_windows, realign_with_stable_words
 from app.transcript_match import compare_transcripts
@@ -21,6 +24,31 @@ class StableTranscriptAlignmentTests(unittest.TestCase):
     def test_chunk_windows_reject_invalid_overlap(self):
         with self.assertRaises(ValueError):
             _chunk_windows(16000, chunk_seconds=30, overlap_seconds=30)
+
+    def test_chunk_ownership_moves_into_a_real_vocal_pause(self):
+        sample_rate = 1000
+        audio = np.ones(65 * sample_rate, dtype=np.float32)
+        audio[29100:29400] = 0
+        windows = _chunk_windows(
+            len(audio), sample_rate=sample_rate, chunk_seconds=30, overlap_seconds=3)
+
+        adjusted = move_ownership_seams_to_quiet_audio(
+            windows, audio, sample_rate=sample_rate)
+
+        self.assertGreater(adjusted[0][3], 29.0)
+        self.assertLess(adjusted[0][3], 29.5)
+        self.assertEqual(adjusted[0][3], adjusted[1][2])
+
+    def test_chunk_ownership_does_not_mistake_continuous_vocals_for_a_pause(self):
+        sample_rate = 1000
+        audio = np.ones(65 * sample_rate, dtype=np.float32)
+        windows = _chunk_windows(
+            len(audio), sample_rate=sample_rate, chunk_seconds=30, overlap_seconds=3)
+
+        adjusted = move_ownership_seams_to_quiet_audio(
+            windows, audio, sample_rate=sample_rate)
+
+        self.assertEqual(windows, adjusted)
 
     def test_plain_unanchored_line_is_created_from_complete_stable_match(self):
         line = LrcLine(0.0, "Lass Fahnen wehen", "", words=[], timed_input=False)
@@ -231,6 +259,163 @@ class StableTranscriptAlignmentTests(unittest.TestCase):
         self.assertEqual(54.79, line.words[0]["start"])
         self.assertEqual(55.08, line.words[0]["end"])
         self.assertTrue(line.words[0]["stable_ts_leadin_outlier_rejected"])
+
+    def test_complete_stable_phrase_rescues_grossly_stretched_singing_alignment(self):
+        text = "Just get back in the van and drive far away and play"
+        canonical = text.split()
+        recognized = "Just get back in the fan and drive far away and play".split()
+        timings = [
+            (135.72, 136.64), (136.86, 137.02), (137.08, 137.46),
+            (137.46, 137.86), (137.88, 138.10), (138.12, 138.68),
+            (138.68, 138.94), (138.98, 139.16), (139.22, 139.88),
+            (139.88, 141.48), (142.08, 143.28), (143.30, 143.60),
+        ]
+        line = LrcLine(
+            136.51, text, "", source_timestamp=136.42,
+            source_end_boundary=144.78,
+            words=[
+                {
+                    "word": word,
+                    "start": 136.51 + index * 3.0,
+                    "end": 139.51 + index * 3.0,
+                    "timing_source": "sofa-singing-alignment",
+                    "phonemes": [{"phone": "x", "start": 0.0, "end": 1.0}],
+                    "syllables": [{"text": word, "start": 0.0, "end": 1.0}],
+                }
+                for index, word in enumerate(canonical)
+            ],
+        )
+        stable_words = [
+            {"word": word, "start": start, "end": end, "probability": 0.9}
+            for word, (start, end) in zip(recognized, timings)
+        ]
+
+        result = realign_with_stable_words(
+            [line], stable_words, compare_transcripts(text, " ".join(recognized)))
+
+        self.assertEqual("accepted-gross-geometry-rescue",
+                         result["line_diagnostics"][0]["status"])
+        # The independently plausible first onset is retained; all following
+        # boundaries come from the compact Stable-TS recognition.
+        self.assertEqual(136.51, line.words[0]["start"])
+        self.assertEqual(136.86, line.words[1]["start"])
+        self.assertEqual(143.60, line.words[-1]["end"])
+        self.assertEqual(canonical, [word["word"] for word in line.words])
+        self.assertNotIn("phonemes", line.words[1])
+        self.assertNotIn("syllables", line.words[1])
+
+    def test_plausible_alignment_is_not_replaced_by_stable_geometry_rescue(self):
+        text = "Just get back in the van"
+        canonical = text.split()
+        line = LrcLine(10.0, text, "", source_timestamp=10.0, words=[
+            {"word": word, "start": 10.0 + index * 0.35,
+             "end": 10.3 + index * 0.35,
+             "timing_source": "sofa-singing-alignment"}
+            for index, word in enumerate(canonical)
+        ])
+        stable_words = [
+            {"word": word, "start": 10.02 + index * 0.34,
+             "end": 10.30 + index * 0.34, "probability": 0.95}
+            for index, word in enumerate(canonical)
+        ]
+
+        result = realign_with_stable_words(
+            [line], stable_words, compare_transcripts(text, text))
+
+        self.assertEqual(0, result["attempted_lines"])
+        self.assertEqual(10.0, line.words[0]["start"])
+        self.assertTrue(all(word["timing_source"] == "sofa-singing-alignment"
+                            for word in line.words))
+
+    def test_complete_stable_phrase_rescues_onset_at_calibrated_source_anchor(self):
+        text = "But by all means keep this from your head"
+        tokens = text.split()
+        line = LrcLine(62.33, text, "", source_timestamp=62.78,
+                       source_end_boundary=67.09, words=[
+            {"word": word, "start": 62.33 + index * .45,
+             "end": 62.70 + index * .45, "timing_source": "qwen-forced"}
+            for index, word in enumerate(tokens)
+        ])
+        stable_words = [
+            {"word": word, "start": 62.76 + index * .34,
+             "end": 63.02 + index * .34,
+             "probability": .27 if index == 0 else .96}
+            for index, word in enumerate(tokens)
+        ]
+
+        result = realign_with_stable_words(
+            [line], stable_words, compare_transcripts(text, text))
+
+        self.assertEqual("accepted-source-anchor-rescue",
+                         result["line_diagnostics"][0]["status"])
+        self.assertEqual(62.76, line.timestamp)
+        self.assertTrue(all(word["timing_source"] == "stable-ts-whisper"
+                            for word in line.words))
+
+    def test_missing_pickup_is_interpolated_before_confident_stable_phrase(self):
+        text = "And that will validate your sweat every songs for them"
+        tokens = text.split()
+        line = LrcLine(57.94, text, "", source_timestamp=58.58,
+                       source_end_boundary=62.78, words=[
+            {"word": word, "start": 57.94 + index * .4,
+             "end": 58.24 + index * .4, "timing_source": "easyaligner-global"}
+            for index, word in enumerate(tokens)
+        ])
+        recognized = tokens[1:]
+        timings = [(57.72, 58.19), (58.98, 59.08)] + [
+            (59.16 + index * .4, 59.48 + index * .4)
+            for index in range(len(recognized) - 2)
+        ]
+        stable_words = [
+            {"word": word, "start": start, "end": end,
+             "probability": .025 if index == 0 else .95}
+            for index, (word, (start, end)) in enumerate(zip(recognized, timings))
+        ]
+
+        result = realign_with_stable_words(
+            [line], stable_words,
+            compare_transcripts(text, " ".join(recognized)))
+
+        self.assertEqual("accepted-leading-source-anchor-rescue",
+                         result["line_diagnostics"][0]["status"])
+        self.assertEqual(58.58, line.timestamp)
+        self.assertEqual(58.98, line.words[1]["end"])
+        self.assertEqual(58.98, line.words[2]["start"])
+        self.assertEqual("stable-ts-source-anchor-interpolation",
+                         line.words[0]["timing_source"])
+        self.assertEqual("stable-ts-whisper", line.words[2]["timing_source"])
+
+    def test_complete_stable_phrase_replaces_compact_but_collapsed_sofa_path(self):
+        text = "Just get back in the van"
+        canonical = text.split()
+        sofa_timings = [
+            (10.0, 10.45), (10.45, 10.452), (10.452, 11.0),
+            (11.0, 11.2), (11.2, 11.4), (11.4, 12.0),
+        ]
+        stable_timings = [
+            (10.02, 10.30), (10.38, 10.58), (10.62, 10.94),
+            (10.96, 11.12), (11.14, 11.32), (11.34, 11.78),
+        ]
+        line = LrcLine(10.0, text, "", source_timestamp=10.0,
+                       source_end_boundary=12.2, words=[
+            {"word": word, "start": start, "end": end,
+             "timing_source": "sofa-singing-alignment"}
+            for word, (start, end) in zip(canonical, sofa_timings)
+        ])
+        stable_words = [
+            {"word": word, "start": start, "end": end, "probability": 0.9}
+            for word, (start, end) in zip(canonical, stable_timings)
+        ]
+
+        result = realign_with_stable_words(
+            [line], stable_words, compare_transcripts(text, text))
+
+        self.assertEqual("accepted-gross-geometry-rescue",
+                         result["line_diagnostics"][0]["status"])
+        self.assertEqual(10.38, line.words[1]["start"])
+        self.assertEqual(11.78, line.words[-1]["end"])
+        self.assertTrue(all(word["timing_source"] == "stable-ts-whisper"
+                            for word in line.words))
 
     def test_does_not_mix_partial_transcript_match_into_line(self):
         line = LrcLine(10.0, "Hallo schöne Welt", "", words=[

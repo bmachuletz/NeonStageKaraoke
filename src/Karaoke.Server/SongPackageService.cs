@@ -129,11 +129,21 @@ internal sealed class SongPackageService(ServerSettingsService settings, Library
             ValidateManifest(manifest);
 
             var stagedSongs = new List<StagedSong>(manifest.Songs.Count);
+            var packageIdentities = new HashSet<string>(StringComparer.Ordinal);
             long expandedBytes = 0;
             for (var songIndex = 0; songIndex < manifest.Songs.Count; songIndex++)
             {
                 var packageSong = manifest.Songs[songIndex];
                 ValidatePackageSong(packageSong);
+                var identity = UsdbSongMatcher.Normalize(packageSong.Title) + "\n" +
+                               UsdbSongMatcher.Normalize(packageSong.Artist);
+                if (!packageIdentities.Add(identity) ||
+                    await library.ContainsSongAsync(packageSong.Title, packageSong.Artist, ct))
+                {
+                    logger.LogInformation("Song package entry {Title} by {Artist} is already imported and will be skipped",
+                        packageSong.Title, packageSong.Artist);
+                    continue;
+                }
                 var stagedBase = Path.Combine(stagingPath, $"song-{songIndex + 1:D4}");
                 var stagedFiles = new List<StagedFile>(packageSong.Files.Count);
                 foreach (var file in packageSong.Files)

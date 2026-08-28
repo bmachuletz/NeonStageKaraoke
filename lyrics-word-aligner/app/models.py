@@ -12,6 +12,20 @@ class LrcLine:
     reason: str | None = None
     timed_input: bool = True
     source_timestamp: float | None = None
+    # A timestamped empty LRC entry marks the end of the preceding lyric
+    # phrase.  Keeping this independently from the text lines prevents a
+    # forced aligner from consuming a following instrumental section.
+    source_end_boundary: float | None = None
+    # Set only when an exact editor line is restored at the end of alignment.
+    # This state is reported so the next editor revision retains human
+    # authority across repeated realignment cycles.
+    manual_adjusted: bool = False
+    manual_editor_start: float | None = None
+    manual_editor_end: float | None = None
+    # Independent karaoke/singer lane. Lane 0 remains the lead-vocal lane.
+    # Lines in different lanes are intentionally allowed to overlap.
+    voice_lane: int = 0
+    voice_label: str | None = None
 
 
 @dataclass(slots=True)

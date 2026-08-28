@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using Karaoke.Contracts;
 
@@ -22,9 +23,23 @@ internal static partial class LrcParser
                 int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out offsetMilliseconds);
         }
 
-        var parsed = new List<(TimeSpan Start, string Text, IReadOnlyList<(TimeSpan Start, TimeSpan? End, string Text)> Words)>();
+        var parsed = new List<(TimeSpan Start, string Text,
+            IReadOnlyList<(TimeSpan Start, TimeSpan? End, string Text)> Words,
+            int VoiceLane, string? VoiceLabel)>();
+        var voiceLane = 0;
+        string? voiceLabel = null;
         foreach (var sourceLine in source)
         {
+            var voice = VoiceLaneRegex().Match(sourceLine.Trim());
+            if (voice.Success)
+            {
+                voiceLane = int.TryParse(voice.Groups["lane"].Value,
+                    NumberStyles.None, CultureInfo.InvariantCulture, out var lane)
+                    ? Math.Max(0, lane) : 0;
+                voiceLabel = DecodeBase64Url(voice.Groups["label"].Success
+                    ? voice.Groups["label"].Value : null);
+                continue;
+            }
             var matches = TimestampRegex().Matches(sourceLine);
             if (matches.Count == 0) continue;
             var withoutLineTimestamps = TimestampRegex().Replace(sourceLine, string.Empty);
@@ -40,28 +55,53 @@ internal static partial class LrcParser
             var text = words.Length > 0
                 ? string.Join(' ', words.Select(word => word.Text))
                 : EnhancedTimestampRegex().Replace(withoutLineTimestamps, string.Empty).Trim();
+            if (LyricsStructureMarker.IsMarker(text))
+            {
+                // Keep its timestamp as a non-rendered phrase boundary, but never
+                // turn a source annotation such as "Chorus" into a sung word.
+                text = string.Empty;
+                words = [];
+            }
             foreach (Match match in matches)
             {
                 var lineStart = ParseTimestamp(match.Groups["minutes"].Value, match.Groups["seconds"].Value, offsetMilliseconds);
                 // Bei wortgenauen Lyrics ist die Erkennung des ersten Wortes genauer
                 // als der ursprüngliche, nur satzweise LRC-Zeitstempel.
                 var start = words.Length > 0 ? words[0].Start : lineStart;
-                parsed.Add((start, text, words));
+                parsed.Add((start, text, words, voiceLane, voiceLabel));
             }
+            voiceLane = 0;
+            voiceLabel = null;
         }
 
         var ordered = parsed
-            .GroupBy(line => line.Start)
+            // Simultaneous singers must remain independent lines. Historical
+            // LRC duplicates are still folded, but only within the same lane.
+            .GroupBy(line => (line.Start, line.VoiceLane, line.VoiceLabel))
             .Select(group => (
-                Start: group.Key,
+                Start: group.Key.Start,
                 Text: string.Join("  ·  ", group.Select(line => line.Text).Where(text => !string.IsNullOrWhiteSpace(text)).Distinct(StringComparer.Ordinal)),
-                Words: group.SelectMany(line => line.Words).GroupBy(word => (word.Start, word.Text)).Select(word => word.First()).OrderBy(word => word.Start).ToArray()))
-            .OrderBy(line => line.Start)
+                Words: group.SelectMany(line => line.Words).GroupBy(word => (word.Start, word.Text)).Select(word => word.First()).OrderBy(word => word.Start).ToArray(),
+                VoiceLane: group.Key.VoiceLane,
+                VoiceLabel: group.Key.VoiceLabel))
+            .OrderBy(line => line.Start).ThenBy(line => line.VoiceLane)
             .ToArray();
         var lines = new LyricsLineDto[ordered.Length];
+        var hasIndependentVoiceLanes = ordered.Any(line => line.VoiceLane > 0);
         for (var index = 0; index < ordered.Length; index++)
         {
-            var end = index + 1 < ordered.Length ? ordered[index + 1].Start : duration;
+            var following = ordered.Skip(index + 1)
+                .FirstOrDefault(candidate => candidate.VoiceLane == ordered[index].VoiceLane);
+            var end = following == default ? duration : following.Start;
+            if (hasIndependentVoiceLanes)
+            {
+                var exactWordEnd = ordered[index].Words
+                    .Where(word => word.End is not null)
+                    .Select(word => word.End!.Value)
+                    .DefaultIfEmpty(TimeSpan.Zero).Max();
+                if (exactWordEnd > ordered[index].Start)
+                    end = exactWordEnd;
+            }
             if (end <= ordered[index].Start)
                 end = ordered[index].Start + TimeSpan.FromSeconds(2);
             var words = new LyricsWordDto[ordered[index].Words.Length];
@@ -76,7 +116,8 @@ internal static partial class LrcParser
                             Math.Clamp(ordered[index].Words[wordIndex].Text.Length / 7d, 0.35, 1.8));
                 words[wordIndex] = new(ordered[index].Words[wordIndex].Start, ordered[index].Words[wordIndex].Text, wordEnd, wordIndex);
             }
-            lines[index] = new(ordered[index].Start, ordered[index].Text, end, index, words);
+            lines[index] = new(ordered[index].Start, ordered[index].Text, end, index, words,
+                VoiceLane: ordered[index].VoiceLane, VoiceLabel: ordered[index].VoiceLabel);
         }
 
         return new(songId, lines, Get("ar"), Get("ti"), Get("al"), Get("by"), offsetMilliseconds);
@@ -89,6 +130,18 @@ internal static partial class LrcParser
             var seconds = double.Parse(secondsValue.Replace(':', '.'), CultureInfo.InvariantCulture);
             var value = TimeSpan.FromMinutes(minutes) + TimeSpan.FromSeconds(seconds) + TimeSpan.FromMilliseconds(offset);
             return value < TimeSpan.Zero ? TimeSpan.Zero : value;
+        }
+
+        static string? DecodeBase64Url(string? token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return null;
+            try
+            {
+                var value = token.Replace('-', '+').Replace('_', '/');
+                value = value.PadRight(value.Length + ((4 - value.Length % 4) % 4), '=');
+                return Encoding.UTF8.GetString(Convert.FromBase64String(value));
+            }
+            catch (FormatException) { return null; }
         }
 
     }
@@ -104,4 +157,7 @@ internal static partial class LrcParser
 
     [GeneratedRegex(@"^\[(?<key>ar|ti|al|by|offset):(?<value>.*)\]$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex MetadataRegex();
+
+    [GeneratedRegex(@"^\[neon-voice:(?<lane>\d+)(?::(?<label>[A-Za-z0-9_-]+))?\]$", RegexOptions.CultureInvariant)]
+    private static partial Regex VoiceLaneRegex();
 }

@@ -3,11 +3,25 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from app.syllables import enrich_lines_with_syllables
+from app.syllables import (_enforce_minimum_syllable_geometry,
+                           enrich_lines_with_syllables)
 from app.acoustic_boundaries import _select_monotone_boundaries
 
 
 class SyllableAlignmentTests(unittest.TestCase):
+    def test_impossible_edge_syllable_is_projected_inside_the_word(self):
+        parts = [
+            {"text": "real", "start": 10.0, "end": 10.032},
+            {"text": "ly", "start": 10.032, "end": 10.32},
+        ]
+
+        parts, repaired = _enforce_minimum_syllable_geometry(
+            parts, 10.0, 10.32)
+
+        self.assertTrue(repaired)
+        self.assertTrue(all(part["end"] - part["start"] >= 0.054
+                            for part in parts))
+
     def test_boundaries_fill_the_gpu_word_window_without_gaps(self):
         line = SimpleNamespace(words=[{"word": "Leidenschaft", "start": 7.92, "end": 8.88}])
 
@@ -71,6 +85,87 @@ class SyllableAlignmentTests(unittest.TestCase):
         self.assertEqual("phoneme-syllable-onsets-v1.1", line.words[0]["syllable_method"])
         self.assertEqual(1.55, parts[0]["end"])
         self.assertEqual("phoneme-syllable-onset", parts[0]["boundary_source"])
+
+    def test_truncated_phone_path_cannot_collapse_final_syllable(self):
+        line = SimpleNamespace(words=[{
+            "word": "Lage", "start": 1.0, "end": 1.42,
+            "phoneme_confidence": 0.82,
+            "phonemes": [
+                {"phone": "l", "start": 1.0, "end": 1.08},
+                {"phone": "a", "start": 1.08, "end": 1.36},
+                {"phone": "g", "start": 1.42, "end": 1.42},
+                {"phone": "ə", "start": 1.42, "end": 1.42},
+            ],
+        }])
+
+        enrich_lines_with_syllables([line], "de")
+
+        parts = line.words[0]["syllables"]
+        self.assertEqual(["La", "ge"], [part["text"] for part in parts])
+        self.assertGreaterEqual(parts[-1]["end"] - parts[-1]["start"], 0.055)
+        self.assertNotEqual("phoneme-syllable-onsets-v1.1",
+                            line.words[0]["syllable_method"])
+
+    def test_internal_only_phone_path_places_syllables_without_moving_word(self):
+        line = SimpleNamespace(words=[{
+            "word": "sozusagen", "start": 10.0, "end": 12.0,
+            "syllable_phoneme_confidence": .49,
+            "syllable_phonemes": [
+                {"phone": "z", "start": 10.0, "end": 10.08},
+                {"phone": "o", "start": 10.08, "end": 10.29},
+                {"phone": "ts", "start": 10.30, "end": 10.38},
+                {"phone": "u", "start": 10.38, "end": 10.67},
+                {"phone": "z", "start": 10.71, "end": 10.79},
+                {"phone": "a", "start": 10.79, "end": 11.08},
+                {"phone": "g", "start": 11.12, "end": 11.20},
+                {"phone": "ə", "start": 11.20, "end": 11.72},
+                {"phone": "n", "start": 11.72, "end": 11.81},
+            ],
+        }])
+
+        enrich_lines_with_syllables([line], "de")
+
+        word = line.words[0]
+        self.assertEqual(10.0, word["start"])
+        self.assertEqual(12.0, word["end"])
+        self.assertEqual(["so", "zu", "sa", "gen"],
+                         [item["text"] for item in word["syllables"]])
+        self.assertAlmostEqual(10.30, word["syllables"][0]["end"], places=2)
+        self.assertAlmostEqual(10.71, word["syllables"][1]["end"], places=2)
+
+    def test_english_ipa_nuclei_correct_pyphen_away_and_apart(self):
+        line = SimpleNamespace(words=[
+            {"word": "away", "start": 1.0, "end": 2.2,
+             "phoneme_confidence": .8, "phonemes": [
+                 {"phone": "ɐ", "start": 1.05, "end": 1.35},
+                 {"phone": "w", "start": 1.35, "end": 1.5},
+                 {"phone": "eɪ", "start": 1.5, "end": 2.15}]},
+            {"word": "apart", "start": 2.3, "end": 3.4,
+             "phoneme_confidence": .8, "phonemes": [
+                 {"phone": "ɐ", "start": 2.3, "end": 2.55},
+                 {"phone": "p", "start": 2.55, "end": 2.7},
+                 {"phone": "ɑːɹ", "start": 2.7, "end": 3.2},
+                 {"phone": "t", "start": 3.2, "end": 3.4}]},
+        ])
+
+        summary = enrich_lines_with_syllables([line], "en")
+
+        self.assertEqual(["a", "way"], [part["text"] for part in line.words[0]["syllables"]])
+        self.assertEqual(["a", "part"], [part["text"] for part in line.words[1]["syllables"]])
+        self.assertEqual(2, summary["phoneme_corrected_text_splits"])
+
+    def test_espeak_pronunciation_repairs_away_without_accepted_ctc_path(self):
+        line = SimpleNamespace(words=[{
+            "word": "away", "start": 1.0, "end": 3.0,
+        }])
+
+        summary = enrich_lines_with_syllables([line], "en")
+
+        self.assertEqual(["a", "way"], [
+            part["text"] for part in line.words[0]["syllables"]])
+        self.assertEqual("espeak-ipa-vowel-nucleus-count",
+                         line.words[0]["syllable_split_source"])
+        self.assertEqual(1, summary["phoneme_corrected_text_splits"])
 
     def test_textual_syllable_onset_selects_only_its_consonant_from_a_cluster(self):
         line = SimpleNamespace(words=[{

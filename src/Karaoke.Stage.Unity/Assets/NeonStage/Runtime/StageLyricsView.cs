@@ -10,6 +10,7 @@ public sealed class StageLyricsView
 {
     private const int MaxLines = 8;
     private readonly RectTransform _root;
+    private readonly Image _backdrop;
     private readonly TextMeshProUGUI[] _base = new TextMeshProUGUI[MaxLines];
     private readonly TextMeshProUGUI[] _fill = new TextMeshProUGUI[MaxLines];
     private readonly TextMeshProUGUI[][] _burn = new TextMeshProUGUI[MaxLines][];
@@ -17,9 +18,13 @@ public sealed class StageLyricsView
     private readonly RectTransform[] _flames = new RectTransform[MaxLines];
     private readonly Image[] _flameImages = new Image[MaxLines];
     private readonly float[] _textWidths = new float[MaxLines];
+    private readonly float[][] _glyphAdvances = new float[MaxLines][];
     private readonly float[] _textLeft = new float[MaxLines];
     private readonly float[] _rowWidths = new float[MaxLines];
+    private readonly float[] _rowHeights = new float[MaxLines];
+    private readonly float[] _rowCenterY = new float[MaxLines];
     private readonly float[] _lastProgress = new float[MaxLines];
+    private readonly int[] _voiceLanes = new int[MaxLines];
     private readonly List<LyricParticle> _particles = new();
     private int _highlightCounter;
     private int _lineCount;
@@ -27,6 +32,7 @@ public sealed class StageLyricsView
     private readonly RectTransform _fuseTrack;
     private readonly RectTransform _fuseFill;
     private readonly RectTransform _fuseSpark;
+    private string _presentationStyle = "neon";
 
     public StageLyricsView(GameObject host)
     {
@@ -49,10 +55,20 @@ public sealed class StageLyricsView
         // The complete lyrics page lives between the corner cards/header and
         // the transport bar. Section pagination keeps this deliberately
         // smaller safe area readable instead of allowing text to spill out.
-        _root.anchorMin = new Vector2(0.06f, 0.49f);
-        _root.anchorMax = new Vector2(0.94f, 0.75f);
+        _root.anchorMin = new Vector2(0.12f, 0.50f);
+        _root.anchorMax = new Vector2(0.94f, 0.73f);
         _root.offsetMin = Vector2.zero;
         _root.offsetMax = Vector2.zero;
+
+        var backdrop = CreatePanel("Lyrics Glass Backdrop", _root, Color.clear);
+        backdrop.anchorMin = new Vector2(-.035f, -.22f);
+        backdrop.anchorMax = new Vector2(1.035f, 1.22f);
+        backdrop.offsetMin = backdrop.offsetMax = Vector2.zero;
+        _backdrop = backdrop.GetComponent<Image>();
+        _backdrop.raycastTarget = false;
+        _backdrop.sprite = CreateRoundedPanelSprite();
+        _backdrop.type = Image.Type.Sliced;
+        _backdrop.gameObject.SetActive(false);
 
         for (var index = 0; index < MaxLines; index++) CreateLine(index);
 
@@ -81,6 +97,20 @@ public sealed class StageLyricsView
         Show(Array.Empty<string>());
     }
 
+    public void SetPresentationStyle(string? style)
+    {
+        var normalized = string.IsNullOrWhiteSpace(style) ? "neon" : style.Trim().ToLowerInvariant();
+        if (string.Equals(_presentationStyle, normalized, StringComparison.Ordinal)) return;
+        _presentationStyle = normalized;
+        var milkGlass = normalized == "milk-glass";
+        _backdrop.gameObject.SetActive(milkGlass);
+        _backdrop.color = milkGlass
+            ? new Color(.010f, .016f, .030f, .985f)
+            : Color.clear;
+        for (var index = 0; index < _lineCount; index++)
+            ApplyVoicePalette(index, _voiceLanes[index]);
+    }
+
     public void SetEntryCue(double remaining, bool hasPause, bool showCountdown)
     {
         var visible = hasPause && remaining > 0 && remaining <= 1.65;
@@ -103,29 +133,76 @@ public sealed class StageLyricsView
         }
     }
 
-    public void Show(string[] lines)
+    public void Show(string[] lines) => Show(lines, null);
+
+    public void Show(string[] lines, int[]? voiceLanes)
     {
         _lineCount = Math.Min(lines.Length, MaxLines);
+        var laneOrder = new List<int>();
+        var laneLineCounts = new Dictionary<int, int>();
+        for (var index = 0; index < _lineCount; index++)
+        {
+            var lane = voiceLanes != null && index < voiceLanes.Length
+                ? Math.Max(0, voiceLanes[index])
+                : 0;
+            _voiceLanes[index] = lane;
+            if (!laneLineCounts.ContainsKey(lane))
+            {
+                laneOrder.Add(lane);
+                laneLineCounts[lane] = 0;
+            }
+            laneLineCounts[lane]++;
+        }
+        laneOrder.Sort();
+
+        // A duet needs two genuinely separate singing areas. Keep the upper
+        // edge fixed so the lead layout does not jump, and grow only towards
+        // the transport bar when another voice is present.
+        // The single-voice block sits vertically between cover and QR card.
+        // A duet needs more height; in that case reserve the left QR/cover
+        // column and the right next-song card horizontally as well.
+        _root.anchorMin = laneOrder.Count > 1
+            ? new Vector2(.16f, .35f)
+            : new Vector2(.12f, .50f);
+        _root.anchorMax = laneOrder.Count > 1
+            ? new Vector2(.74f, .73f)
+            : new Vector2(.94f, .73f);
+        Canvas.ForceUpdateCanvases();
         var height = _root.rect.height > 0 ? _root.rect.height : 410;
-        var rowHeight = height / Math.Max(1, _lineCount);
+        var laneGap = laneOrder.Count > 1 ? Mathf.Clamp(height * .055f, 22f, 34f) : 0f;
+        var laneHeight = (height - laneGap * Math.Max(0, laneOrder.Count - 1)) /
+                         Math.Max(1, laneOrder.Count);
+        var laneRowsUsed = new Dictionary<int, int>();
         for (var index = 0; index < MaxLines; index++)
         {
             var visible = index < _lineCount;
             _base[index].transform.parent.gameObject.SetActive(visible);
             if (!visible) continue;
             var row = (RectTransform)_base[index].transform.parent;
+            var lane = _voiceLanes[index];
+            var laneRank = laneOrder.IndexOf(lane);
+            var rowInLane = laneRowsUsed.TryGetValue(lane, out var used) ? used : 0;
+            laneRowsUsed[lane] = rowInLane + 1;
+            var rowHeight = laneHeight / Math.Max(1, laneLineCounts[lane]);
+            var laneTop = laneRank * (laneHeight + laneGap);
             row.anchorMin = new Vector2(0, 1);
             row.anchorMax = new Vector2(1, 1);
             row.pivot = new Vector2(.5f, 1);
-            row.anchoredPosition = new Vector2(0, -index * rowHeight);
+            row.anchoredPosition = new Vector2(0, -(laneTop + rowInLane * rowHeight));
             row.sizeDelta = new Vector2(0, rowHeight);
+            _rowHeights[index] = rowHeight;
+            _rowCenterY[index] = -(laneTop + (rowInLane + .5f) * rowHeight);
             _base[index].text = lines[index];
             _fill[index].text = lines[index];
+            ApplyVoicePalette(index, lane);
             foreach (var burn in _burn[index]) burn.text = lines[index];
             Canvas.ForceUpdateCanvases();
             _base[index].ForceMeshUpdate();
             var rowWidth = row.rect.width > 0 ? row.rect.width : 1126;
-            _textWidths[index] = Mathf.Min(rowWidth, _base[index].preferredWidth);
+            _glyphAdvances[index] = MeasureGlyphAdvances(_base[index], rowWidth);
+            _textWidths[index] = _glyphAdvances[index].Length > 0
+                ? _glyphAdvances[index][^1]
+                : Mathf.Min(rowWidth, _base[index].preferredWidth);
             _rowWidths[index] = rowWidth;
             _textLeft[index] = (rowWidth - _textWidths[index]) * .5f;
             _masks[index].anchoredPosition = new Vector2(_textLeft[index], 0);
@@ -148,41 +225,44 @@ public sealed class StageLyricsView
         {
             var firstTextStart = -_rowWidths[0] * .5f + _textLeft[0];
             var cueRect = (RectTransform)_cueRoot.transform;
-            var textHeight = Mathf.Clamp(rowHeight * .68f, 38f, 52f);
+            var textHeight = Mathf.Clamp(_rowHeights[0] * .68f, 38f, 52f);
             cueRect.sizeDelta = new Vector2(76, textHeight + 8);
             _fuseTrack.sizeDelta = new Vector2(66, 8);
             _fuseFill.sizeDelta = new Vector2(_fuseFill.sizeDelta.x, 8);
             _fuseSpark.sizeDelta = new Vector2(10, textHeight * 1.12f);
             // The bar reaches slightly into the first glyph so its hot edge can
             // hand off directly to the lyric-progress flame.
-            cueRect.anchoredPosition = new Vector2(firstTextStart - 28f, -rowHeight * .5f);
+            cueRect.anchoredPosition = new Vector2(firstTextStart - 28f, _rowCenterY[0]);
         }
     }
 
     public void SetProgress(int line, float progress, float pace, float audioImpact, string stageEffect)
     {
         if (line < 0 || line >= _lineCount) return;
+        var p = Mathf.Clamp01(progress);
+        var progressWidth = GlyphProgressWidth(line, p);
         _masks[line].SetSizeWithCurrentAnchors(
             RectTransform.Axis.Horizontal,
-            _textWidths[line] * Mathf.Clamp01(progress));
-        var p = Mathf.Clamp01(progress);
+            progressWidth);
         _flames[line].gameObject.SetActive(p > .002f && p < .998f);
         _flames[line].anchoredPosition = new Vector2(
-            -_rowWidths[line] * .5f + _textLeft[line] + _textWidths[line] * p,
+            -_rowWidths[line] * .5f + _textLeft[line] + progressWidth,
             Mathf.Sin(Time.unscaledTime * Mathf.Lerp(7f, 19f, pace) + line) * Mathf.Lerp(1.2f, 3.2f, pace));
         var pulse = 1f + Mathf.Sin(Time.unscaledTime * Mathf.Lerp(8f, 24f, pace) + line * 1.7f) * Mathf.Lerp(.07f, .18f, pace);
         _flames[line].sizeDelta = new Vector2(Mathf.Lerp(82f, 25f, pace), Mathf.Lerp(98f, 45f, pace));
         _flames[line].localScale = new Vector3(pulse, 1f + (pulse - 1f) * Mathf.Lerp(1.1f, 2.2f, pace), 1);
-        _flameImages[line].color = Color.Lerp(
-            new Color(1f, .3f, .015f, .9f),
-            new Color(.86f, 1f, .03f, .88f), pace);
+        var lane = _voiceLanes[line];
+        var slowColor = lane == 0 ? new Color(1f, .3f, .015f, .9f) : new Color(.15f, .7f, 1f, .9f);
+        var fastColor = lane == 0 ? new Color(.86f, 1f, .03f, .88f) : new Color(1f, .2f, .78f, .9f);
+        _flameImages[line].color = Color.Lerp(slowColor, fastColor, pace);
         var fillMaterial = _fill[line].fontMaterial;
         if (fillMaterial != null && fillMaterial.HasProperty(ShaderUtilities.ID_GlowPower))
         {
             fillMaterial.SetFloat(ShaderUtilities.ID_GlowOuter, Mathf.Lerp(.72f, .34f, pace));
             fillMaterial.SetFloat(ShaderUtilities.ID_GlowPower, Mathf.Lerp(.82f, .52f, pace));
-            fillMaterial.SetColor(ShaderUtilities.ID_GlowColor,
-                Color.Lerp(new Color(1f, .22f, .01f, .98f), new Color(.72f, 1f, .02f, .82f), pace));
+            fillMaterial.SetColor(ShaderUtilities.ID_GlowColor, lane == 0
+                ? Color.Lerp(new Color(1f, .22f, .01f, .98f), new Color(.72f, 1f, .02f, .82f), pace)
+                : Color.Lerp(new Color(.05f, .62f, 1f, .98f), new Color(1f, .12f, .72f, .88f), pace));
         }
         if (_lastProgress[line] < .985f && p >= .985f &&
             (audioImpact >= .22f || !string.Equals(stageEffect, "Automatic", StringComparison.OrdinalIgnoreCase)))
@@ -195,6 +275,37 @@ public sealed class StageLyricsView
         }
         else if (p < .985f) _fill[line].transform.localScale = Vector3.one;
         _lastProgress[line] = p;
+    }
+
+    private float GlyphProgressWidth(int line, float progress)
+    {
+        var advances = _glyphAdvances[line];
+        if (advances == null || advances.Length < 2) return _textWidths[line] * progress;
+        var characterPosition = progress * (advances.Length - 1);
+        var left = Mathf.Clamp(Mathf.FloorToInt(characterPosition), 0, advances.Length - 1);
+        var right = Math.Min(left + 1, advances.Length - 1);
+        return Mathf.Lerp(advances[left], advances[right], characterPosition - left);
+    }
+
+    private static float[] MeasureGlyphAdvances(TextMeshProUGUI text, float availableWidth)
+    {
+        var info = text.textInfo;
+        var count = info?.characterCount ?? 0;
+        if (count <= 0) return Array.Empty<float>();
+        var result = new float[count + 1];
+        var origin = info!.characterInfo[0].origin;
+        for (var index = 0; index < count; index++)
+        {
+            var character = info.characterInfo[index];
+            result[index] = Math.Max(result[index], character.origin - origin);
+            result[index + 1] = Math.Max(result[index], character.xAdvance - origin);
+        }
+        var measuredWidth = result[^1];
+        if (measuredWidth <= 0) return Array.Empty<float>();
+        var scale = Math.Min(1f, availableWidth / measuredWidth);
+        if (scale < 1f)
+            for (var index = 1; index < result.Length; index++) result[index] *= scale;
+        return result;
     }
 
     public void TickEffects(float deltaTime)
@@ -237,7 +348,9 @@ public sealed class StageLyricsView
                 : new Vector2(UnityEngine.Random.Range(-12f, 12f), UnityEngine.Random.Range(10f, 42f));
             var image = go.GetComponent<Image>();
             image.raycastTarget = false;
-            image.color = Color.Lerp(new Color(1f, .2f, .02f, .9f), new Color(.8f, 1f, .04f, .95f), UnityEngine.Random.value);
+            image.color = _voiceLanes[line] == 0
+                ? Color.Lerp(new Color(1f, .2f, .02f, .9f), new Color(.8f, 1f, .04f, .95f), UnityEngine.Random.value)
+                : Color.Lerp(new Color(.08f, .68f, 1f, .9f), new Color(1f, .18f, .74f, .95f), UnityEngine.Random.value);
             var life = UnityEngine.Random.Range(.45f, explodes ? .8f : 1.15f);
             _particles.Add(new LyricParticle(rect, image, direction, UnityEngine.Random.Range(-220f, 220f), life, explodes));
         }
@@ -313,6 +426,87 @@ public sealed class StageLyricsView
         fillRect.pivot = new Vector2(0, .5f);
         fillRect.anchoredPosition = Vector2.zero;
         fillRect.sizeDelta = new Vector2(1126, 0);
+    }
+
+    private void ApplyVoicePalette(int index, int lane)
+    {
+        var alternate = lane > 0;
+        var milkGlass = _presentationStyle == "milk-glass";
+        _base[index].color = milkGlass
+            ? alternate ? new Color(.90f, .96f, 1f, 1f) : new Color(.98f, .98f, 1f, 1f)
+            : alternate ? new Color(.78f, .9f, 1f, 1f) : new Color(.92f, .87f, .96f, 1f);
+        _fill[index].color = milkGlass
+            ? alternate ? new Color(1f, .24f, .78f, 1f) : new Color(.87f, 1f, .04f, 1f)
+            : alternate ? new Color(1f, .22f, .78f, 1f) : new Color(.87f, 1f, .05f, 1f);
+        _base[index].outlineColor = milkGlass ? new Color32(0, 4, 12, 255) : new Color32(75, 25, 100, 190);
+        _base[index].outlineWidth = milkGlass ? .24f : .09f;
+        ConfigureTextUnderlay(_base[index], milkGlass);
+
+        var burnColors = alternate
+            ? new[]
+            {
+                new Color(.12f, .68f, 1f, .72f), new Color(.5f, .28f, 1f, .72f),
+                new Color(1f, .12f, .7f, .72f), new Color(.18f, .78f, 1f, .72f)
+            }
+            : new[]
+            {
+                new Color(1f, .25f, .02f, .72f), new Color(1f, .48f, .01f, .72f),
+                new Color(1f, .18f, .02f, .72f), new Color(1f, .62f, .01f, .72f)
+            };
+        for (var burnIndex = 0; burnIndex < _burn[index].Length; burnIndex++)
+            _burn[index][burnIndex].color = burnColors[burnIndex];
+
+        var material = _fill[index].fontMaterial;
+        if (material == null) return;
+        _fill[index].outlineColor = milkGlass
+            ? new Color32(0, 4, 12, 255)
+            : alternate ? new Color32(255, 40, 190, 220) : new Color32(176, 255, 0, 210);
+        _fill[index].outlineWidth = milkGlass ? .15f : .16f;
+        if (material.HasProperty(ShaderUtilities.ID_GlowColor))
+            material.SetColor(ShaderUtilities.ID_GlowColor, milkGlass
+                ? alternate ? new Color(1f, .08f, .62f, .82f) : new Color(.72f, 1f, .02f, .84f)
+                : alternate ? new Color(.2f, .65f, 1f, .86f) : new Color(.72f, 1f, .02f, .82f));
+    }
+
+    private static void ConfigureTextUnderlay(TextMeshProUGUI text, bool enabled)
+    {
+        var material = text.fontMaterial;
+        if (material == null || !material.HasProperty(ShaderUtilities.ID_UnderlayColor)) return;
+        if (!enabled)
+        {
+            material.DisableKeyword(ShaderUtilities.Keyword_Underlay);
+            return;
+        }
+
+        // A centred, soft black underlay behaves like a local contrast mask;
+        // unlike a displaced shadow it does not create the disliked double-text
+        // appearance and remains legible over animated cyan/magenta lines.
+        material.EnableKeyword(ShaderUtilities.Keyword_Underlay);
+        material.SetColor(ShaderUtilities.ID_UnderlayColor, new Color(0f, 0f, 0f, .92f));
+        material.SetFloat(ShaderUtilities.ID_UnderlayOffsetX, 0f);
+        material.SetFloat(ShaderUtilities.ID_UnderlayOffsetY, 0f);
+        material.SetFloat(ShaderUtilities.ID_UnderlayDilate, .42f);
+        material.SetFloat(ShaderUtilities.ID_UnderlaySoftness, .18f);
+    }
+
+    private static Sprite CreateRoundedPanelSprite()
+    {
+        const int size = 64;
+        const float radius = 11f;
+        var texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        texture.wrapMode = TextureWrapMode.Clamp;
+        for (var y = 0; y < size; y++)
+        for (var x = 0; x < size; x++)
+        {
+            var nearestX = Mathf.Clamp(x, radius, size - 1 - radius);
+            var nearestY = Mathf.Clamp(y, radius, size - 1 - radius);
+            var distance = Vector2.Distance(new Vector2(x, y), new Vector2(nearestX, nearestY));
+            var alpha = 1f - Mathf.SmoothStep(radius - 1.5f, radius + .5f, distance);
+            texture.SetPixel(x, y, new Color(1f, 1f, 1f, alpha));
+        }
+        texture.Apply();
+        return Sprite.Create(texture, new Rect(0, 0, size, size), new Vector2(.5f, .5f), 100,
+            0, SpriteMeshType.FullRect, new Vector4(14, 14, 14, 14));
     }
 
     private static Texture2D CreateFlameTexture()

@@ -11,7 +11,14 @@ public sealed record UltraStarSongMetadata(
     string? AudioFile,
     double Bpm,
     double GapMilliseconds,
-    bool Relative);
+    bool Relative,
+    string? Album = null,
+    string? Edition = null,
+    string? Language = null,
+    string? Creator = null,
+    string? Year = null,
+    string? VideoFile = null,
+    double? DeclaredEndMilliseconds = null);
 
 public sealed class UltraStarLyricsImport(
     UltraStarSongMetadata metadata,
@@ -39,21 +46,13 @@ public sealed class UltraStarLyricsImport(
         var output = new StringBuilder();
         AppendMetadata(output, "ti", Metadata.Title);
         AppendMetadata(output, "ar", Metadata.Artist);
+        AppendMetadata(output, "al", Metadata.Album ?? Metadata.Edition);
         output.AppendLine("[re:UltraStar Deluxe TXT imported by Neon Stage]");
-        foreach (var line in Lines.OrderBy(item => item.Start))
-        {
-            output.Append('[').Append(FormatTimestamp(line.Start)).Append(']');
-            var words = line.Words ?? [];
-            for (var index = 0; index < words.Count; index++)
-            {
-                var word = words[index];
-                output.Append('<').Append(FormatTimestamp(word.Start)).Append(',')
-                    .Append(FormatTimestamp(word.End ?? word.Start)).Append('>')
-                    .Append(word.Text);
-                if (index + 1 < words.Count) output.Append(' ');
-            }
-            output.AppendLine();
-        }
+        // Use the same serializer as editor revisions. Besides enhanced word
+        // windows it preserves every UltraStar note as a syllable reference,
+        // so the downstream aligner can refine these anchors without losing
+        // the source's karaoke-grade note geometry.
+        output.Append(LyricsDocumentLrcExporter.ToEnhancedLrc(ToEditorDocument(Guid.Empty)));
         return output.ToString();
     }
 
@@ -100,6 +99,9 @@ public static partial class UltraStarLyricsImporter
         var bpm = ParseRequiredNumber(metadata, "BPM");
         if (bpm <= 0) throw Error(0, "BPM muss größer als null sein.", "BPM must be greater than zero.");
         var gap = ParseOptionalNumber(metadata, "GAP");
+        var declaredEnd = ParseNullableNumber(metadata, "END");
+        if (declaredEnd is < 0)
+            throw Error(0, "#END darf nicht negativ sein.", "#END must not be negative.");
         var relative = metadata.TryGetValue("RELATIVE", out var relativeValue) &&
                        relativeValue.Trim().Equals("yes", StringComparison.OrdinalIgnoreCase);
         if (relative && metadata.TryGetValue("VERSION", out var versionValue) &&
@@ -187,7 +189,9 @@ public static partial class UltraStarLyricsImporter
         if (discardedBeforeAudio > 0) warnings.Add($"{discardedBeforeAudio} vollständig vor dem Audiobeginn liegende Note(n) wurden verworfen.");
 
         return new(new(Get(metadata, "TITLE"), Get(metadata, "ARTIST"),
-                Get(metadata, "AUDIO") ?? Get(metadata, "MP3"), bpm, gap, relative),
+                Get(metadata, "AUDIO") ?? Get(metadata, "MP3"), bpm, gap, relative,
+                Get(metadata, "ALBUM"), Get(metadata, "EDITION"), Get(metadata, "LANGUAGE"),
+                Get(metadata, "CREATOR"), Get(metadata, "YEAR"), Get(metadata, "VIDEO"), declaredEnd),
             converted.Select((line, index) => line with { Index = index }).ToArray(),
             rawLines.Sum(line => line.Count), warnings);
 
@@ -247,26 +251,50 @@ public static partial class UltraStarLyricsImporter
         MutableWord? current = null;
         foreach (var note in notes)
         {
-            var matches = TokenRegex().Matches(note.Text);
+            // Legacy UltraStar files use '~' as a melisma/pitch-change marker:
+            // the note continues the preceding sung syllable. It is display
+            // metadata, not a character that is pronounced. Preserve spaces
+            // because they still define word boundaries after the continuation.
+            var firstContent = 0;
+            while (firstContent < note.Text.Length && char.IsWhiteSpace(note.Text[firstContent])) firstContent++;
+            var continuesPreviousSyllable = firstContent < note.Text.Length && note.Text[firstContent] == '~';
+            var displayText = note.Text.Replace("~", string.Empty, StringComparison.Ordinal);
+            var matches = TokenRegex().Matches(displayText);
             if (matches.Count == 0)
             {
                 var previous = current ?? completed.LastOrDefault();
                 previous?.Extend(note.End);
+                if (continuesPreviousSyllable && displayText.Any(char.IsWhiteSpace)) FlushWord();
                 continue;
             }
             var totalWeight = matches.Sum(match => Math.Max(1, match.Length));
             var consumedWeight = 0;
             var previousEnd = 0;
-            foreach (Match match in matches)
+            for (var matchIndex = 0; matchIndex < matches.Count; matchIndex++)
             {
-                if (match.Index > previousEnd) FlushWord();
+                var match = matches[matchIndex];
+                var isContinuation = continuesPreviousSyllable && matchIndex == 0;
+                if (!isContinuation && match.Index > previousEnd) FlushWord();
                 var tokenStart = Interpolate(note.Start, note.End, consumedWeight, totalWeight);
                 consumedWeight += Math.Max(1, match.Length);
                 var tokenEnd = Interpolate(note.Start, note.End, consumedWeight, totalWeight);
-                current ??= new();
-                current.Add(match.Value, tokenStart, tokenEnd);
+                if (isContinuation)
+                {
+                    var previous = current ?? completed.LastOrDefault();
+                    if (previous is not null) previous.ContinueSyllable(match.Value, tokenEnd);
+                    else
+                    {
+                        current = new();
+                        current.Add(match.Value, tokenStart, tokenEnd);
+                    }
+                }
+                else
+                {
+                    current ??= new();
+                    current.Add(match.Value, tokenStart, tokenEnd);
+                }
                 previousEnd = match.Index + match.Length;
-                if (previousEnd < note.Text.Length) FlushWord();
+                if (previousEnd < displayText.Length) FlushWord();
             }
         }
         FlushWord();
@@ -342,6 +370,9 @@ public static partial class UltraStarLyricsImporter
     private static double ParseOptionalNumber(IReadOnlyDictionary<string, string> metadata, string key) =>
         metadata.TryGetValue(key, out var value) && TryParseNumber(value, out var result) ? result : 0;
 
+    private static double? ParseNullableNumber(IReadOnlyDictionary<string, string> metadata, string key) =>
+        metadata.TryGetValue(key, out var value) && TryParseNumber(value, out var result) ? result : null;
+
     private static bool TryParseNumber(string value, out double result) => double.TryParse(
         value.Trim().Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out result) &&
         double.IsFinite(result);
@@ -368,6 +399,12 @@ public static partial class UltraStarLyricsImporter
         {
             if (Syllables.Count > 0 && end > Syllables[^1].End) Syllables[^1].End = end;
         }
+        public void ContinueSyllable(string text, TimeSpan end)
+        {
+            if (Syllables.Count == 0) return;
+            Syllables[^1].Text += text;
+            Extend(end);
+        }
         public LyricsWordDto ToDto(int index)
         {
             var text = string.Concat(Syllables.Select(syllable => syllable.Text));
@@ -379,7 +416,7 @@ public static partial class UltraStarLyricsImporter
 
     private sealed class MutableSyllable(string text, TimeSpan start, TimeSpan end)
     {
-        public string Text { get; } = text;
+        public string Text { get; set; } = text;
         public TimeSpan Start { get; } = start;
         public TimeSpan End { get; set; } = end;
     }

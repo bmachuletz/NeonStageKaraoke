@@ -1,6 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Karaoke.App.Desktop.NewEventWindow" Title="Neon Stage · Event planen"
-        Width="590" Height="520" MinWidth="520" MinHeight="470" Background="#0D1016"
+        Width="590" Height="610" MinWidth="520" MinHeight="550" Background="#0D1016"
         WindowStartupLocation="CenterOwner">
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
     <StackPanel>
@@ -21,8 +21,20 @@
         </StackPanel>
       </Grid>
       <TextBlock Text="Format: JJJJ-MM-TT HH:mm" Foreground="#677185" FontSize="10" />
+      <TextBlock Text="BÜHNE" Foreground="#8993A6" FontSize="10" FontWeight="Bold" Margin="0,8,0,0" />
+      <ComboBox x:Name="StageThemeBox">
+        <ComboBox.ItemTemplate>
+          <DataTemplate>
+            <StackPanel Margin="2,3">
+              <TextBlock Text="{Binding Name}" FontWeight="SemiBold" />
+              <TextBlock Text="{Binding Description}" Foreground="#8993A6" FontSize="10" TextWrapping="Wrap" />
+            </StackPanel>
+          </DataTemplate>
+        </ComboBox.ItemTemplate>
+      </ComboBox>
+      <TextBlock Text="Standard bleibt die bisherige Neon-Stage." Foreground="#677185" FontSize="10" />
       <TextBlock Text="BESCHREIBUNG (OPTIONAL)" Foreground="#8993A6" FontSize="10" FontWeight="Bold" Margin="0,8,0,0" />
-      <TextBox x:Name="DescriptionBox" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="500" Height="105" />
+      <TextBox x:Name="DescriptionBox" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="500" Height="80" />
       <TextBlock x:Name="ErrorText" Foreground="#FF6D88" TextWrapping="Wrap" />
     </StackPanel>
     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">

@@ -145,6 +145,13 @@ def transfer_canonical_lines(headers: list[str], canonical_lines: list,
 
     source_starts = [float(line.source_timestamp if line.source_timestamp is not None
                            else line.timestamp) for line in canonical_lines]
+    # Plain LRCLIB lyrics carry no timing at all, so every source start is zero.
+    # The local occurrence search would then look for every line inside the
+    # first few seconds and find nothing - exactly the repeated-phrase
+    # disambiguation a song without anchors needs most. The whole-song match
+    # supplies an approximate position in that case and takes over as centre.
+    source_informative = (max(source_starts) - min(source_starts) > 1.0
+                          if source_starts else False)
     proposed: list[float | None] = []
     local_anchors: list[dict] = []
     expected_cursor = 0
@@ -166,10 +173,12 @@ def transfer_canonical_lines(headers: list[str], canonical_lines: list,
                 global_start = float(acoustic_words[recognized_index]["start"]) - min(
                     0.8, offset * 0.18)
         source_start = source_starts[len(proposed)]
+        minimum_start = (float(proposed[-1]) + 0.04
+                         if proposed and proposed[-1] is not None else 0.0)
+        centre = source_start if source_informative else (
+            global_start if global_start is not None else minimum_start)
         local = _local_occurrence_anchor(
-            tokens, acoustic_words, source_start,
-            (float(proposed[-1]) + 0.04 if proposed and proposed[-1] is not None else 0.0),
-        )
+            tokens, acoustic_words, centre, minimum_start)
         if local is not None:
             proposed.append(max(0.0, float(local["start"])))
             directly_anchored += 1
@@ -193,6 +202,11 @@ def transfer_canonical_lines(headers: list[str], canonical_lines: list,
     previous = -0.04
     for line, value in zip(canonical_lines, proposed):
         start = max(0.0, float(value), previous + 0.04)
+        original_source = float(line.source_timestamp if line.source_timestamp is not None
+                                else line.timestamp)
+        if line.source_end_boundary is not None:
+            line.source_end_boundary = round(
+                max(start, float(line.source_end_boundary) + start - original_source), 3)
         line.timestamp = round(start, 3)
         line.source_timestamp = line.timestamp
         line.words = []

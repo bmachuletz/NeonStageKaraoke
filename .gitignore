@@ -35,6 +35,8 @@ lyrics-word-aligner/models/
 
 # Local tools, secrets and caches
 .tools/
+.claude/
+CLAUDE.md
 **/.git/
 .env
 .env.*
@@ -88,3 +90,13 @@ library/
 !lyrics-word-aligner/third_party/SOFA/example.png
 !site/assets/
 !site/assets/*.png
+
+# Local/customer-specific stages. The runtime can merge these private catalogs,
+# but customer branding and shaders must never enter the public repository.
+src/Karaoke.Server/stage-themes.private.json
+src/Karaoke.Stage.Unity/Assets/Resources/NeonStageBackgrounds.private.json
+src/Karaoke.Stage.Unity/Assets/Resources/NeonStageBackgrounds.private.json.meta
+src/Karaoke.Stage.Unity/Assets/Resources/BackgroundShaders/Private/
+src/Karaoke.Stage.Unity/Assets/Resources/BackgroundShaders/Private.meta
+src/Karaoke.Stage.Unity/Assets/Resources/Branding/
+src/Karaoke.Stage.Unity/Assets/Resources/Branding.meta

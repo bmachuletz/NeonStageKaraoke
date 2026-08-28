@@ -10,9 +10,12 @@ match=""
 lyrics_source=""
 output_dir=""
 reindex=1
+reuse_stems=0
+alignment_profile="standard"
+baseline_report=""
 
 usage() {
-  echo "Verwendung: $0 [--force] [--library PFAD] [--url URL] [--language SPRACHE] [--no-separate] [--match TEXT] [--lyrics-source DATEI] [--output-dir PFAD] [--no-reindex]"
+  echo "Verwendung: $0 [--force] [--library PFAD] [--url URL] [--language SPRACHE] [--no-separate] [--reuse-stems] [--match TEXT] [--lyrics-source DATEI] [--baseline-report DATEI] [--output-dir PFAD] [--profile standard|editor-guided|research-shadow|trusted-ultrastar|basic-pitch-ab|basic-pitch-postprocess] [--no-reindex]"
 }
 
 while (($#)); do
@@ -22,20 +25,38 @@ while (($#)); do
     --url) aligner_url=${2:?URL fehlt}; shift 2 ;;
     --language) language=${2:?Sprache fehlt}; shift 2 ;;
     --no-separate) separate=false; shift ;;
+    --reuse-stems) reuse_stems=1; shift ;;
     --match) match=${2:?Suchtext fehlt}; shift 2 ;;
     --lyrics-source) lyrics_source=${2:?Lyrics-Datei fehlt}; shift 2 ;;
+    --baseline-report) baseline_report=${2:?Baseline-Report fehlt}; shift 2 ;;
     --output-dir) output_dir=${2:?Ausgabeordner fehlt}; shift 2 ;;
+    --profile) alignment_profile=${2:?Profil fehlt}; shift 2 ;;
     --no-reindex) reindex=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
 
+if [[ "$alignment_profile" != standard && "$alignment_profile" != editor-guided && "$alignment_profile" != research-shadow && "$alignment_profile" != trusted-ultrastar && "$alignment_profile" != basic-pitch-ab && "$alignment_profile" != basic-pitch-postprocess ]]; then
+  echo "Unbekanntes Alignment-Profil: $alignment_profile" >&2
+  exit 2
+fi
+
+if ((reuse_stems != 0)) && [[ "$separate" != true ]]; then
+  echo "--reuse-stems kann nicht mit --no-separate kombiniert werden." >&2
+  exit 2
+fi
+
 for command in curl jq find install realpath; do
   command -v "$command" >/dev/null || { echo "Fehlendes Programm: $command" >&2; exit 1; }
 done
 [[ -d "$library" ]] || { echo "Bibliothek nicht gefunden: $library" >&2; exit 1; }
 [[ -z "$lyrics_source" || -f "$lyrics_source" ]] || { echo "Lyrics-Quelle nicht gefunden: $lyrics_source" >&2; exit 1; }
+[[ -z "$baseline_report" || -f "$baseline_report" ]] || { echo "Baseline-Report nicht gefunden: $baseline_report" >&2; exit 1; }
+if [[ "$alignment_profile" == basic-pitch-postprocess && -z "$baseline_report" ]]; then
+  echo "basic-pitch-postprocess erfordert --baseline-report." >&2
+  exit 2
+fi
 if [[ -n "$lyrics_source" && -z "$match" ]]; then
   echo "--lyrics-source erfordert --match, damit die Quelle genau einem Song zugeordnet wird." >&2
   exit 2
@@ -91,14 +112,43 @@ while IFS= read -r -d '' audio; do
   fi
 
   echo
-  echo "Sende an GPU-Aligner: $audio"
+  if [[ "$alignment_profile" == trusted-ultrastar ]]; then
+    echo "Erzeuge Karaoke-Stems; UltraStar-Timings bleiben unverändert: $audio"
+  else
+    echo "Sende an GPU-Aligner: $audio"
+  fi
   echo "Lyrics-Quelle: $input_lrc"
-  response=$(curl -fsS -X POST "$aligner_url/api/jobs" \
-    -F "audio=@\"$audio\"" \
-    -F "lyrics=@\"$input_lrc\"" \
-    -F "language=$language" \
-    -F "separate=$separate" \
-    -F "alignment_device=cuda") || {
+  request=(
+    -fsS -X POST "$aligner_url/api/jobs"
+    -F "audio=@$audio"
+    -F "lyrics=@$input_lrc"
+    -F "language=$language"
+    -F "separate=$separate"
+    -F "alignment_device=cuda"
+    -F "alignment_profile=$alignment_profile"
+  )
+  if [[ -n "$baseline_report" ]]; then
+    request+=( -F "baseline_report=@$baseline_report" )
+  fi
+  if ((reuse_stems != 0)); then
+    vocals_source=""
+    instrumental_source=""
+    for extension in flac ogg; do
+      [[ -n "$vocals_source" || ! -f "$base.vocals.$extension" ]] || vocals_source="$base.vocals.$extension"
+      [[ -n "$instrumental_source" || ! -f "$base.instrumental.$extension" ]] || instrumental_source="$base.instrumental.$extension"
+    done
+    if [[ -z "$vocals_source" || -z "$instrumental_source" ]]; then
+      echo "Alignment abgebrochen: gespeicherte Vocal- und Instrumentalspur fehlen für $audio" >&2
+      ((failed+=1))
+      continue
+    fi
+    echo "Feste Audioreferenz: $vocals_source + $instrumental_source"
+    request+=(
+      -F "vocals=@$vocals_source"
+      -F "instrumental=@$instrumental_source"
+    )
+  fi
+  response=$(curl "${request[@]}") || {
       echo "Upload fehlgeschlagen: $audio" >&2
       ((failed+=1))
       continue
@@ -158,7 +208,7 @@ while IFS= read -r -d '' audio; do
   download "$output_lrc" "$destination_base.lrc" || download_failed=1
   download "$output_report" "$destination_base.alignment.json" || download_failed=1
 
-  if [[ "$separate" == true ]]; then
+  if [[ "$separate" == true && "$reuse_stems" == 0 ]]; then
     vocals=$(jq -r '.stems.vocals // empty' <<<"$status")
     instrumental=$(jq -r '.stems.instrumental // empty' <<<"$status")
     manifest=$(jq -r '.stems_manifest // empty' <<<"$status")

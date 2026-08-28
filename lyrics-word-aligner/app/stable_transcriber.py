@@ -7,11 +7,59 @@ import statistics
 
 import numpy as np
 
+from .chunk_ownership import move_ownership_seams_to_quiet_audio
 from .ctc_aligner import HEURISTIC_SOURCES
 from .transcript_match import normalize_words
 
 
 SAMPLE_RATE = 16000
+
+
+class StableTranscriberSession:
+    """Keep one Stable-TS model resident for several bounded song windows."""
+
+    def __init__(self, device: str):
+        import stable_whisper
+        import torch
+
+        if device == "auto":
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self._torch = torch
+        self._model_name = os.getenv("LRC_STABLE_TS_MODEL", "turbo")
+        self._model = stable_whisper.load_model(
+            self._model_name, device=device,
+            download_root=os.getenv("LRC_WHISPER_CACHE", "/models/whisper"))
+        self._closed = False
+
+    def transcribe(self, audio, language: str, *, vad: bool = True,
+                   initial_prompt: str | None = None,
+                   chunk_seconds: float | None = None,
+                   overlap_seconds: float | None = None) -> dict:
+        if self._closed:
+            raise RuntimeError("Stable-TS-Session wurde bereits geschlossen")
+        chunk_seconds = (float(os.getenv("LRC_STABLE_TS_CHUNK_SECONDS", "30"))
+                         if chunk_seconds is None else float(chunk_seconds))
+        overlap_seconds = (float(os.getenv("LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS", "3"))
+                           if overlap_seconds is None else float(overlap_seconds))
+        return _transcribe_with_loaded_model(
+            self._model, audio, language, self._torch, vad=vad,
+            initial_prompt=initial_prompt, model_name=self._model_name,
+            chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        model = self._model
+        self._model = None
+        del model
+        _release_cuda(self._torch)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exception_type, _exception, _traceback):
+        self.close()
 
 
 def _chunk_windows(sample_count: int, *, sample_rate: int = SAMPLE_RATE,
@@ -58,12 +106,17 @@ def _release_cuda(torch) -> None:
             pass
 
 
+def _is_cuda_oom(error: BaseException) -> bool:
+    return "cuda out of memory" in str(error).lower()
+
+
 def _transcribe_with_loaded_model(model, audio, language: str, torch, *, vad: bool,
                                   initial_prompt: str | None,
                                   model_name: str, chunk_seconds: float,
                                   overlap_seconds: float) -> dict:
     windows = _chunk_windows(
         len(audio), chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds)
+    windows = move_ownership_seams_to_quiet_audio(windows, audio, sample_rate=SAMPLE_RATE)
     words: list[dict] = []
     segment_count = 0
     for sample_start, sample_end, keep_start, keep_end in windows:
@@ -132,15 +185,31 @@ def transcribe_stable_variants(audio, language: str, device: str,
     try:
         results: dict[str, dict] = {}
         for index, (variant_id, chunk_seconds, overlap_seconds) in enumerate(variants):
-            try:
-                results[variant_id] = _transcribe_with_loaded_model(
-                    model, audio, language, torch, vad=vad,
-                    initial_prompt=initial_prompt, model_name=model_name,
-                    chunk_seconds=float(chunk_seconds),
-                    overlap_seconds=float(overlap_seconds))
-            except (RuntimeError, ValueError) as error:
+            retry_count = max(0, int(os.getenv("LRC_STABLE_TS_CUDA_OOM_RETRIES", "1")))
+            error: RuntimeError | ValueError | None = None
+            for attempt in range(retry_count + 1):
+                try:
+                    results[variant_id] = _transcribe_with_loaded_model(
+                        model, audio, language, torch, vad=vad,
+                        initial_prompt=initial_prompt, model_name=model_name,
+                        chunk_seconds=float(chunk_seconds),
+                        overlap_seconds=float(overlap_seconds))
+                    if attempt:
+                        results[variant_id]["cuda_oom_retries"] = attempt
+                    error = None
+                    break
+                except (RuntimeError, ValueError) as current_error:
+                    error = current_error
+                    if not _is_cuda_oom(current_error) or attempt >= retry_count:
+                        break
+                    # A neighbouring CUDA stage can leave fragmented cached
+                    # blocks even after its model was destroyed.  Stable-TS is
+                    # essential evidence, so clear all collectable blocks and
+                    # retry the same bounded variant once.
+                    _release_cuda(torch)
+            if error is not None:
                 if index == 0:
-                    raise
+                    raise error
                 # An optional short-window experiment must never discard the
                 # already completed long-context transcript.
                 results[variant_id] = {
@@ -164,9 +233,10 @@ def transcribe_stable(audio, language: str, device: str, *, vad: bool = True,
                      if chunk_seconds is None else float(chunk_seconds))
     overlap_seconds = (float(os.getenv("LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS", "3"))
                        if overlap_seconds is None else float(overlap_seconds))
-    return transcribe_stable_variants(
-        audio, language, device, [("default", chunk_seconds, overlap_seconds)],
-        vad=vad, initial_prompt=initial_prompt)["default"]
+    with StableTranscriberSession(device) as session:
+        return session.transcribe(
+            audio, language, vad=vad, initial_prompt=initial_prompt,
+            chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds)
 
 
 def realign_with_stable_words(lines: list, stable_words: list[dict], comparison: dict,
@@ -200,32 +270,133 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
         tokens = normalize_words(line.text)
         indices = list(range(expected_cursor, expected_cursor + len(tokens)))
         expected_cursor += len(tokens)
+        timing_available = [(offset, timing_by_expected[index])
+                            for offset, index in enumerate(indices)
+                            if index in timing_by_expected]
+        exact_available = [(offset, by_expected[index])
+                           for offset, index in enumerate(indices)
+                           if index in by_expected]
+        timing_indices = [int(operation["recognized_index"])
+                          for _offset, operation in timing_available]
+        timing_replacements = [recognized[index][1] for index in timing_indices
+                               if 0 <= index < len(recognized)]
+        exact_or_approximate = sum(
+            operation["type"] in {"match", "approximate"}
+            for _offset, operation in timing_available)
+        replacement_count = sum(operation["type"] == "replace"
+                                for _offset, operation in timing_available)
+        existing_span = (float(line.words[-1]["end"]) - float(line.words[0]["start"])
+                         if line.words else 0.0)
+        existing_durations = [float(word["end"]) - float(word["start"])
+                              for word in line.words]
+        existing_internal_overlap = any(
+            float(left["end"]) > float(right["start"]) + 0.005
+            for left, right in zip(line.words, line.words[1:]))
+        existing_nonmonotonic = any(
+            float(right["start"]) + 0.015 < float(left["start"])
+            for left, right in zip(line.words, line.words[1:]))
+        existing_invalid_geometry = bool(existing_durations) and (
+            any(duration <= 0.025 or duration > 6.0
+                for duration in existing_durations)
+            or existing_internal_overlap or existing_nonmonotonic
+        )
+        stable_span = (float(timing_replacements[-1]["end"])
+                       - float(timing_replacements[0]["start"])
+                       if len(timing_replacements) == len(tokens) and tokens else 0.0)
+        probabilities = [float(word.get("probability", 0.0))
+                         for word in timing_replacements]
+        source_start = (float(line.source_timestamp)
+                        if line.source_timestamp is not None else
+                        float(line.timestamp))
+        boundary_ok = (
+            line.source_end_boundary is None or not timing_replacements
+            or float(timing_replacements[-1]["end"])
+            <= float(line.source_end_boundary) + 0.25
+        )
+        # A forced singing model can claim a line even when it stretched a
+        # short, continuously recognized phrase over the complete gap up to the
+        # next lyric.  Such a line no longer carries a "heuristic" source and
+        # used to be invisible to this final Stable-TS pass.  Rescue only gross
+        # geometry errors with a complete, consecutive, high-confidence local
+        # transcript.  The strict duration ratio deliberately leaves already
+        # plausible acoustic alignments untouched.
+        geometry_rescue = (
+            bool(line.words) and len(line.words) == len(tokens) and bool(tokens)
+            and len(timing_available) == len(tokens)
+            and len(timing_replacements) == len(tokens)
+            and timing_indices == list(range(timing_indices[0],
+                                              timing_indices[0] + len(tokens)))
+            and exact_or_approximate >= math.ceil(len(tokens) * 0.75)
+            and replacement_count <= max(2, math.ceil(len(tokens) * 0.20))
+            and statistics.median(probabilities) >= 0.60
+            and stable_span >= max(0.25, len(tokens) * 0.035)
+            and (existing_invalid_geometry
+                 or existing_span >= max(stable_span * 1.65, stable_span + 2.0))
+            and abs(float(timing_replacements[0]["start"]) - source_start)
+            <= max_start_deviation
+            and boundary_ok
+        )
+        # A bounded LRC cue and a complete, consecutive Stable-TS phrase form
+        # stronger onset evidence than a forced model which starts hundreds of
+        # milliseconds before both.  This is deliberately stricter than the
+        # geometry rescue: the Stable onset must sit almost exactly on the
+        # calibrated source cue and improve the existing deviation materially.
+        source_anchor_rescue = (
+            bool(line.words) and len(line.words) == len(tokens) and bool(tokens)
+            and line.source_timestamp is not None
+            and len(exact_available) == len(tokens)
+            and len(timing_replacements) == len(tokens)
+            and timing_indices == list(range(timing_indices[0],
+                                              timing_indices[0] + len(tokens)))
+            and exact_or_approximate == len(tokens)
+            and statistics.median(probabilities) >= 0.75
+            and stable_span >= max(0.25, len(tokens) * 0.035)
+            and abs(float(timing_replacements[0]["start"]) - source_start) <= 0.12
+            and abs(float(line.words[0]["start"]) - source_start) >= 0.25
+            and (abs(float(line.words[0]["start"]) - source_start)
+                 - abs(float(timing_replacements[0]["start"]) - source_start) >= 0.18)
+            and boundary_ok
+        )
+        # Stable-TS sometimes drops a short pickup (commonly "and") and gives
+        # the following low-confidence token the entire musical lead-in.  If
+        # every later lyric word is consecutive and confident, interpolate
+        # only those first two tokens from the trusted cue to the first strong
+        # Stable word.  The rest keeps its measured acoustic timestamps.
+        exact_offsets = [offset for offset, _operation in exact_available]
+        leading_source_anchor_rescue = (
+            bool(line.words) and len(line.words) == len(tokens) and len(tokens) >= 3
+            and line.source_timestamp is not None
+            and exact_offsets == list(range(1, len(tokens)))
+            and len(timing_available) == len(tokens) - 1
+            and timing_indices == list(range(timing_indices[0],
+                                              timing_indices[0] + len(tokens) - 1))
+            and exact_or_approximate == len(tokens) - 1
+            and len(probabilities) == len(tokens) - 1
+            and statistics.median(probabilities[1:]) >= 0.75
+            and abs(float(line.words[0]["start"]) - source_start) >= 0.25
+            and (float(timing_replacements[0].get("probability", 0.0)) < 0.15
+                 or float(timing_replacements[0]["start"]) >= source_start + 0.08)
+            and source_start + 0.15 <= float(timing_replacements[1]["start"])
+            <= source_start + 1.20
+            and boundary_ok
+        )
         replaceable_sources = HEURISTIC_SOURCES | {
             "asr-repetition-anchor", "asr-repetition-activity",
         }
         heuristic = bool(line.words) and any(
             word.get("timing_source") in replaceable_sources for word in line.words
         )
-        if not heuristic and not allow_unanchored:
+        if (not heuristic and not allow_unanchored and not geometry_rescue
+                and not source_anchor_rescue and not leading_source_anchor_rescue):
             continue
         attempted += 1
         if line.words and len(tokens) != len(line.words):
             diagnostics.append({"line": line_index + 1, "status": "word-count-mismatch"})
             continue
-        available = [(offset, by_expected[index]) for offset, index in enumerate(indices)
-                     if index in by_expected]
+        available = exact_available
         complete = len(available) == len(tokens)
         replacement_timing_consensus = False
         if not complete and not allow_unanchored:
-            timing_available = [(offset, timing_by_expected[index])
-                                for offset, index in enumerate(indices)
-                                if index in timing_by_expected]
-            replacement_count = sum(operation["type"] == "replace"
-                                    for _offset, operation in timing_available)
-            timing_indices = [int(operation["recognized_index"])
-                              for _offset, operation in timing_available]
-            probabilities = [float(recognized[index][1].get("probability", 0.0))
-                             for index in timing_indices if 0 <= index < len(recognized)]
             replacement_timing_consensus = (
                 len(timing_available) == len(tokens)
                 and replacement_count <= max(2, math.ceil(len(tokens) * 0.25))
@@ -256,7 +427,25 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
             continue
         replacements = [recognized[index][1] for index in recognized_indices]
         replacements = [dict(word) for word in replacements]
-        if (replacement_timing_consensus and line.words and line.source_timestamp is not None
+        if leading_source_anchor_rescue:
+            strong_start = float(replacements[1]["start"])
+            weights = [max(1, len(tokens[0])), max(1, len(tokens[1]))]
+            split = source_start + (strong_start - source_start) * weights[0] / sum(weights)
+            synthetic = [
+                {"word": tokens[0], "start": source_start, "end": split,
+                 "probability": 0.0, "source_anchor_interpolation": True},
+                {"word": tokens[1], "start": split, "end": strong_start,
+                 "probability": float(replacements[0].get("probability", 0.0)),
+                 "source_anchor_interpolation": True},
+            ]
+            replacements = synthetic + replacements[1:]
+            available = [
+                (0, {"type": "source-anchor-interpolation"}),
+                (1, {"type": "source-anchor-interpolation"}),
+            ] + available[1:]
+            complete = True
+        if ((replacement_timing_consensus or geometry_rescue)
+                and line.words and line.source_timestamp is not None
                 and replacements):
             durations = [float(word["end"]) - float(word["start"]) for word in replacements]
             median_duration = statistics.median(durations)
@@ -267,11 +456,15 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
             # very specific outlier case while retaining the stable boundaries
             # that resolved the misheard chorus later in the same line.
             if (float(replacements[0]["start"]) < source - 0.35
-                    and first_duration > max(1.0, median_duration * 3.5)):
+                    and (geometry_rescue
+                         or first_duration > max(1.0, median_duration * 3.5))):
                 old = line.words[0]
-                replacements[0]["start"] = max(source, float(old["start"]))
-                replacements[0]["end"] = (float(replacements[1]["start"])
-                                            if len(replacements) > 1 else float(old["end"]))
+                preserved_start = max(source, float(old["start"]))
+                replacements[0]["start"] = min(
+                    preserved_start, float(replacements[0]["end"]) - 0.04)
+                if not geometry_rescue:
+                    replacements[0]["end"] = (float(replacements[1]["start"])
+                                                if len(replacements) > 1 else float(old["end"]))
                 replacements[0]["stable_ts_leadin_outlier_rejected"] = True
         if allow_unanchored:
             for word in replacements:
@@ -335,9 +528,19 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
             line.words = proposed
         for (offset, operation), replacement in zip(available, replacements):
             word = line.words[offset]
+            for stale_key in (
+                    "phonemes", "phoneme_source", "phoneme_confidence",
+                    "syllables", "syllable_confidence", "syllable_method",
+                    "acoustic_end", "sustain_activity_end",
+                    "sustain_release_confidence", "sustain_extension_ms",
+                    "display_duration_floor_ms"):
+                word.pop(stale_key, None)
             word["start"] = float(replacement["start"])
             word["end"] = float(replacement["end"])
-            word["timing_source"] = "stable-ts-whisper"
+            word["timing_source"] = (
+                "stable-ts-source-anchor-interpolation"
+                if replacement.get("source_anchor_interpolation") else
+                "stable-ts-whisper")
             word["stable_ts_probability"] = replacement["probability"]
             word["stable_ts_match"] = operation["type"]
             if replacement.get("stable_ts_leadin_outlier_rejected"):
@@ -346,7 +549,13 @@ def realign_with_stable_words(lines: list, stable_words: list[dict], comparison:
         accepted_lines += 1
         accepted_words += len(available)
         diagnostics.append({"line": line_index + 1,
-                            "status": ("accepted-replacement-timing-consensus"
+                            "status": ("accepted-leading-source-anchor-rescue"
+                                       if leading_source_anchor_rescue else
+                                       "accepted-source-anchor-rescue"
+                                       if source_anchor_rescue else
+                                       "accepted-gross-geometry-rescue"
+                                       if geometry_rescue else
+                                       "accepted-replacement-timing-consensus"
                                        if replacement_timing_consensus else
                                        "accepted" if complete else "accepted-partial"),
                             "words": len(available), "line_words": len(line.words)})

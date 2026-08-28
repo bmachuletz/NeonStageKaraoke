@@ -14,6 +14,7 @@ public sealed class FolderImportService(
     IWebHostEnvironment environment,
     ServerSettingsService settings,
     LibraryRepository library,
+    UsdbLyricsSourceService usdb,
     ILogger<FolderImportService> logger)
 {
     private static readonly HashSet<string> SupportedAudioExtensions =
@@ -60,6 +61,7 @@ public sealed class FolderImportService(
             Directory.CreateDirectory(libraryRoot);
             var alignerUrl = Environment.GetEnvironmentVariable("LRC_ALIGNER_URL")?.Trim();
             if (string.IsNullOrWhiteSpace(alignerUrl)) alignerUrl = "http://127.0.0.1:8081";
+            var importedInThisRun = new HashSet<string>(StringComparer.Ordinal);
 
             foreach (var sourcePath in sourceFiles)
             {
@@ -74,6 +76,16 @@ public sealed class FolderImportService(
                         (string.IsNullOrWhiteSpace(metadata.Album) ? string.Empty : $" · {metadata.Album}"));
 
                     var sourceAlreadyInLibrary = IsWithin(sourcePath, libraryRoot);
+                    var identity = UsdbSongMatcher.Normalize(metadata.Title) + "\n" +
+                                   UsdbSongMatcher.Normalize(metadata.Artist);
+                    if (!sourceAlreadyInLibrary &&
+                        (importedInThisRun.Contains(identity) ||
+                         await library.ContainsSongAsync(metadata.Title, metadata.Artist,
+                             CancellationToken.None)))
+                    {
+                        SkipFile(output, $"Bereits in der Bibliothek: {metadata.Title} · {metadata.Artist}");
+                        continue;
+                    }
                     var expectedBase = Path.Combine(libraryRoot, SafeName(metadata.Artist),
                         $"{SafeName(metadata.Title)} - {SafeName(metadata.Artist)}");
                     if (!sourceAlreadyInLibrary && HasCompleteProject(expectedBase))
@@ -97,13 +109,27 @@ public sealed class FolderImportService(
                     CopyCoverSidecar(sourcePath, workBase + ".cover.jpg");
 
                     var lyricsPath = workBase + ".lrc";
+                    var trustedUltraStar = false;
                     if (!HasUsableLyrics(lyricsPath))
                     {
-                        SetMessage("Lyrics werden über LRCLIB ermittelt …", .12);
-                        var matcherExit = await RunAsync(root, "dotnet", output,
-                            "run", "--project", Path.Combine(root, "LrcMatcher", "LrcMatcher.csproj"), "--no-build", "--",
-                            workPath, "--plain-fallback", "--max-duration-difference", "5", "--aligner-url", alignerUrl);
-                        if (matcherExit != 0 || !HasUsableLyrics(lyricsPath))
+                        SetMessage("UltraStar-Timings werden in USDB gesucht …", .10);
+                        var sourceResult = await usdb.ResolveWithFallbackAsync(new(workPath, metadata.Title,
+                            metadata.Artist, metadata.Album, metadata.Duration), lyricsPath, "LRCLIB",
+                            async _ =>
+                            {
+                                SetMessage("Lyrics werden über LRCLIB ermittelt …", .12);
+                                var exit = await RunAsync(root, "dotnet", output,
+                                    "run", "--project", Path.Combine(root, "LrcMatcher", "LrcMatcher.csproj"),
+                                    "--no-build", "--", workPath, "--plain-fallback",
+                                    "--max-duration-difference", "5", "--aligner-url", alignerUrl);
+                                return exit == 0 && HasUsableLyrics(lyricsPath);
+                            }, CancellationToken.None);
+                        Add(output, sourceResult.Source == "USDB"
+                            ? $"USDB: kompatible UltraStar-Version {sourceResult.Usdb.VersionId} übernommen."
+                            : $"USDB: {sourceResult.Usdb.Reason} Fallback: {sourceResult.Source}.");
+                        trustedUltraStar = sourceResult.Source == "USDB" &&
+                                           sourceResult.Usdb.TrustedDirectCandidate;
+                        if (!sourceResult.Success)
                             Add(output, "Kein geeigneter lokaler oder LRCLIB-Text; GPU-Volltranskript wird erzeugt.");
                     }
 
@@ -124,10 +150,23 @@ public sealed class FolderImportService(
                     }
                     else
                     {
-                        SetMessage("Lyrics vorhanden · Variante 1.2 mit GPU-Separation läuft …", .30);
-                        alignExit = await RunAsync(root, "/bin/bash", output,
+                        SetMessage(trustedUltraStar
+                            ? "Passende UltraStar-Timings · Stems werden ohne AI-Alignment erzeugt …"
+                            : "Lyrics vorhanden · Variante 1.2 mit GPU-Separation läuft …", .30);
+                        var arguments = new List<string>
+                        {
                             Path.Combine(root, "scripts", "linux", "align-library.sh"), "--force",
-                            "--library", workDirectory, "--match", Path.GetFileName(workPath), "--url", alignerUrl);
+                            "--library", workDirectory, "--match", Path.GetFileName(workPath), "--url", alignerUrl
+                        };
+                        if (trustedUltraStar) arguments.AddRange(["--profile", "trusted-ultrastar"]);
+                        alignExit = await RunAsync(root, "/bin/bash", output, arguments.ToArray());
+                        if (alignExit != 0 && trustedUltraStar)
+                        {
+                            Add(output, "UltraStar-Aufnahmeprüfung fehlgeschlagen; reguläres Alignment wird als Fallback gestartet.");
+                            alignExit = await RunAsync(root, "/bin/bash", output,
+                                Path.Combine(root, "scripts", "linux", "align-library.sh"), "--force",
+                                "--library", workDirectory, "--match", Path.GetFileName(workPath), "--url", alignerUrl);
+                        }
                     }
                     if (alignExit != 0)
                         throw new InvalidOperationException("Die GPU-Pipeline konnte den Titel nicht technisch fertigstellen.");
@@ -145,6 +184,7 @@ public sealed class FolderImportService(
                     var review = !AlignmentIsPublishable(workBase + ".alignment.json");
                     if (!sourceAlreadyInLibrary)
                         PublishProject(workPath, workBase, metadata, libraryRoot);
+                    importedInThisRun.Add(identity);
                     RemoveBuildIntermediates(workBase);
                     CompleteFile(output, review);
                     Add(output, review

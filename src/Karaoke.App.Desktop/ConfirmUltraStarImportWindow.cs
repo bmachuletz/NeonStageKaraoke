@@ -13,7 +13,12 @@ public sealed class ConfirmUltraStarImportWindow : Window
         Opened += (_, _) => EditorLocale.Apply(this);
         Title = EditorLocale.German ? "UltraStar-Lyrics importieren" : "Import UltraStar lyrics";
         Width = 610;
-        Height = imported.Warnings.Count > 0 ? 410 : 360;
+        var declaredDuration = imported.Metadata.DeclaredEndMilliseconds is > 0
+            ? imported.Metadata.DeclaredEndMilliseconds.Value / 1000d : (double?)null;
+        var durationDifference = declaredDuration is { } sourceDuration
+            ? song.DurationSeconds - sourceDuration : 0;
+        var recordingMismatch = declaredDuration is not null && Math.Abs(durationDifference) >= .15;
+        Height = imported.Warnings.Count > 0 || recordingMismatch ? 430 : 360;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.Parse("#0D1016"));
@@ -64,6 +69,14 @@ public sealed class ConfirmUltraStarImportWindow : Window
         });
         if (warningText is not null)
             content.Children.Add(new TextBlock { Text = warningText, Foreground = Brushes.Orange, TextWrapping = TextWrapping.Wrap });
+        if (recordingMismatch)
+            content.Children.Add(new TextBlock
+            {
+                Text = EditorLocale.German
+                    ? $"⚠ Die UltraStar-Datei nennt eine Aufnahme von {declaredDuration:0.000} s, der gewählte Song hat {song.DurationSeconds:0.000} s ({durationDifference:+0.000;-0.000} s). Das ist keine Rundungsdrift des Imports: Wahrscheinlich sind es verschiedene Aufnahmen. Dann wird die Abweichung zum Songende zunehmend sichtbar."
+                    : $"⚠ The UltraStar file declares a {declaredDuration:0.000} s recording, while the selected song is {song.DurationSeconds:0.000} s ({durationDifference:+0.000;-0.000} s). This is not importer rounding drift: the recordings probably differ, so the offset becomes increasingly visible near the end.",
+                Foreground = Brushes.Orange, TextWrapping = TextWrapping.Wrap
+            });
         content.Children.Add(new StackPanel
         {
             Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,

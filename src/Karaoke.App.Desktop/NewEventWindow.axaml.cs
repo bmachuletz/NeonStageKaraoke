@@ -8,9 +8,16 @@ public partial class NewEventWindow : Window
 {
     private const string DateFormat = "yyyy-MM-dd HH:mm";
 
-    public NewEventWindow()
+    public NewEventWindow() : this(null) { }
+
+    public NewEventWindow(IReadOnlyList<StageThemeDto>? stageThemes)
     {
         InitializeComponent();
+        var themes = stageThemes is { Count: > 0 }
+            ? stageThemes
+            : [new StageThemeDto("standard", "Neon Stage · Standard", "The familiar Neon Stage.", true)];
+        StageThemeBox.ItemsSource = themes;
+        StageThemeBox.SelectedItem = themes.FirstOrDefault(theme => theme.IsDefault) ?? themes[0];
         var start = DateTime.Now.AddHours(1);
         var interval = TimeSpan.FromMinutes(15).Ticks;
         start = new DateTime(((start.Ticks + interval - 1) / interval) * interval,
@@ -47,8 +54,10 @@ public partial class NewEventWindow : Window
             }
             endsAt = parsedEnd;
         }
+        var stageTheme = StageThemeBox.SelectedItem as StageThemeDto;
         Close(new CreateKaraokeEventRequest(NameBox.Text.Trim(), startsAt, endsAt,
-            string.IsNullOrWhiteSpace(DescriptionBox.Text) ? null : DescriptionBox.Text.Trim()));
+            string.IsNullOrWhiteSpace(DescriptionBox.Text) ? null : DescriptionBox.Text.Trim(),
+            stageTheme?.Id ?? "standard"));
     }
 
     private static bool TryParseLocal(string? text, out DateTimeOffset value)

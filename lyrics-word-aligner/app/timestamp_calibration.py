@@ -82,6 +82,8 @@ def calibrate_source_timestamps(lines: list, recognized_words: list[dict], compa
         line.timestamp = round(float(line.timestamp) + offset, 3)
         if line.source_timestamp is not None:
             line.source_timestamp = round(float(line.source_timestamp) + offset, 3)
+        if line.source_end_boundary is not None:
+            line.source_end_boundary = round(float(line.source_end_boundary) + offset, 3)
         for word in line.words:
             word["start"] = round(float(word["start"]) + offset, 3)
             word["end"] = round(float(word["end"]) + offset, 3)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 from .models import AlignmentConfig, LrcLine
 from .consensus import ACOUSTIC_SOURCES
 
@@ -35,6 +36,8 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
         else:
             starts = [float(w["start"]) for w in words]
             ends = [float(w["end"]) for w in words]
+            if words[0].get("window_edge_fallback"):
+                reasons.append("erstes Wort liegt unbestätigt am Analysefensterrand")
             if words[0].get("stage_vocal_onset_conflict_ms") is not None:
                 reasons.append("Zeileneinsatz liegt außerhalb der Stage-Vocalspur")
                 vocal_onset_conflicts += 1
@@ -50,11 +53,17 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
                 word_overlap_conflicts += len(overlaps)
             if any(e < s for s, e in zip(starts, ends)):
                 reasons.append("negativer Wortzeitraum")
-            if sum(e - s < 0.03 for s, e in zip(starts, ends)) >= max(2, len(words) // 4):
+            if sum(e - s < 0.03 for s, e in zip(starts, ends)) >= max(
+                    3, math.ceil(len(words) / 3)):
                 reasons.append("zu viele Wörter ohne messbare Dauer")
-            short = [end - start <= 0.09 for start, end in zip(starts, ends)]
+            # Short function words are normal in fast singing. Treat them as a
+            # decoder-collapse only when two sub-frame words are also packed
+            # together without an audible inter-word gap.
+            short = [end - start <= 0.055 for start, end in zip(starts, ends)]
             local_compressed_runs = sum(
-                left and right for left, right in zip(short, short[1:]))
+                left and right and float(words[index + 1]["start"]) -
+                float(words[index]["end"]) <= 0.04
+                for index, (left, right) in enumerate(zip(short, short[1:])))
             if local_compressed_runs:
                 reasons.append("aufeinanderfolgende Wörter unplausibel komprimiert")
                 compressed_word_runs += local_compressed_runs
@@ -68,9 +77,12 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
             if (reference is not None and abs(starts[0] - reference) > cfg.max_start_deviation
                     and not acoustically_located):
                 reasons.append("erstes Wort zu weit vom LRC-Zeitpunkt entfernt")
-            if index + 1 < len(lines):
-                limit = lines[index + 1].timestamp + cfg.post_roll + 0.75
-                next_words = lines[index + 1].words
+            lane = max(0, int(getattr(line, "voice_lane", 0)))
+            next_line = next((candidate for candidate in lines[index + 1:]
+                              if max(0, int(getattr(candidate, "voice_lane", 0))) == lane), None)
+            if next_line is not None:
+                limit = next_line.timestamp + cfg.post_roll + 0.75
+                next_words = next_line.words
                 # Lead, backing vocals and echoed refrains can overlap by
                 # design.  Accept this only when both lines have complete
                 # acoustic evidence; an LRC hint or geometric interpolation
@@ -81,8 +93,11 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
                 )
                 if ends[-1] > limit and not acoustic_overlap:
                     reasons.append("ragt stark in nächste Zeile")
-            if index > 0 and lines[index - 1].words and starts[0] < float(lines[index - 1].words[-1]["end"]) - 0.001:
-                previous_end = float(lines[index - 1].words[-1]["end"])
+            previous_line = next((candidate for candidate in reversed(lines[:index])
+                                  if max(0, int(getattr(candidate, "voice_lane", 0))) == lane), None)
+            if (previous_line is not None and previous_line.words
+                    and starts[0] < float(previous_line.words[-1]["end"]) - 0.001):
+                previous_end = float(previous_line.words[-1]["end"])
                 overlap_ms = round((previous_end - starts[0]) * 1000, 1)
                 line_overlaps.append({"previous_line": index, "next_line": index + 1,
                                       "overlap_ms": overlap_ms})
@@ -104,7 +119,8 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
                          "lrc-chorus-anchor", "instrumental-chorus-stable-ts",
                          "stable-ts-interpolated", "overlap-display-lane-fallback"}
     heuristic_words = sum(
-        word.get("timing_source") in heuristic_sources
+        (word.get("timing_source") in heuristic_sources
+         or bool(word.get("window_edge_fallback")))
         for line in lines for word in line.words
     )
     coverage = measurable_words / total_words if total_words else 0.0

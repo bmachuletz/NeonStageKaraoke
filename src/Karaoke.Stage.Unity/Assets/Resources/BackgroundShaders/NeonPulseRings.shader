@@ -36,10 +36,10 @@ Shader "NeonStage/Background/PulseRings"
 
    fixed4 frag(v2f input) : SV_Target
    {
-    float2 point = input.uv * 2.0 - 1.0;
-    point.x *= _ScreenParams.x / _ScreenParams.y;
-    float radius = length(point);
-    float angle = atan2(point.y, point.x);
+    float2 p = input.uv * 2.0 - 1.0;
+    p.x *= _ScreenParams.x / _ScreenParams.y;
+    float radius = length(p);
+    float angle = atan2(p.y, p.x);
     float clock = lerp(_Time.y * .08, _SongTime * .11, _IsPlaying);
     float waves = sin(radius * (24.0 + _Mid * 8.0) - clock * 9.0 + sin(angle * 5.0) * .6);
     float rings = smoothstep(.72, .96, waves) * exp(-radius * (1.3 - _Energy * .35));

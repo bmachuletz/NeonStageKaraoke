@@ -79,10 +79,12 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string newEventName = string.Empty;
     [ObservableProperty] private string newEventStartsAt = DateTimeOffset.Now.AddDays(7).ToString("yyyy-MM-dd HH:mm");
     [ObservableProperty] private KaraokeEventDto? selectedEvent;
+    [ObservableProperty] private StageThemeDto? selectedNewEventStageTheme;
 
     public ObservableCollection<SongItemViewModel> Songs { get; } = [];
     public ObservableCollection<QueueItemViewModel> Queue { get; } = [];
     public ObservableCollection<KaraokeEventDto> Events { get; } = [];
+    public ObservableCollection<StageThemeDto> StageThemes { get; } = [];
     public string[] PreviewLines { get; } = ["GLEICH GEHT'S LOS", "Such dir deinen Song aus", "Die Bühne wartet auf dich", "", ""];
 
     public MainViewModel()
@@ -318,10 +320,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
     private async Task LoadEventsAsync()
     {
-        var items = await _http.GetFromJsonAsync<IReadOnlyList<KaraokeEventDto>>("/api/events");
+        var eventsTask = _http.GetFromJsonAsync<IReadOnlyList<KaraokeEventDto>>("/api/events");
+        var themesTask = _http.GetFromJsonAsync<IReadOnlyList<StageThemeDto>>("/api/stage-themes");
+        await Task.WhenAll(eventsTask, themesTask);
+        var items = await eventsTask;
         Events.Clear();
         foreach (var item in items ?? []) Events.Add(item);
         SelectedEvent = Events.FirstOrDefault(item => item.IsActive) ?? Events.FirstOrDefault();
+        StageThemes.Clear();
+        foreach (var theme in await themesTask ?? []) StageThemes.Add(theme);
+        SelectedNewEventStageTheme = StageThemes.FirstOrDefault(theme => theme.IsDefault) ?? StageThemes.FirstOrDefault();
     }
 
     [RelayCommand]
@@ -332,7 +340,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
             SettingsMessage = "Eventname und Startzeit (z. B. 2026-08-01 19:00) prüfen.";
             return;
         }
-        using var response = await _http.PostAsJsonAsync("/api/events", new CreateKaraokeEventRequest(NewEventName, startsAt));
+        using var response = await _http.PostAsJsonAsync("/api/events", new CreateKaraokeEventRequest(
+            NewEventName, startsAt, StageThemeId: SelectedNewEventStageTheme?.Id ?? "standard"));
         if (!response.IsSuccessStatusCode) { SettingsMessage = "Event konnte nicht erstellt werden."; return; }
         NewEventName = string.Empty;
         await LoadEventsAsync();

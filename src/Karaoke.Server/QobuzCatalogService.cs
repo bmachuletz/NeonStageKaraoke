@@ -66,9 +66,16 @@ public sealed class QobuzCatalogService(IHttpClientFactory clients, QobuzPluginS
             ? $"FLAC {bitDepth} bit"
             : $"FLAC {bitDepth} bit / {sampleRate:0.#} kHz";
         var sourceUrl = Text(item, "url") ?? Text(item, "share_url") ?? $"https://open.qobuz.com/track/{id}";
+        var previewUrl = ValidHttpUrl(Text(item, "preview_url")) ?? ValidHttpUrl(Text(item, "sample_url"));
         return new($"qobuz:{id}", $"qobuz:track:{id}", title, artist, album, image, duration, false,
-            null, AudioCatalogSource.Qobuz, sourceUrl, price, currency, id, quality);
+            null, AudioCatalogSource.Qobuz, sourceUrl, price, currency, id, quality,
+            AudioDownloadSource.Qobuz, previewUrl);
     }
+
+    private static string? ValidHttpUrl(string? value) =>
+        Uri.TryCreate(value, UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https"
+            ? uri.AbsoluteUri
+            : null;
 
     private static JsonElement Object(JsonElement element, string property) =>
         element.ValueKind == JsonValueKind.Object && element.TryGetProperty(property, out var value) &&

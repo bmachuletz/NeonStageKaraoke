@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.Networking;
@@ -12,7 +13,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 #if UNITY_ANDROID
     private const string DefaultServer = "http://192.168.178.91:5274";
 #else
-    private const string DefaultServer = "http://127.0.0.1:5274";
+    private const string DefaultServer = "http://cloud.hdvtec.de:5274";
 #endif
     // Der Server bevorzugt Unity-kompatible Ogg/Vorbis-Stems. Der Client fällt
     // bei älteren Bibliothekseinträgen sicher auf die MP3-Masterspur zurück.
@@ -30,6 +31,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private string _controllerId = "";
     private bool _ownsControl;
     private bool _commandRunning;
+    private readonly Queue<string> _playbackCommands = new();
+    private string? _optimisticPlaybackCommand;
     private bool _autoAdvanceRunning;
     private float _nextQrRefresh;
     private float _nextTimingReport;
@@ -42,9 +45,6 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private float _musicVolume = 0.85f;
     private float _vocalVolume = 0.35f;
     private readonly StageLyricsEngine _lyrics = new();
-    // The audio engine now follows the decoder's actual sample clock. The old
-    // +80 ms compensation would therefore make correctly aligned words early.
-    private const double LyricsVisualLeadSeconds = 0.0;
     private StageVisualView _visuals = null!;
     private StageLoadingView _loading = null!;
     private StageReactionView _reactions = null!;
@@ -60,6 +60,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private Texture2D? _pill;
     private Texture2D? _softGlow;
     private Texture2D? _iconBadge;
+    private readonly StagePointerInput _pointer = new();
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void StartWithoutSceneSetup()
@@ -130,6 +131,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private void OnDestroy()
     {
         if (_audio != null) _audio.PlaybackEnded -= HandlePlaybackEnded;
+        _pointer.Dispose();
     }
 
     private static void ConfigureStageCamera()
@@ -150,13 +152,17 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     {
         while (true)
         {
-            _ = RefreshQueueAsync();
+            // A transport command owns the playback state until the server has
+            // acknowledged it. Otherwise the one-second poll can immediately
+            // undo the local pause/resume feedback with an older server state.
+            if (!_commandRunning) _ = RefreshQueueAsync();
             yield return new WaitForSecondsRealtime(1f);
         }
     }
 
     private void Update()
     {
+        _pointer.Update();
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             _ = ExitStageAsync();
@@ -175,7 +181,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             _nextReactionPoll = Time.unscaledTime + .35f;
             _ = PollReactionsAsync();
         }
-        _lyrics.Update(_audio.PositionSeconds + LyricsVisualLeadSeconds, _visuals.AudioImpact);
+        _lyrics.Update(_audio.PositionSeconds, _visuals.AudioImpact);
         if (_audio.HasClip && Time.unscaledTime >= _nextTimingReport)
         {
             _nextTimingReport = Time.unscaledTime + 1f;
@@ -212,6 +218,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                     _initialSessionChecked = true;
                     _hasActiveSession = false;
                     _visuals.SetSessionActive(false);
+                    _visuals.SetStageTheme("standard");
+                    _lyrics.SetStageTheme("standard");
                     _activeEventId = null;
                     _loadedSongId = null;
                     _loadedQueueEntryId = null;
@@ -240,6 +248,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                 }
                 _hasActiveSession = activeEvent != null;
                 _visuals.SetSessionActive(_hasActiveSession);
+                _visuals.SetStageTheme(activeEvent?.stageThemeId ?? "standard");
+                _lyrics.SetStageTheme(activeEvent?.stageThemeId ?? "standard");
                 if (activeEvent != null && _activeEventId != activeEvent.id)
                 {
                     _activeEventId = activeEvent.id;
@@ -262,6 +272,13 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
             var state = JsonUtility.FromJson<PlaybackStateDto>(request.downloadHandler.text);
             var current = state?.current;
+
+            // A poll that started just before a mouse click may still complete
+            // while the command is in flight. It may update passive metadata,
+            // but it must not apply its stale transport state or reload a song.
+            if (_commandRunning && !string.IsNullOrWhiteSpace(_optimisticPlaybackCommand))
+                return;
+
             var playbackChanged = current?.song != null &&
                 (_loadedQueueEntryId != current.id ||
                  !string.Equals(_loadedStartedAt, current.startedAt, StringComparison.Ordinal));
@@ -351,7 +368,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         try
         {
             _status = StageLocale.Text("Titel beendet – nächster Song wird gestartet …", "Song finished – starting next song …");
-            await ClaimControlAsync();
+            await ClaimControlAsync(force: true);
             if (!_ownsControl)
             {
                 _status = StageLocale.Text("Titel beendet – warte auf Bühnensteuerung …", "Song finished – waiting for stage control …");
@@ -412,39 +429,92 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             : new StemAvailabilityDto();
     }
 
-    private async Task ClaimControlAsync()
+    private async Task ClaimControlAsync(bool force = false)
     {
         var payload = JsonUtility.ToJson(new PlaybackControllerRequestDto
         {
             clientId = _controllerId,
-            clientName = $"Neon Stage Unity ({SystemInfo.deviceName})"
+            clientName = $"Neon Stage Unity ({SystemInfo.deviceName})",
+            force = force
         });
         using var request = CreateJsonPost($"{_server}/api/playback/controller/claim", payload, false);
+        request.timeout = 4;
         await request.SendWebRequest();
-        if (request.result != UnityWebRequest.Result.Success) return;
+        if (request.result != UnityWebRequest.Result.Success)
+        {
+            _ownsControl = false;
+            return;
+        }
         var result = JsonUtility.FromJson<PlaybackControllerDto>(request.downloadHandler.text);
         _ownsControl = result?.ownsControl == true;
     }
 
-    private async Task SendPlaybackCommandAsync(string command)
+    private void RequestPlaybackCommand(string command)
     {
-        if (_commandRunning) return;
+        // Give mouse/touch input immediate audible feedback. Network ownership
+        // and persistence are processed in order below; clicks are no longer
+        // silently discarded while a previous request is running.
+        ApplyOptimisticPlaybackCommand(command);
+        _playbackCommands.Enqueue(command);
+        if (!_commandRunning) _ = DrainPlaybackCommandsAsync();
+    }
+
+    private void ApplyOptimisticPlaybackCommand(string command)
+    {
+        _optimisticPlaybackCommand = command;
+        if (command == "pause" && _audio.HasClip) _audio.Pause();
+        else if (command == "resume" && _audio.HasClip) _audio.Resume();
+        else if ((command == "next" || command == "previous") && _audio.HasClip) _audio.Pause();
+    }
+
+    private async Task DrainPlaybackCommandsAsync()
+    {
         _commandRunning = true;
         try
         {
-            // Erneuert die kurze Server-Lease unmittelbar vor jedem Bedienbefehl.
-            await ClaimControlAsync();
-            using var request = CreateJsonPost($"{_server}/api/playback/{command}", "{}", true);
-            await request.SendWebRequest();
-            if (request.result != UnityWebRequest.Result.Success)
+            // Ein Knopf direkt auf der Bühne ist eine bewusste Übernahme. Damit
+            // blockiert eine im Hintergrund laufende Editor-Lease die Stage nicht.
+            await ClaimControlAsync(force: true);
+            if (!_ownsControl)
             {
+                _status = StageLocale.Text("Bühnensteuerung konnte nicht übernommen werden", "Could not take control of the stage");
+                return;
+            }
+
+            while (_playbackCommands.Count > 0)
+            {
+                var command = _playbackCommands.Dequeue();
+                _optimisticPlaybackCommand = command;
+                using var request = CreateJsonPost($"{_server}/api/playback/{command}", "{}", true);
+                request.timeout = 5;
+                await request.SendWebRequest();
+                if (request.result == UnityWebRequest.Result.Success) continue;
+
                 _ownsControl = false;
+                _playbackCommands.Clear();
                 _status = request.responseCode == 409
                     ? StageLocale.Text("Eine andere App steuert gerade die Bühne", "Another app is controlling the stage")
                     : $"{StageLocale.Text("Steuerfehler", "Control error")} {request.responseCode}: {request.error}";
+                return;
             }
         }
-        finally { _commandRunning = false; }
+        catch (Exception exception)
+        {
+            _status = $"{StageLocale.Text("Steuerfehler", "Control error")}: {exception.Message}";
+            _playbackCommands.Clear();
+        }
+        finally
+        {
+            _optimisticPlaybackCommand = null;
+            _commandRunning = false;
+        }
+
+        // Reconcile once after all queued clicks. A poll that was already in
+        // progress is allowed to finish first, then the authoritative state is
+        // fetched without making the controls unresponsive meanwhile.
+        for (var attempt = 0; _refreshing && attempt < 40; attempt++)
+            await Task.Delay(25);
+        await RefreshQueueAsync();
     }
 
     private async Task SeekAsync(double seconds)
@@ -454,7 +524,12 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         _commandRunning = true;
         try
         {
-            await ClaimControlAsync();
+            await ClaimControlAsync(force: true);
+            if (!_ownsControl)
+            {
+                _status = StageLocale.Text("Bühnensteuerung konnte nicht übernommen werden", "Could not take control of the stage");
+                return;
+            }
             var entryId = await GetCurrentEntryIdAsync();
             if (string.IsNullOrWhiteSpace(entryId)) return;
             var time = TimeSpan.FromSeconds(seconds);
@@ -481,6 +556,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         request.downloadHandler = new DownloadHandlerBuffer();
         request.SetRequestHeader("Content-Type", "application/json");
         if (authenticated) request.SetRequestHeader("X-Karaoke-Controller", _controllerId);
+        request.timeout = 8;
         return request;
     }
 
@@ -496,7 +572,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             {
                 name = name,
                 startsAt = now.ToString("O"),
-                description = "Spontane Karaoke-Session (Bühne)"
+                description = "Spontane Karaoke-Session (Bühne)",
+                stageThemeId = "standard"
             });
             using var create = CreateJsonPost($"{_server}/api/events", payload, false);
             await create.SendWebRequest();
@@ -556,7 +633,15 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private void OnGUI()
     {
         EnsureControlTextures();
-        var scale = Math.Max(1f, Screen.width / 1280f);
+        // Keep the visual reference layout, but never let a transformed
+        // IMGUI matrix handle pointer hit-testing. On Linux a borderless
+        // fullscreen window on a mixed-DPI multi-monitor desktop can receive
+        // pointer coordinates in the player surface while GUI.matrix applies
+        // another scale to its controls. The result looks correct but clicks
+        // land beside (or on the wrong) button. Interactive controls below are
+        // therefore drawn in identity screen space with explicitly scaled
+        // rectangles.
+        var scale = Mathf.Max(1f, Mathf.Min(Screen.width / 1280f, Screen.height / 720f));
         GUI.matrix = Matrix4x4.Scale(new Vector3(scale, scale, 1));
         var width = Screen.width / scale;
         var height = Screen.height / scale;
@@ -598,30 +683,39 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         const float buttonGap = 10;
         var buttonsX = width * .5f - (buttonSize * 4 + buttonGap * 3) * .5f;
         var buttonsY = controlsY + 62;
-        GUI.enabled = !_commandRunning;
-        if (GUI.Button(new Rect(buttonsX, buttonsY, buttonSize, buttonSize), "|◀", buttonStyle)) _ = SendPlaybackCommandAsync("previous");
-        if (GUI.Button(new Rect(buttonsX + buttonSize + buttonGap, buttonsY, buttonSize, buttonSize), "Ⅱ", buttonStyle)) _ = SendPlaybackCommandAsync("pause");
-        if (GUI.Button(new Rect(buttonsX + (buttonSize + buttonGap) * 2, buttonsY, buttonSize, buttonSize), "▶", buttonStyle)) _ = SendPlaybackCommandAsync("resume");
-        if (GUI.Button(new Rect(buttonsX + (buttonSize + buttonGap) * 3, buttonsY, buttonSize, buttonSize), "▶|", buttonStyle)) _ = SendPlaybackCommandAsync("next");
-        GUI.enabled = true;
-
         DrawIconBadge(new Rect(48, buttonsY + 5, 44, 44), new Color(.87f, 1f, .05f));
         DrawMusicIcon(new Rect(55, buttonsY + 10, 32, 32), new Color(0.87f, 1f, 0.05f));
-        _musicVolume = DrawNeonSlider(new Rect(100, buttonsY + 17, 220, 30), _musicVolume, new Color(.87f, 1f, .05f));
-        _audio.MusicVolume = _musicVolume;
         DrawIconBadge(new Rect(width - 94, buttonsY + 5, 44, 44), new Color(1f, .25f, .75f));
         DrawMicrophoneIcon(new Rect(width - 87, buttonsY + 9, 30, 34), new Color(1f, 0.25f, 0.75f));
-        _vocalVolume = DrawNeonSlider(new Rect(width - 320, buttonsY + 17, 220, 30), _vocalVolume, new Color(1f, .25f, .75f));
+        var layoutMatrix = GUI.matrix;
+        GUI.matrix = Matrix4x4.identity;
+        var screenButtonStyle = ScaleInteractiveStyle(buttonStyle, scale);
+        if (DrawPointerButton(ToScreenRect(new Rect(buttonsX, buttonsY, buttonSize, buttonSize), scale), "|◀", screenButtonStyle, "previous")) RequestPlaybackCommand("previous");
+        if (DrawPointerButton(ToScreenRect(new Rect(buttonsX + buttonSize + buttonGap, buttonsY, buttonSize, buttonSize), scale), "Ⅱ", screenButtonStyle, "pause")) RequestPlaybackCommand("pause");
+        if (DrawPointerButton(ToScreenRect(new Rect(buttonsX + (buttonSize + buttonGap) * 2, buttonsY, buttonSize, buttonSize), scale), "▶", screenButtonStyle, "resume")) RequestPlaybackCommand("resume");
+        if (DrawPointerButton(ToScreenRect(new Rect(buttonsX + (buttonSize + buttonGap) * 3, buttonsY, buttonSize, buttonSize), scale), "▶|", screenButtonStyle, "next")) RequestPlaybackCommand("next");
+
+        _musicVolume = DrawNeonSlider("music-volume",
+            ToScreenRect(new Rect(100, buttonsY + 17, 220, 30), scale),
+            _musicVolume, new Color(.87f, 1f, .05f), scale);
+        _audio.MusicVolume = _musicVolume;
+        _vocalVolume = DrawNeonSlider("vocal-volume",
+            ToScreenRect(new Rect(width - 320, buttonsY + 17, 220, 30), scale),
+            _vocalVolume, new Color(1f, .25f, .75f), scale);
         _audio.VocalVolume = _vocalVolume;
 
         if (_audio.HasClip)
         {
             var oldPosition = (float)_audio.PositionSeconds;
             var normalized = _audio.DurationSeconds > 0 ? oldPosition / (float)_audio.DurationSeconds : 0;
-            var newNormalized = DrawProgressTimeline(new Rect(64, controlsY + 14, width - 128, 34), normalized);
+            var newNormalized = DrawProgressTimeline(ToScreenRect(
+                new Rect(64, controlsY + 14, width - 128, 34), scale), normalized,
+                scale, out var seekReleased);
             var newPosition = newNormalized * (float)_audio.DurationSeconds;
-            if (Event.current.type == EventType.MouseUp && Math.Abs(newPosition - oldPosition) > 0.5f) _ = SeekAsync(newPosition);
+            if (seekReleased && Math.Abs(newPosition - oldPosition) > 0.5f)
+                _ = SeekAsync(newPosition);
         }
+        GUI.matrix = layoutMatrix;
         var infoStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, alignment = TextAnchor.MiddleCenter };
         infoStyle.normal.textColor = new Color(0.64f, 0.55f, 0.7f);
         GUI.Label(new Rect(40, height - 29, width - 80, 22), $"{_audio.PositionSeconds:0.0}s  ·  {(_ownsControl ? "Steuerung aktiv" : "nur Anzeige")}  ·  {_server}", infoStyle);
@@ -645,7 +739,11 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         button.active.background = _controlButtonActive;
         button.normal.textColor = new Color(.94f, 1f, .72f);
         GUI.enabled = !_creatingQuickSession;
-        if (GUI.Button(buttonRect, _creatingQuickSession ? StageLocale.Text("SESSION WIRD GESTARTET …", "STARTING SESSION …") : StageLocale.Text("SOFORT-SESSION\nSTARTEN", "START INSTANT\nSESSION"), button))
+        if (DrawScreenSpaceButton(buttonRect,
+                _creatingQuickSession
+                    ? StageLocale.Text("SESSION WIRD GESTARTET …", "STARTING SESSION …")
+                    : StageLocale.Text("SOFORT-SESSION\nSTARTEN", "START INSTANT\nSESSION"),
+                button, Mathf.Max(1f, Mathf.Min(Screen.width / 1280f, Screen.height / 720f))))
             _ = CreateQuickSessionAsync();
         GUI.enabled = true;
         var hint = new GUIStyle(sub) { fontSize = 14 };
@@ -653,59 +751,108 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         GUI.Label(new Rect(40, buttonRect.yMax + 30, width - 80, 32), StageLocale.Text("Oder ein vorbereitetes Event im Admin-Portal auf die Bühne schalten", "Or activate a prepared event from the admin portal"), hint);
     }
 
-    private float DrawNeonSlider(Rect rect, float value, Color accent)
+    private float DrawNeonSlider(string id, Rect rect, float value, Color accent,
+        float scale)
     {
+        if (Event.current.type == EventType.Repaint &&
+            _pointer.UpdateDrag(id, rect, out var draggedValue, out _))
+            value = draggedValue;
         value = Mathf.Clamp01(value);
-        var track = new Rect(rect.x, rect.y + rect.height * .5f - 4, rect.width, 8);
+        var track = new Rect(rect.x, rect.y + rect.height * .5f - 4 * scale,
+            rect.width, 8 * scale);
         GUI.DrawTexture(track, _sliderTrack!, ScaleMode.StretchToFill, true);
-        var fill = new Rect(track.x, track.y, Mathf.Max(8, track.width * value), track.height);
+        var fill = new Rect(track.x, track.y,
+            Mathf.Max(8 * scale, track.width * value), track.height);
         var previous = GUI.color; GUI.color = accent; GUI.DrawTexture(fill, _pill!, ScaleMode.StretchToFill, true); GUI.color = previous;
-        var style = new GUIStyle(GUI.skin.horizontalSlider)
-        {
-            normal = { background = _transparent },
-            fixedHeight = rect.height
-        };
-        var thumb = new GUIStyle(GUI.skin.horizontalSliderThumb)
-        {
-            normal = { background = _sliderThumb },
-            hover = { background = _controlButtonHover },
-            active = { background = _controlButtonActive },
-            fixedWidth = 20,
-            fixedHeight = 20
-        };
-        return GUI.HorizontalSlider(rect, value, 0f, 1f, style, thumb);
+        var thumbSize = 20 * scale;
+        var thumb = new Rect(rect.x + rect.width * value - thumbSize * .5f,
+            rect.center.y - thumbSize * .5f, thumbSize, thumbSize);
+        GUI.DrawTexture(thumb, _sliderThumb!, ScaleMode.StretchToFill, true);
+        return value;
     }
 
-    private float DrawProgressTimeline(Rect rect, float value)
+    private static Rect ToScreenRect(Rect layoutRect, float scale) => new(
+        layoutRect.x * scale, layoutRect.y * scale,
+        layoutRect.width * scale, layoutRect.height * scale);
+
+    private static GUIStyle ScaleInteractiveStyle(GUIStyle source, float scale)
     {
+        var style = new GUIStyle(source)
+        {
+            fontSize = Mathf.Max(1, Mathf.RoundToInt(source.fontSize * scale)),
+            border = ScaleRectOffset(source.border, scale),
+            padding = ScaleRectOffset(source.padding, scale),
+            margin = ScaleRectOffset(source.margin, scale),
+            overflow = ScaleRectOffset(source.overflow, scale)
+        };
+        return style;
+    }
+
+    private static RectOffset ScaleRectOffset(RectOffset source, float scale) => new(
+        Mathf.RoundToInt(source.left * scale), Mathf.RoundToInt(source.right * scale),
+        Mathf.RoundToInt(source.top * scale), Mathf.RoundToInt(source.bottom * scale));
+
+    private bool DrawScreenSpaceButton(Rect layoutRect, string text,
+        GUIStyle style, float scale)
+    {
+        var matrix = GUI.matrix;
+        GUI.matrix = Matrix4x4.identity;
+        var clicked = DrawPointerButton(ToScreenRect(layoutRect, scale), text,
+            ScaleInteractiveStyle(style, scale), "instant-session");
+        GUI.matrix = matrix;
+        return clicked;
+    }
+
+    private bool DrawPointerButton(Rect rect, string text, GUIStyle style,
+        string diagnosticName)
+    {
+        var hovered = rect.Contains(_pointer.Position);
+        var pressed = hovered && _pointer.IsDown;
+        var renderStyle = new GUIStyle(style);
+        if (pressed)
+        {
+            renderStyle.normal.background = style.active.background;
+            renderStyle.normal.textColor = style.active.textColor;
+        }
+        else if (hovered)
+        {
+            renderStyle.normal.background = style.hover.background;
+            renderStyle.normal.textColor = style.hover.textColor;
+        }
+        GUI.Label(rect, text, renderStyle);
+        var clicked = GUI.enabled && Event.current.type == EventType.Repaint &&
+                      _pointer.ConsumeClick(rect);
+        if (clicked) Debug.Log($"Neon Stage control clicked: {diagnosticName}");
+        return clicked;
+    }
+
+    private float DrawProgressTimeline(Rect rect, float value, float scale,
+        out bool released)
+    {
+        released = false;
+        if (Event.current.type == EventType.Repaint &&
+            _pointer.UpdateDrag("song-progress", rect, out var draggedValue,
+                out released))
+            value = draggedValue;
         value = Mathf.Clamp01(value);
-        var line = new Rect(rect.x, rect.y + 13, rect.width, 8);
+        var line = new Rect(rect.x, rect.y + 13 * scale, rect.width, 8 * scale);
         GUI.DrawTexture(line, _sliderTrack!, ScaleMode.StretchToFill, true);
-        var filledWidth = Mathf.Max(8, line.width * value);
+        var filledWidth = Mathf.Max(8 * scale, line.width * value);
         var cyan = new Color(.15f, .82f, 1f, 1f);
         var old = GUI.color;
         GUI.color = new Color(cyan.r, cyan.g, cyan.b, .16f);
-        GUI.DrawTexture(new Rect(line.x - 8, line.y - 8, filledWidth + 16, 24), _softGlow!, ScaleMode.StretchToFill, true);
+        GUI.DrawTexture(new Rect(line.x - 8 * scale, line.y - 8 * scale,
+            filledWidth + 16 * scale, 24 * scale), _softGlow!, ScaleMode.StretchToFill, true);
         GUI.color = new Color(cyan.r, cyan.g, cyan.b, .4f);
-        GUI.DrawTexture(new Rect(line.x - 3, line.y - 3, filledWidth + 6, 14), _pill!, ScaleMode.StretchToFill, true);
+        GUI.DrawTexture(new Rect(line.x - 3 * scale, line.y - 3 * scale,
+            filledWidth + 6 * scale, 14 * scale), _pill!, ScaleMode.StretchToFill, true);
         GUI.color = cyan;
         GUI.DrawTexture(new Rect(line.x, line.y, filledWidth, 8), _pill!, ScaleMode.StretchToFill, true);
-        var pulse = 22 + Mathf.Sin(Time.unscaledTime * 6f) * 3f;
+        var pulse = (22 + Mathf.Sin(Time.unscaledTime * 6f) * 3f) * scale;
         GUI.color = new Color(.72f, .96f, 1f, .75f);
         GUI.DrawTexture(new Rect(line.x + filledWidth - pulse * .5f, line.center.y - pulse * .5f, pulse, pulse), _softGlow!, ScaleMode.StretchToFill, true);
         GUI.color = old;
-        return DrawInvisibleSlider(rect, value);
-    }
-
-    private float DrawInvisibleSlider(Rect rect, float value)
-    {
-        var style = new GUIStyle(GUI.skin.horizontalSlider) { normal = { background = _transparent }, fixedHeight = rect.height };
-        var thumb = new GUIStyle(GUI.skin.horizontalSliderThumb)
-        {
-            normal = { background = _transparent }, hover = { background = _transparent }, active = { background = _transparent },
-            fixedWidth = 22, fixedHeight = 22
-        };
-        return GUI.HorizontalSlider(rect, value, 0, 1, style, thumb);
+        return value;
     }
 
     private void EnsureControlTextures()

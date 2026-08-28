@@ -4,9 +4,11 @@ import gc
 from dataclasses import dataclass
 from pathlib import Path
 
+from .stem_roles import DEFAULT_STAGE_SEPARATOR_MODEL
+
 KARAOKE_MODEL = os.getenv(
-    "UVR_MODEL",
-    "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt",
+    "LRC_STAGE_SEPARATOR_MODEL",
+    os.getenv("UVR_MODEL", DEFAULT_STAGE_SEPARATOR_MODEL),
 )
 
 

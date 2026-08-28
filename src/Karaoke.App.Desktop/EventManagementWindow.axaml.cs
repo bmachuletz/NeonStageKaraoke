@@ -35,7 +35,7 @@ public partial class EventManagementWindow : Window
 
     private async void NewEventClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
-        var request = await new NewEventWindow().ShowDialog<CreateKaraokeEventRequest?>(this);
+        var request = await new NewEventWindow(_viewModel.StageThemes).ShowDialog<CreateKaraokeEventRequest?>(this);
         if (request is not null) await _viewModel.CreateAsync(request);
     }
 

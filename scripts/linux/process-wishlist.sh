@@ -82,6 +82,7 @@ count=$(jq 'length' <<<"$wishes")
 ((count > 0)) || { echo "Die Wunschliste ist leer."; exit 0; }
 processed=0
 failed=0
+declare -A imported_in_this_run=()
 
 # API order is newest first; process the oldest request first.
 while IFS= read -r wish; do
@@ -102,6 +103,18 @@ while IFS= read -r wish; do
   echo
   echo "Wunsch: $title · $artist"
   [[ -z "$spotify_url" ]] || echo "Spotify: $spotify_url"
+  identity=$(jq -rn --arg title "$title" --arg artist "$artist" \
+    '[$title,$artist] | map(ascii_downcase | gsub("[^[:alnum:]]"; "")) | join("|")')
+  contains_url="$server_url/api/library/contains?title=$(printf '%s' "$title" | jq -sRr @uri)&artist=$(printf '%s' "$artist" | jq -sRr @uri)"
+  already_imported=$(curl -fsS "$contains_url" | jq -r '.exists // false')
+  if [[ "$already_imported" == true || -n "${imported_in_this_run[$identity]:-}" ]]; then
+    echo "Bereits in der Bibliothek; Download und erneuter Import werden übersprungen."
+    if ((dry_run == 0)); then
+      curl -fsS -X DELETE "$server_url/api/wishlist/$wish_id$wish_event_query" >/dev/null
+    fi
+    ((processed+=1))
+    continue
+  fi
   if ((dry_run != 0)); then
     ((processed+=1))
     continue
@@ -160,12 +173,35 @@ while IFS= read -r wish; do
   }
   report_audio_candidate "Audio gefunden · Lyrics werden verarbeitet"
 
-  echo "LRCLIB-Matching: $destination"
   lrc="${destination%.*}.lrc"
+  trusted_ultrastar=0
+  echo "USDB-Matching: $destination"
+  usdb_payload=$(jq -cn --arg audioPath "$destination" --arg title "$title" --arg artist "$artist" \
+    --arg album "$(jq -r '.track.album // empty' <<<"$wish")" \
+    --argjson durationSeconds "$(jq -r '((.track.durationMilliseconds // 0) / 1000)' <<<"$wish")" \
+    '{audioPath:$audioPath,title:$title,artist:$artist,album:$album,durationSeconds:$durationSeconds}')
+  if usdb_result=$(curl -fsS -X POST -H 'Content-Type: application/json' --data "$usdb_payload" \
+      "$server_url/api/admin/lyrics/resolve-imported"); then
+    if [[ $(jq -r '.success // false' <<<"$usdb_result") == true ]]; then
+      echo "USDB: UltraStar-Timings wurden als primäre Lyrics-Quelle übernommen."
+      if [[ $(jq -r '.trustedDirectCandidate // false' <<<"$usdb_result") == true ]]; then
+        trusted_ultrastar=1
+        echo "USDB: Aufnahme passt; AI-Lyrics-Alignment wird übersprungen."
+      fi
+    else
+      echo "USDB: $(jq -r '.reason // "kein kompatibler Treffer"' <<<"$usdb_result")"
+    fi
+  else
+    echo "USDB-Anfrage fehlgeschlagen; LRCLIB bleibt aktiv." >&2
+  fi
+
   matcher_ok=1
-  if ! dotnet run --project "$repo_root/LrcMatcher/LrcMatcher.csproj" --no-build -- \
-      "$destination" --plain-fallback --max-duration-difference 5 --aligner-url "$aligner_url"; then
-    matcher_ok=0
+  if [[ ! -s "$lrc" ]]; then
+    echo "LRCLIB-Matching: $destination"
+    if ! dotnet run --project "$repo_root/LrcMatcher/LrcMatcher.csproj" --no-build -- \
+        "$destination" --plain-fallback --max-duration-difference 5 --aligner-url "$aligner_url"; then
+      matcher_ok=0
+    fi
   fi
 
   pipeline_complete=0
@@ -182,9 +218,21 @@ while IFS= read -r wish; do
       continue
     fi
   else
-    echo "GPU-Wort-/Silbenalignment: $destination"
-    if "$repo_root/scripts/linux/align-library.sh" --force \
+    if ((trusted_ultrastar != 0)); then
+      echo "UltraStar-Direktimport und Stem-Separation: $destination"
+      align_command=("$repo_root/scripts/linux/align-library.sh" --force
+        --library "$destination_dir" --match "$(basename "$destination")"
+        --url "$aligner_url" --profile trusted-ultrastar)
+    else
+      echo "GPU-Wort-/Silbenalignment: $destination"
+      align_command=("$repo_root/scripts/linux/align-library.sh" --force
+        --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url")
+    fi
+    if "${align_command[@]}"; then
+      pipeline_complete=1
+    elif ((trusted_ultrastar != 0)) && "$repo_root/scripts/linux/align-library.sh" --force \
         --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url"; then
+      echo "UltraStar-Aufnahmeprüfung war nicht eindeutig; reguläres Alignment wurde verwendet."
       pipeline_complete=1
     else
       report_audio_candidate "Audio gefunden · reguläres Alignment fehlgeschlagen · Volltranskript läuft"
@@ -223,6 +271,7 @@ while IFS= read -r wish; do
     "${destination%.*}.vocals.flac" "${destination%.*}.stems.json"
 
   curl -fsS -X DELETE "$server_url/api/wishlist/$wish_id$wish_event_query" >/dev/null
+  imported_in_this_run[$identity]=1
   ((processed+=1))
   echo "Komplett importiert und aus der Wunschliste entfernt: $title"
 done < <(jq -c 'reverse[]' <<<"$wishes")

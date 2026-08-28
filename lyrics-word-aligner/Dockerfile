@@ -20,6 +20,7 @@ RUN python3 -m pip install --break-system-packages \
 # changes during aligner development.
 COPY requirements.txt .
 RUN python3 -m pip install --break-system-packages -r requirements.txt \
+    && python3 -m pip install --break-system-packages --no-deps asteroid==0.7.0 asteroid-filterbanks==0.4.0 \
     && python3 -m pip install --break-system-packages --no-deps easyaligner==0.3.3 \
     && python3 -c "import torch, onnxruntime as ort, transformers; from transformers import Qwen3ASRForTokenClassification; print('Torch:', torch.__version__, 'CUDA:', torch.version.cuda); print('Transformers:', transformers.__version__); print('Qwen3ASRForTokenClassification: OK'); print('ONNX Runtime:', ort.__version__, ort.get_available_providers())" \
     && apt-get purge -y --auto-remove build-essential gcc g++ git python3-dev \

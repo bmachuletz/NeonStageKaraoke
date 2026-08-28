@@ -27,11 +27,18 @@ else
   export Karaoke__DatabasePath="${PROJECT_ROOT}/data/karaoke.db"
 fi
 
+export Karaoke__PublicBaseUrl="${NEONSTAGE_PUBLIC_URL:-http://cloud.hdvtec.de:5274}"
+
 echo "Karaoke-Server wird gestartet …"
 if [[ -n "${Karaoke__LibraryPath:-}" ]]; then
   echo "Musikbibliothek: ${Karaoke__LibraryPath}"
 fi
 echo "Adresse: http://localhost:5274"
+if [[ -n "${Karaoke__PublicBaseUrl:-}" ]]; then
+  echo "Einladungsadresse: ${Karaoke__PublicBaseUrl}"
+else
+  echo "Einladungsadresse: wird automatisch aus der LAN-IP ermittelt"
+fi
 echo "Datenbank: ${Karaoke__DatabasePath}"
 
 exec dotnet run --project "${SERVER_PROJECT}" --no-build

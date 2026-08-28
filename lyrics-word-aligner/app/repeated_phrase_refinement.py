@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import statistics
+import subprocess
+from functools import lru_cache
 
 import numpy as np
 
@@ -32,7 +34,7 @@ def refine_repeated_phrase_words(
     recognized = _normalized_stable_words(stable_words)
     summary = {
         "enabled": bool(len(signal) and recognized),
-        "method": "stable-occurrence-plus-repeated-acoustic-onsets-v1.3",
+        "method": "stable-occurrence-plus-repeated-acoustic-onsets-v1.4",
         "attempted_lines": 0,
         "refined_lines": 0,
         "refined_words": 0,
@@ -105,6 +107,16 @@ def refine_repeated_phrase_words(
                 "accepted_onsets": len(proposed), "required_onsets": len(tokens),
             })
             continue
+        periodicity = _repetition_periodicity(proposed, unit_size, repeat_count)
+        if not periodicity["verified"]:
+            summary["diagnostics"].append({
+                "line": line_index + 1,
+                "status": "irregular-repetition-periodicity",
+                "unit_words": unit_size,
+                "repetitions": repeat_count,
+                **periodicity,
+            })
+            continue
         previous_line_end = _previous_line_end(lines, line_index)
         next_line_start = _next_line_start(lines, line_index)
         if ((previous_line_end is not None and proposed[0] <= previous_line_end)
@@ -143,6 +155,7 @@ def refine_repeated_phrase_words(
             word["timing_source"] = "stable-repetition-acoustic-onset"
             word["repeated_phrase_stable_probability"] = round(
                 float(stable_word.get("probability", 0.0)), 4)
+            word["repeated_phrase_periodicity_verified"] = True
         line.timestamp = float(line.words[0]["start"])
         summary["refined_lines"] += 1
         summary["refined_words"] += len(line.words)
@@ -154,6 +167,41 @@ def refine_repeated_phrase_words(
             "words": evidence_details,
         })
     return summary
+
+
+def _repetition_periodicity(onsets: list[float], unit_size: int,
+                            repeat_count: int, *,
+                            maximum_relative_spread: float = 0.35) -> dict:
+    """Verify that repeated text follows one plausible musical pulse.
+
+    Identical ASR tokens are ambiguous. A subsequence can be lexically exact
+    while shifted by one occurrence. Compare the period between equivalent
+    positions of the repeated unit; a wrong occurrence mapping produces a
+    conspicuous short/long jump even when every isolated onset looks strong.
+    """
+    periods = []
+    for position in range(unit_size):
+        same_position = onsets[position:unit_size * repeat_count:unit_size]
+        periods.extend(right - left
+                       for left, right in zip(same_position, same_position[1:]))
+    if not periods:
+        return {"verified": False, "reason": "no-repeat-periods", "periods_ms": []}
+    median = float(statistics.median(periods))
+    if median <= 0.0:
+        return {"verified": False, "reason": "nonpositive-period",
+                "periods_ms": [round(value * 1000, 1) for value in periods]}
+    spread = (max(periods) - min(periods)) / median
+    verified = (0.30 <= median <= 4.0
+                and min(periods) >= median * 0.62
+                and max(periods) <= median * 1.38
+                and spread <= maximum_relative_spread)
+    return {
+        "verified": verified,
+        "reason": "consistent-musical-period" if verified else "period-outlier",
+        "median_period_ms": round(median * 1000, 1),
+        "relative_spread": round(spread, 4),
+        "periods_ms": [round(value * 1000, 1) for value in periods],
+    }
 
 
 def _complete_repeated_unit(tokens: list[str]) -> tuple[int, int] | None:
@@ -226,6 +274,9 @@ def _snap_to_activity_rise(signal: np.ndarray, prior: float,
 
 
 def _initial_phone_class(token: str, language: str) -> str:
+    pronounced = _pronounced_initial_phone_class(token, language)
+    if pronounced is not None:
+        return pronounced
     value = token.lower()
     if not value:
         return "other"
@@ -243,6 +294,45 @@ def _initial_phone_class(token: str, language: str) -> str:
     if first in "aeiouyäöü":
         return "vowel"
     return "other"
+
+
+@lru_cache(maxsize=2048)
+def _pronounced_initial_phone_class(token: str, language: str) -> str | None:
+    """Classify the pronounced onset, falling back to orthography.
+
+    This matters for languages with opaque spelling (for example English
+    ``kn-`` or silent ``h``). eSpeak stays behind its command-line boundary;
+    unsupported languages and local installation problems safely fall back to
+    the established grapheme heuristic.
+    """
+    language_codes = {
+        "de": "de", "en": "en-us", "fr": "fr-fr", "es": "es",
+        "it": "it", "pt": "pt", "nl": "nl",
+    }
+    code = language_codes.get(language.lower().split("-")[0])
+    if code is None:
+        return None
+    try:
+        completed = subprocess.run(
+            ["espeak-ng", "-q", "--ipa=1", "-v", code, token],
+            check=True, capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    ipa = completed.stdout.strip().replace("ˈ", "").replace("ˌ", "")
+    ipa = ipa.lstrip(" _-")
+    if not ipa:
+        return None
+    if ipa.startswith(("tʃ", "dʒ", "ts", "dz")) or ipa[0] in "pbtdkɡqʔ":
+        return "plosive"
+    if ipa.startswith(("pf",)) or ipa[0] in "fvszʃʒçxɣhθðɸβ":
+        return "fricative"
+    if ipa[0] in "mnŋɲɳ":
+        return "nasal"
+    if ipa[0] in "lrɾɹjɥwʋ":
+        return "liquid"
+    if ipa[0] in "aeiouyɑɐɒæəɚɛɜɞɪɨɔɵʊʌʉɯœøɶɤɘɝ":
+        return "vowel"
+    return None
 
 
 def _normal_word(value: str) -> str:

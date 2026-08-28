@@ -32,7 +32,7 @@
                   <TextBlock Grid.Column="1" Text="{Binding StatusLabel}" Foreground="{Binding StatusColor}"
                              FontSize="9" FontWeight="Bold" Margin="8,2,0,0" />
                   <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Text="{Binding ScheduleLabel}" Foreground="#AAB2C1" FontSize="11" />
-                  <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding Description}" Foreground="#677185"
+                  <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding StageThemeLabel}" Foreground="#FF3CBD"
                              FontSize="10" TextTrimming="CharacterEllipsis" />
                 </Grid>
               </DataTemplate>
@@ -48,6 +48,7 @@
                        FontSize="28" FontWeight="Bold" TextWrapping="Wrap" />
             <TextBlock Text="{Binding SelectedEvent.ScheduleLabel}" Foreground="#DFFF28" FontSize="14" />
             <TextBlock Text="{Binding SelectedEvent.Description}" Foreground="#AAB2C1" TextWrapping="Wrap" Margin="0,8,0,0" />
+            <TextBlock Text="{Binding SelectedEvent.StageThemeLabel}" Foreground="#FF3CBD" FontWeight="SemiBold" Margin="0,6,0,0" />
           </StackPanel>
 
           <Grid Grid.Row="1" ColumnDefinitions="220,*" Margin="0,24,0,0">

@@ -201,6 +201,10 @@
               <TextBox Grid.Column="1" Text="{Binding NewEventStartsAt}" Watermark="2026-08-01 19:00"/>
               <Button Grid.Column="2" Content="ANLEGEN" Command="{Binding CreateEventCommand}"/>
             </Grid>
+            <ComboBox ItemsSource="{Binding StageThemes}" SelectedItem="{Binding SelectedNewEventStageTheme}"
+                      ToolTip.Tip="Bühne für das neue Event">
+              <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate></ComboBox.ItemTemplate>
+            </ComboBox>
             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="7">
               <ComboBox ItemsSource="{Binding Events}" SelectedItem="{Binding SelectedEvent}">
                 <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}"/></DataTemplate></ComboBox.ItemTemplate>

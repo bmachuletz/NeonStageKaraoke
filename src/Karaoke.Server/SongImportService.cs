@@ -9,7 +9,7 @@ public sealed record SongImportStatus(bool IsRunning, Guid? JobId, string? Title
     int? ExitCode, IReadOnlyList<string> RecentOutput);
 
 public sealed class SongImportService(IWebHostEnvironment environment, ServerSettingsService settings,
-    LibraryRepository library, ILogger<SongImportService> logger)
+    LibraryRepository library, UsdbLyricsSourceService usdb, ILogger<SongImportService> logger)
 {
     private readonly object _gate = new();
     private SongImportStatus _status = new(false, null, null, null, 0, "Bereit", null, null, null, []);
@@ -30,6 +30,8 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
         artist = string.IsNullOrWhiteSpace(artist)
             ? ultraStar?.Metadata.Artist ?? "Unbekannter Interpret"
             : artist.Trim();
+        if (await library.ContainsSongAsync(title, artist, cancellationToken))
+            throw new ArgumentException($"{title} · {artist} ist bereits in der Bibliothek.");
         lock (_gate)
         {
             if (_status.IsRunning) return null;
@@ -55,14 +57,31 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
         {
             var root = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "..", ".."));
             var fullTranscriptCompleted = false;
+            var trustedUltraStar = false;
             if (useLrclib)
             {
-                Set(8, "LRCLIB-Matching wird gestartet …");
-                var exit = await RunAsync(root, "dotnet", output, "run", "--project", Path.Combine(root, "LrcMatcher"),
-                    "--", audioPath, "--overwrite", "--plain-fallback");
-                if (exit != 0 || !HasLyrics(lrcPath))
-                    Add(output, "Kein geeigneter LRCLIB-Treffer; es wird ein Volltranskript aus dem Song erzeugt.");
+                Set(5, "UltraStar-Timings werden in USDB gesucht …");
+                using (var audio = TagLib.File.Create(audioPath))
+                {
+                    var sourceResult = await usdb.ResolveWithFallbackAsync(new(audioPath,
+                        GetStatus().Title ?? audio.Tag.Title ?? Path.GetFileNameWithoutExtension(audioPath),
+                        GetStatus().Artist ?? string.Join(", ", audio.Tag.Performers),
+                        audio.Tag.Album, audio.Properties.Duration), lrcPath, "LRCLIB", async _ =>
+                        {
+                            Set(8, "LRCLIB-Matching wird gestartet …");
+                            var exit = await RunAsync(root, "dotnet", output, "run", "--project",
+                                Path.Combine(root, "LrcMatcher"), "--", audioPath, "--overwrite", "--plain-fallback");
+                            return exit == 0 && HasLyrics(lrcPath);
+                        }, CancellationToken.None);
+                    Add(output, sourceResult.Source == "USDB"
+                        ? $"USDB: kompatible UltraStar-Version {sourceResult.Usdb.VersionId} übernommen."
+                        : $"USDB: {sourceResult.Usdb.Reason} Fallback: {sourceResult.Source}.");
+                    trustedUltraStar = sourceResult.Source == "USDB" &&
+                                       sourceResult.Usdb.TrustedDirectCandidate;
+                }
             }
+            if (useLrclib && !HasLyrics(lrcPath))
+                Add(output, "Kein geeigneter LRCLIB-Treffer; es wird ein Volltranskript aus dem Song erzeugt.");
             int result;
             if (!HasLyrics(lrcPath))
             {
@@ -74,10 +93,20 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
             }
             else
             {
-                Set(20, "GPU-Separation und Lyrics-Alignment laufen …");
+                Set(20, trustedUltraStar
+                    ? "Passende UltraStar-Timings · Stems werden ohne AI-Alignment erzeugt …"
+                    : "GPU-Separation und Lyrics-Alignment laufen …");
                 var script = Path.Combine(root, "scripts", "linux", "align-library.sh");
-                result = await RunAsync(root, "/bin/bash", output, script, "--force", "--library",
-                    settings.Get().LibraryPath, "--match", Path.GetFileName(audioPath));
+                var arguments = new List<string> { script, "--force", "--library",
+                    settings.Get().LibraryPath, "--match", Path.GetFileName(audioPath) };
+                if (trustedUltraStar) arguments.AddRange(["--profile", "trusted-ultrastar"]);
+                result = await RunAsync(root, "/bin/bash", output, arguments.ToArray());
+                if (result != 0 && trustedUltraStar)
+                {
+                    Add(output, "UltraStar-Aufnahmeprüfung fehlgeschlagen; reguläres Alignment wird als Fallback gestartet.");
+                    result = await RunAsync(root, "/bin/bash", output, script, "--force", "--library",
+                        settings.Get().LibraryPath, "--match", Path.GetFileName(audioPath));
+                }
             }
             if (result != 0) throw new InvalidOperationException("GPU-Pipeline hat den Song nicht akzeptiert.");
             if (fullTranscriptCompleted) Add(output, "Volltranskript und Wort-/Silbenalignment wurden abgeschlossen.");

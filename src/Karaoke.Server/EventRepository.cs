@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using Karaoke.Contracts;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Options;
@@ -9,6 +10,8 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
 {
     public static readonly Guid DefaultEventId = new("00000000-0000-0000-0000-000000000001");
     public const string DefaultInviteToken = "neon-stage";
+    public const string DefaultStageThemeId = "standard";
+    public static IReadOnlyList<StageThemeDto> StageThemes => StageThemeCatalog.All;
     private readonly string _connectionString = $"Data Source={Path.GetFullPath(options.Value.DatabasePath)}";
     private readonly SemaphoreSlim _mutex = new(1, 1);
 
@@ -24,7 +27,7 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
                 CREATE TABLE IF NOT EXISTS karaoke_events(
                     id TEXT PRIMARY KEY, name TEXT NOT NULL, inviteToken TEXT NOT NULL UNIQUE,
                     startsAt TEXT NOT NULL, endsAt TEXT, isActive INTEGER NOT NULL DEFAULT 0,
-                    createdAt TEXT NOT NULL, description TEXT
+                    createdAt TEXT NOT NULL, description TEXT, stageThemeId TEXT NOT NULL DEFAULT 'standard'
                 );
                 INSERT OR IGNORE INTO karaoke_events(id,name,inviteToken,startsAt,endsAt,isActive,createdAt,description)
                 VALUES($id,'Neon Stage',$token,$now,NULL,0,$now,'Automatisch aus der bisherigen globalen Sitzung übernommen');
@@ -41,6 +44,7 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
             command.Parameters.AddWithValue("$token", DefaultInviteToken);
             command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
             await command.ExecuteNonQueryAsync(ct);
+            await EnsureEventColumnsAsync(connection, ct);
             await EnsureQueueEventColumnAsync(connection, ct);
             await EnsureWishColumnsAsync(connection, ct);
             await MigrateWishesAsync(connection, ct);
@@ -74,12 +78,13 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
     {
         if (string.IsNullOrWhiteSpace(request.Name)) throw new ArgumentException("Der Eventname fehlt.");
         await InitializeAsync(ct);
+        var stageThemeId = NormalizeStageThemeId(request.StageThemeId);
         var item = new KaraokeEventDto(Guid.NewGuid(), request.Name.Trim(), NewToken(), request.StartsAt,
-            request.EndsAt, false, DateTimeOffset.UtcNow, request.Description?.Trim());
+            request.EndsAt, false, DateTimeOffset.UtcNow, request.Description?.Trim(), stageThemeId);
         await using var connection = new SqliteConnection(_connectionString);
         await connection.OpenAsync(ct);
         var command = connection.CreateCommand();
-        command.CommandText = "INSERT INTO karaoke_events(id,name,inviteToken,startsAt,endsAt,isActive,createdAt,description) VALUES($id,$name,$token,$start,$end,0,$created,$description)";
+        command.CommandText = "INSERT INTO karaoke_events(id,name,inviteToken,startsAt,endsAt,isActive,createdAt,description,stageThemeId) VALUES($id,$name,$token,$start,$end,0,$created,$description,$stageThemeId)";
         command.Parameters.AddWithValue("$id", item.Id.ToString());
         command.Parameters.AddWithValue("$name", item.Name);
         command.Parameters.AddWithValue("$token", item.InviteToken);
@@ -87,6 +92,7 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
         command.Parameters.AddWithValue("$end", (object?)item.EndsAt?.ToString("O") ?? DBNull.Value);
         command.Parameters.AddWithValue("$created", item.CreatedAt.ToString("O"));
         command.Parameters.AddWithValue("$description", (object?)item.Description ?? DBNull.Value);
+        command.Parameters.AddWithValue("$stageThemeId", item.StageThemeId);
         await command.ExecuteNonQueryAsync(ct);
         return item;
     }
@@ -202,6 +208,19 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
         await index.ExecuteNonQueryAsync(ct);
     }
 
+    private static async Task EnsureEventColumnsAsync(SqliteConnection connection, CancellationToken ct)
+    {
+        var pragma = connection.CreateCommand();
+        pragma.CommandText = "PRAGMA table_info(karaoke_events)";
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var reader = await pragma.ExecuteReaderAsync(ct))
+            while (await reader.ReadAsync(ct)) columns.Add(reader.GetString(1));
+        if (columns.Contains("stageThemeId")) return;
+        var alter = connection.CreateCommand();
+        alter.CommandText = $"ALTER TABLE karaoke_events ADD COLUMN stageThemeId TEXT NOT NULL DEFAULT '{DefaultStageThemeId}'";
+        await alter.ExecuteNonQueryAsync(ct);
+    }
+
     private static async Task MigrateWishesAsync(SqliteConnection connection, CancellationToken ct)
     {
         var exists = connection.CreateCommand();
@@ -231,9 +250,58 @@ public sealed class EventRepository(IOptions<KaraokeOptions> options)
 
     private static KaraokeEventDto Read(SqliteDataReader reader) => new(Guid.Parse(reader.GetString(0)), reader.GetString(1),
         reader.GetString(2), DateTimeOffset.Parse(reader.GetString(3)), reader.IsDBNull(4) ? null : DateTimeOffset.Parse(reader.GetString(4)),
-        reader.GetInt32(5) == 1, DateTimeOffset.Parse(reader.GetString(6)), reader.IsDBNull(7) ? null : reader.GetString(7));
+        reader.GetInt32(5) == 1, DateTimeOffset.Parse(reader.GetString(6)), reader.IsDBNull(7) ? null : reader.GetString(7),
+        reader.IsDBNull(8) ? DefaultStageThemeId : NormalizeStageThemeId(reader.GetString(8)));
+    private static string NormalizeStageThemeId(string? value) =>
+        StageThemes.Any(theme => string.Equals(theme.Id, value?.Trim(), StringComparison.OrdinalIgnoreCase))
+            ? StageThemes.First(theme => string.Equals(theme.Id, value?.Trim(), StringComparison.OrdinalIgnoreCase)).Id
+            : DefaultStageThemeId;
     private static string NewToken() => Convert.ToBase64String(RandomNumberGenerator.GetBytes(18)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-    private const string EventSelect = "SELECT id,name,inviteToken,startsAt,endsAt,isActive,createdAt,description FROM karaoke_events";
+    private const string EventSelect = "SELECT id,name,inviteToken,startsAt,endsAt,isActive,createdAt,description,stageThemeId FROM karaoke_events";
 }
 
 public enum EventDeleteResult { Deleted, NotFound, Active, HasWishes, Protected }
+
+internal static class StageThemeCatalog
+{
+    private const string EnvironmentVariable = "NEONSTAGE_STAGE_THEMES_FILE";
+    private static readonly Lazy<IReadOnlyList<StageThemeDto>> Themes = new(Load);
+    internal static IReadOnlyList<StageThemeDto> All => Themes.Value;
+
+    private static IReadOnlyList<StageThemeDto> Load()
+    {
+        var themes = new List<StageThemeDto>
+        {
+            new(EventRepository.DefaultStageThemeId, "Neon Stage · Standard",
+                "Die bisherige Neon-Stage mit dem bekannten Grid-Hintergrund.", true)
+        };
+        var configured = Environment.GetEnvironmentVariable(EnvironmentVariable);
+        var candidates = new[]
+        {
+            configured,
+            Path.Combine(AppContext.BaseDirectory, "stage-themes.private.json"),
+            Path.Combine(Directory.GetCurrentDirectory(), "stage-themes.private.json"),
+            Path.Combine(Directory.GetCurrentDirectory(), "src", "Karaoke.Server", "stage-themes.private.json")
+        };
+        var path = candidates.FirstOrDefault(candidate => !string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate));
+        if (path is null) return themes;
+        try
+        {
+            var privateThemes = JsonSerializer.Deserialize<PrivateStageThemeCatalog>(File.ReadAllText(path),
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            foreach (var theme in privateThemes?.Themes ?? [])
+            {
+                if (string.IsNullOrWhiteSpace(theme.Id) || themes.Any(item =>
+                        string.Equals(item.Id, theme.Id, StringComparison.OrdinalIgnoreCase))) continue;
+                themes.Add(theme with { IsDefault = false });
+            }
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine($"Private stage theme catalog could not be loaded: {exception.Message}");
+        }
+        return themes;
+    }
+
+    private sealed record PrivateStageThemeCatalog(IReadOnlyList<StageThemeDto> Themes);
+}

@@ -27,6 +27,11 @@ if [[ -z "$unity_editor" || ! -x "$unity_editor" ]]; then
   exit 1
 fi
 
+# Unity's IL post-processor uses the .NET physical file provider. Polling keeps
+# builds reliable on development machines that already exhausted their inotify
+# watcher quota through editors, containers and language servers.
+DOTNET_USE_POLLING_FILE_WATCHER=${DOTNET_USE_POLLING_FILE_WATCHER:-1} \
+DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=${DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE:-false} \
 "$unity_editor" \
   -batchmode \
   -nographics \

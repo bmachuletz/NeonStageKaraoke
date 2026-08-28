@@ -7,6 +7,7 @@ import statistics
 import numpy as np
 
 from .ctc_aligner import HEURISTIC_SOURCES
+from .model_loading import from_pretrained_local_first
 
 
 MODEL_IDS = {
@@ -42,9 +43,10 @@ class EasyGlobalAligner:
         self.torch = torch
         self.device = device
         self.model_id = model_id
-        self.processor = Wav2Vec2Processor.from_pretrained(model_id)
+        self.processor = from_pretrained_local_first(Wav2Vec2Processor, model_id)
         dtype = torch.float16 if device == "cuda" else torch.float32
-        self.model = AutoModelForCTC.from_pretrained(model_id).to(device=device, dtype=dtype).eval()
+        self.model = from_pretrained_local_first(
+            AutoModelForCTC, model_id).to(device=device, dtype=dtype).eval()
 
     def close(self) -> None:
         del self.model

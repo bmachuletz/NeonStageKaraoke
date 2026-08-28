@@ -5,13 +5,14 @@ Er verarbeitet die ältesten Wünsche zuerst und führt pro Titel diese Schritte
 
 1. Download über den gewählten Provider: YouTube/Sunnify oder ein von Qobuz
    autorisierter Kaufdownload
-2. sicherer LRCLIB-Treffer über `LrcMatcher` (synchronisiert bevorzugt,
+2. aufnahmegenauer UltraStar-TXT-Treffer über USDB (optional, ohne Browserautomation)
+3. sicherer LRCLIB-Treffer über `LrcMatcher`, falls USDB ausfällt oder unsicher ist (synchronisiert bevorzugt,
    unsynchronisierter Text als GPU-Fallback)
-3. GPU-Wort- und Silbenalignment inklusive Vocal-/Instrumental-Stems
-4. Erzeugung der Ogg-Laufzeitspuren und Musik-Visualanalyse
-5. Prüfung des GPU-Quality-Gates (`quality.publishable == true`) und aller Laufzeitdateien
-6. Entfernen ausschließlich des vollständig erzeugten und akzeptierten Wunsches
-7. Bibliotheks-Reindex, damit Server und Bühne den Titel sofort sehen
+4. GPU-Wort- und Silbenalignment inklusive Vocal-/Instrumental-Stems
+5. Erzeugung der Ogg-Laufzeitspuren und Musik-Visualanalyse
+6. Prüfung des GPU-Quality-Gates (`quality.publishable == true`) und aller Laufzeitdateien
+7. Entfernen ausschließlich des vollständig erzeugten und akzeptierten Wunsches
+8. Bibliotheks-Reindex, damit Server und Bühne den Titel sofort sehen
 
 Ein Wunsch bleibt bei jedem Teilfehler oder abgelehnten Alignment in der Liste. Wenn der Download bereits
 eine gültige Audiodatei geliefert hat, speichert der Server diesen Fund intern am Wunsch; der lokale Dateipfad

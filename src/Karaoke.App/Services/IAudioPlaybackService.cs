@@ -6,6 +6,7 @@ public interface IAudioPlaybackService : IDisposable
     TimeSpan Duration { get; }
     int Volume { get; set; }
     int VocalVolume { get; set; }
+    double PlaybackRate { get; set; }
     bool IsPlaying { get; }
     bool IsSeekable { get; }
     event EventHandler<TimeSpan>? PositionChanged;
@@ -32,6 +33,7 @@ internal sealed class UnsupportedAudioPlaybackService : IAudioPlaybackService
     public TimeSpan Duration => TimeSpan.Zero;
     public int Volume { get; set; } = 100;
     public int VocalVolume { get; set; }
+    public double PlaybackRate { get; set; } = 1;
     public bool IsPlaying => false;
     public bool IsSeekable => false;
     public event EventHandler<TimeSpan>? PositionChanged { add { } remove { } }

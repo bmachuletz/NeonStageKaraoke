@@ -46,6 +46,7 @@ public sealed class KaraokeEventDto
     public string name = "";
     public string inviteToken = "";
     public string description = "";
+    public string stageThemeId = "standard";
     public bool isActive;
 }
 
@@ -60,6 +61,7 @@ public sealed class CreateKaraokeEventDto
     public string name = "";
     public string startsAt = "";
     public string description = "";
+    public string stageThemeId = "standard";
 }
 
 [Serializable]
@@ -67,6 +69,7 @@ public sealed class PlaybackControllerRequestDto
 {
     public string clientId = "";
     public string clientName = "Neon Stage Unity";
+    public bool force;
 }
 
 [Serializable]
@@ -81,6 +84,20 @@ public sealed class PlaybackControllerDto
 public sealed class LyricsDto
 {
     public LyricsLineDto[] lines = Array.Empty<LyricsLineDto>();
+    public bool hasUltraStarTimingHeritage;
+}
+
+[Serializable]
+public sealed class SongVisualizationDto
+{
+    public VisualizationFrameDto[] frames = Array.Empty<VisualizationFrameDto>();
+}
+
+[Serializable]
+public sealed class VisualizationFrameDto
+{
+    public double timeSeconds;
+    public bool beat;
 }
 
 [Serializable]
@@ -93,6 +110,9 @@ public sealed class LyricsLineDto
     public LyricsWordDto[] words = Array.Empty<LyricsWordDto>();
     public int holdAfterMilliseconds = -1;
     public string stageEffect = "Automatic";
+    public int voiceLane;
+    public string voiceLabel = "";
+    public bool karaokeTimingLocked;
 }
 
 [Serializable]
@@ -104,6 +124,7 @@ public sealed class LyricsWordDto
     public int index;
     public LyricsSyllableDto[] syllables = Array.Empty<LyricsSyllableDto>();
     public float syllableConfidence;
+    public bool karaokeTimingLocked;
 }
 
 [Serializable]
@@ -114,6 +135,7 @@ public sealed class LyricsSyllableDto
     public string end = "";
     public int index;
     public float confidence;
+    public bool karaokeTimingLocked;
 }
 
 [Serializable]

@@ -12,6 +12,7 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
 {
     private static readonly Guid ProtectedDefaultEventId = new("00000000-0000-0000-0000-000000000001");
     private readonly HttpClient _http;
+    private Uri _publicServerAddress;
     private readonly CancellationTokenSource _lifetime = new();
     private EditorEventItem? _selectedEvent;
     private Bitmap? _qrCode;
@@ -23,11 +24,13 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
     public EventManagementViewModel(Uri serverAddress)
     {
         ServerAddress = serverAddress;
+        _publicServerAddress = serverAddress;
         _http = new HttpClient { BaseAddress = serverAddress, Timeout = TimeSpan.FromMinutes(2) };
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public ObservableCollection<EditorEventItem> Events { get; } = [];
+    public ObservableCollection<StageThemeDto> StageThemes { get; } = [];
     public Uri ServerAddress { get; }
     public EditorEventItem? SelectedEvent
     {
@@ -60,7 +63,7 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
         ? $"{WishCount} Wunsch/Wünsche in dieser Session"
         : $"{WishCount} request(s) in this session";
     public string InvitationUrl => SelectedEvent is null ? string.Empty :
-        new Uri(ServerAddress, $"/e/{Uri.EscapeDataString(SelectedEvent.InviteToken)}").AbsoluteUri;
+        new Uri(_publicServerAddress, $"/e/{Uri.EscapeDataString(SelectedEvent.InviteToken)}").AbsoluteUri;
     public string Status { get => _status; private set => Set(ref _status, value); }
     public bool Busy
     {
@@ -80,12 +83,23 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
         Busy = true;
         try
         {
-            var events = await _http.GetFromJsonAsync<IReadOnlyList<KaraokeEventDto>>(
-                "/api/events", cancellationToken) ?? [];
+            var eventsTask = _http.GetFromJsonAsync<IReadOnlyList<KaraokeEventDto>>(
+                "/api/events", cancellationToken);
+            var themesTask = _http.GetFromJsonAsync<IReadOnlyList<StageThemeDto>>(
+                "/api/stage-themes", cancellationToken);
+            var publicAddressTask = ResolvePublicServerAddressAsync(cancellationToken);
+            await Task.WhenAll(eventsTask, themesTask, publicAddressTask);
+            _publicServerAddress = await publicAddressTask;
+            OnPropertyChanged(nameof(InvitationUrl));
+            var events = await eventsTask ?? [];
+            StageThemes.Clear();
+            foreach (var theme in await themesTask ?? []) StageThemes.Add(theme);
             Events.Clear();
             foreach (var item in events.OrderByDescending(item => item.IsActive)
                          .ThenByDescending(item => item.StartsAt))
-                Events.Add(new EditorEventItem(item));
+                Events.Add(new EditorEventItem(item,
+                    StageThemes.FirstOrDefault(theme => string.Equals(theme.Id, item.StageThemeId,
+                        StringComparison.OrdinalIgnoreCase))?.Name));
             SelectedEvent = Events.FirstOrDefault(item => item.Id == preferredId)
                             ?? Events.FirstOrDefault(item => item.IsActive)
                             ?? Events.FirstOrDefault();
@@ -242,6 +256,18 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
             ? $"HTTP {(int)response.StatusCode}" : detail.Trim('"'));
     }
 
+    private async Task<Uri> ResolvePublicServerAddressAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var info = await _http.GetFromJsonAsync<PublicServerInfoDto>(
+                "/api/server/public-url", cancellationToken);
+            if (info is not null && Uri.TryCreate(info.BaseUrl, UriKind.Absolute, out var address)) return address;
+        }
+        catch (HttpRequestException) { /* Compatibility with an older server. */ }
+        return ServerAddress;
+    }
+
     private bool Set<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value)) return false;
@@ -262,13 +288,16 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
     }
 }
 
-public sealed class EditorEventItem(KaraokeEventDto source)
+public sealed class EditorEventItem(KaraokeEventDto source, string? stageThemeName = null)
 {
     public Guid Id => source.Id;
     public string Name => source.Name;
     public string InviteToken => source.InviteToken;
     public bool IsActive => source.IsActive;
     public string Description => source.Description ?? string.Empty;
+    public string StageThemeLabel => string.IsNullOrWhiteSpace(stageThemeName)
+        ? source.StageThemeId
+        : stageThemeName;
     public string StatusLabel => IsActive ? (EditorLocale.German ? "● AKTIV" : "● ACTIVE") :
         source.EndsAt < DateTimeOffset.Now ? (EditorLocale.German ? "BEENDET" : "ENDED") :
         (EditorLocale.German ? "GEPLANT" : "PLANNED");

@@ -17,7 +17,9 @@ public sealed record LyricsClipboardSegment(
     double? Confidence,
     int? HoldAfterMilliseconds,
     StageLineEffect StageEffect,
-    IReadOnlyList<LyricsClipboardSegment> Children);
+    IReadOnlyList<LyricsClipboardSegment> Children,
+    int VoiceLane = 0,
+    string? VoiceLabel = null);
 
 public static class LyricsSegmentClipboard
 {
@@ -88,7 +90,9 @@ public static class LyricsSegmentClipboard
         segment.Confidence,
         segment.HoldAfterMilliseconds,
         segment.StageEffect,
-        segment.Children.Select(child => Capture(child, origin)).ToList());
+        segment.Children.Select(child => Capture(child, origin)).ToList(),
+        segment.VoiceLane,
+        segment.VoiceLabel);
 
     private static LyricSegment CreateSegment(LyricsClipboardSegment source, TimeSpan anchor, Guid? parentId)
     {
@@ -111,7 +115,9 @@ public static class LyricsSegmentClipboard
             OriginalEnd = end,
             OriginalText = source.Text,
             HoldAfterMilliseconds = source.HoldAfterMilliseconds,
-            StageEffect = source.StageEffect
+            StageEffect = source.StageEffect,
+            VoiceLane = source.VoiceLane,
+            VoiceLabel = source.VoiceLabel
         };
         foreach (var child in source.Children)
             created.Children.Add(CreateSegment(child, anchor, id));

@@ -8,8 +8,9 @@ public sealed class AudioCatalogSearchService(SpotifyService spotify, QobuzCatal
     {
         if (string.IsNullOrWhiteSpace(query)) return [];
         var providers = new List<(string Name, Func<Task<IReadOnlyList<SpotifyTrackDto>>> Search)>();
+        var qobuzAvailable = await qobuz.IsAvailableAsync(cancellationToken);
         if (spotify.Configured) providers.Add(("Spotify", () => spotify.SearchAsync(query, cancellationToken)));
-        if (await qobuz.IsAvailableAsync(cancellationToken))
+        if (qobuzAvailable)
             providers.Add(("Qobuz", () => qobuz.SearchAsync(query, cancellationToken)));
         if (providers.Count == 0)
             throw new InvalidOperationException("Weder Spotify noch Qobuz ist für die Katalogsuche konfiguriert.");
@@ -18,7 +19,11 @@ public sealed class AudioCatalogSearchService(SpotifyService spotify, QobuzCatal
         var errors = new List<string>();
         foreach (var provider in providers)
         {
-            try { results.AddRange(await provider.Search()); }
+            try
+            {
+                var downloadSource = qobuzAvailable ? AudioDownloadSource.Qobuz : AudioDownloadSource.YouTube;
+                results.AddRange((await provider.Search()).Select(track => track with { DownloadSource = downloadSource }));
+            }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
                 errors.Add($"{provider.Name}: {exception.Message}");

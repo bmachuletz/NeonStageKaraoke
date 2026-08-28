@@ -1,0 +1,62 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.UsdbLyricsSearchWindow"
+        Title="USDB auf Lyrics prüfen"
+        Width="820" Height="590" MinWidth="680" MinHeight="480"
+        WindowStartupLocation="CenterOwner" Background="#0D1016">
+  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto,Auto" Margin="24">
+    <StackPanel>
+      <TextBlock Text="ULTRASTAR DATABASE" Foreground="#DFFF28" FontSize="22" FontWeight="Bold" />
+      <TextBlock x:Name="SongLabel" Foreground="#C0C6D2" Margin="0,3,0,0" />
+      <TextBlock Text="Die Suche und Aufnahmebewertung laufen auf dem Neon-Stage-Server. Erst Auswählen legt eine neue Lyrics-Version an."
+                 Foreground="#8993A6" TextWrapping="Wrap" Margin="0,5,0,0" />
+    </StackPanel>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,18,0,12">
+      <TextBox x:Name="QueryBox" Watermark="Titel in USDB suchen …" KeyDown="QueryKeyDown" />
+      <Button Grid.Column="1" Content="⌕ Suchen" Click="SearchClick" Margin="8,0,0,0" />
+    </Grid>
+
+    <Border Grid.Row="2" Background="#10151D" BorderBrush="#2A303B" BorderThickness="1" CornerRadius="8">
+      <ListBox x:Name="ResultsList" SelectionChanged="ResultSelectionChanged"
+               Background="Transparent" BorderThickness="0">
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <Grid ColumnDefinitions="*,Auto" Margin="12,9">
+              <StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                  <TextBlock Text="BESTER TREFFER" Foreground="#DFFF28" FontSize="10"
+                             FontWeight="Bold" IsVisible="{Binding IsRecommended}" />
+                  <TextBlock Text="{Binding ConfidenceLabel}" Foreground="#45E6D0" FontSize="10" FontWeight="Bold" />
+                </StackPanel>
+                <TextBlock Text="{Binding Heading}" FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Details}" Foreground="#8993A6" FontSize="11" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" HorizontalAlignment="Right" VerticalAlignment="Center">
+                <TextBlock Text="{Binding ScoreLabel}" Foreground="#FF3CBD" FontSize="16"
+                           FontWeight="Bold" HorizontalAlignment="Right" />
+                <TextBlock Text="Metadaten-Score" Foreground="#677185" FontSize="9" />
+              </StackPanel>
+            </Grid>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Border>
+
+    <Grid Grid.Row="3" ColumnDefinitions="Auto,*" Margin="0,12,0,0">
+      <ProgressBar x:Name="Progress" Width="150" IsIndeterminate="True" IsVisible="False"
+                   Foreground="#DFFF28" />
+      <TextBlock x:Name="StatusLabel" Grid.Column="1" Margin="12,0,0,0" Foreground="#8993A6"
+                 TextWrapping="Wrap" VerticalAlignment="Center" />
+    </Grid>
+
+    <CheckBox x:Name="LocalAlignmentCheck" Grid.Row="4" IsChecked="True" Margin="0,14,0,0"
+              Content="Nach dem Import mit Variante 1.2 an die lokale Vocalspur anpassen" />
+
+    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,18,0,0">
+      <Button Content="Abbrechen" Click="CancelClick" />
+      <Button x:Name="SelectButton" Content="Auswählen" Click="SelectClick" IsEnabled="False"
+              Background="#DFFF28" Foreground="#11151C" />
+    </StackPanel>
+  </Grid>
+</Window>

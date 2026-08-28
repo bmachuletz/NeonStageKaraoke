@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+from functools import lru_cache
 from typing import Iterable
 
 from .acoustic_boundaries import refine_syllable_boundaries
@@ -27,7 +29,8 @@ EDGE_RE = re.compile(r"^([^\wÀ-ɏ]*)(.*?)([^\wÀ-ɏ]*)$", re.UNICODE)
 
 
 def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
-                                sample_rate: int = 16000) -> dict:
+                                sample_rate: int = 16000,
+                                enforce_minimum_geometry: bool = False) -> dict:
     """Add syllables constrained to GPU-aligned word windows.
 
     CTC character spans are preferred. Remaining internal boundaries start
@@ -36,16 +39,22 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
     """
     dictionary = _dictionary(language)
     words = syllables = dictionary_splits = acoustic_splits = sustained_endings = 0
+    phonological_splits = 0
     acoustic_attempts = acoustic_refinements = phoneme_splits = 0
     acoustic_confidence_sum = 0.0
     confidence_sum = 0.0
+    minimum_geometry_repairs = 0
     for line in lines:
         for word in line.words:
             parts, used_dictionary = _split_word(
                 str(word.get("word", "")), dictionary, language)
+            parts, phonological_split = _repair_split_from_phoneme_nuclei(
+                str(word.get("word", "")), parts, word, language)
+            phonological_splits += int(phonological_split)
             start = float(word["start"])
             end = max(start, float(word.get("end", start)))
-            confidence = _confidence(parts, end - start, used_dictionary)
+            confidence = _confidence(
+                parts, end - start, used_dictionary or phonological_split)
             phoneme_timing = _time_parts_from_phonemes(
                 parts, word, start, end, confidence, language)
             acoustic = phoneme_timing or _time_parts_from_ctc(
@@ -55,6 +64,18 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
             timed_parts, acoustic_summary = refine_syllable_boundaries(
                 audio, timed_parts, sample_rate=sample_rate,
                 prior_is_acoustic=acoustic is not None)
+            # A noisy release detector can place ``acoustic_end`` before the
+            # word has enough time to articulate its known syllables. Keep the
+            # measured release as evidence, but never use an impossible core
+            # interval as the parent of the syllable geometry.
+            geometry_repaired = False
+            if enforce_minimum_geometry:
+                geometry_end = max(
+                    core_end,
+                    min(end, start + len(timed_parts) * 0.055))
+                timed_parts, geometry_repaired = _enforce_minimum_syllable_geometry(
+                    timed_parts, start, geometry_end)
+            minimum_geometry_repairs += int(geometry_repaired)
             acoustic_attempts += acoustic_summary["attempted_boundaries"]
             acoustic_refinements += acoustic_summary["refined_boundaries"]
             acoustic_confidence_sum += (acoustic_summary["mean_confidence"]
@@ -95,6 +116,7 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
         "dictionary_splits": dictionary_splits,
         "acoustic_splits": acoustic_splits,
         "phoneme_nucleus_splits": phoneme_splits,
+        "phoneme_corrected_text_splits": phonological_splits,
         "acoustic_change_point_enabled": audio is not None,
         "acoustic_change_point_attempts": acoustic_attempts,
         "acoustic_change_point_refinements": acoustic_refinements,
@@ -102,13 +124,51 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
             acoustic_confidence_sum / acoustic_refinements, 3)
             if acoustic_refinements else 0.0,
         "sustained_endings": sustained_endings,
+        "minimum_geometry_repairs": minimum_geometry_repairs,
+        "minimum_geometry_safety_enabled": enforce_minimum_geometry,
         "mean_confidence": round(confidence_sum / words, 3) if words else 0.0,
     }
 
 
+def _enforce_minimum_syllable_geometry(
+        parts: list[dict], start: float, end: float,
+        *, maximum_floor: float = 0.055) -> tuple[list[dict], bool]:
+    """Project impossible child boundaries back into their word window.
+
+    Forced phoneme paths and local change points are independent observations,
+    but both can occasionally leave a 0--30 ms edge syllable.  Keep their
+    boundaries whenever possible and move only as far as needed to give every
+    syllable a readable, physically plausible interval.  This never changes
+    the owning word's timing.
+    """
+    if len(parts) < 2 or end <= start:
+        return parts, False
+    floor = min(maximum_floor, (end - start) / len(parts))
+    if floor <= 0.0:
+        return parts, False
+    durations = [float(part["end"]) - float(part["start"]) for part in parts]
+    if all(duration + 0.001 >= floor for duration in durations):
+        return parts, False
+
+    boundaries = []
+    previous = start
+    for index, part in enumerate(parts[:-1]):
+        lower = max(start + (index + 1) * floor, previous + floor)
+        upper = end - (len(parts) - index - 1) * floor
+        boundary = min(upper, max(lower, float(part["end"])))
+        boundaries.append(boundary)
+        previous = boundary
+    edges = [start, *boundaries, end]
+    for index, part in enumerate(parts):
+        part["start"] = round(edges[index], 3)
+        part["end"] = round(edges[index + 1], 3)
+        part["minimum_geometry_repair"] = True
+    return parts, True
+
+
 def _time_parts_from_phonemes(parts: list[str], word: dict, start: float, end: float,
                               confidence: float, language: str) -> list[dict] | None:
-    phonemes = word.get("phonemes")
+    phonemes = word.get("phonemes") or word.get("syllable_phonemes")
     if not isinstance(phonemes, list) or not phonemes or len(parts) < 2:
         return None
     nucleus_indices = [index for index, phone in enumerate(phonemes)
@@ -127,7 +187,8 @@ def _time_parts_from_phonemes(parts: list[str], word: dict, start: float, end: f
             end, float(phonemes[boundary_index]["start"])))
         boundaries.append(boundary)
     boundaries.append(end)
-    phone_confidence = float(word.get("phoneme_confidence", confidence))
+    phone_confidence = float(word.get(
+        "phoneme_confidence", word.get("syllable_phoneme_confidence", confidence)))
     result = []
     for index, part in enumerate(parts):
         result.append({
@@ -138,7 +199,83 @@ def _time_parts_from_phonemes(parts: list[str], word: dict, start: float, end: f
             "index": index,
             "boundary_source": "phoneme-syllable-onset",
         })
+    # A truncated or weak phone path can place the next vowel nucleus exactly
+    # at the word end.  Such a path would collapse the final written syllable
+    # to 0 ms and is less informative than the CTC or duration fallback.  Do
+    # not clamp it to an invented nearby time; reject the whole phone prior so
+    # the next independent source gets a chance.
+    average_part = (end - start) / len(parts)
+    minimum_part = min(0.055, max(0.025, average_part * 0.28))
+    if any(float(part["end"]) - float(part["start"]) < minimum_part
+           for part in result):
+        return None
     return result
+
+
+def _repair_split_from_phoneme_nuclei(value: str, parts: list[str], word: dict,
+                                      language: str) -> tuple[list[str], bool]:
+    """Use measured IPA nuclei to correct typographic hyphenation counts.
+
+    Pyphen intentionally models written hyphenation.  English words such as
+    ``away`` and ``apart`` may therefore remain unsplit even though the IPA
+    path contains two separately sung vowel nuclei.  The IPA model determines
+    only the expected count; grapheme text still comes from the conservative
+    local splitter so the canonical spelling is never replaced.
+    """
+    if language.lower().split("-")[0] != "en":
+        return parts, False
+    phonemes = word.get("phonemes") or word.get("syllable_phonemes")
+    expected = (sum(_is_vowel_phone(str(phone.get("phone", "")))
+                    for phone in phonemes)
+                if isinstance(phonemes, list) and phonemes else 0)
+    source = "measured-ipa-vowel-nucleus-count"
+    if expected <= len(parts):
+        # A locally accepted acoustic phone path is deliberately optional:
+        # difficult singing may reject CTC even though the canonical word's
+        # pronunciation is unambiguous.  Query the same eSpeak pronunciation
+        # used by the IPA aligner so textual syllable counts do not silently
+        # fall back to typographic Pyphen hyphenation (away/apart are common
+        # examples).  This changes text subdivision only, never word timing.
+        expected = _pronunciation_syllable_count(value, language)
+        source = "espeak-ipa-vowel-nucleus-count"
+    if expected <= len(parts):
+        return parts, False
+    match = EDGE_RE.match(value)
+    if not match:
+        return parts, False
+    prefix, core, suffix = match.groups()
+    fallback = _heuristic_split(core)
+    if len(fallback) != expected:
+        return parts, False
+    fallback[0] = prefix + fallback[0]
+    fallback[-1] += suffix
+    word["syllable_split_source"] = source
+    return fallback, True
+
+
+@lru_cache(maxsize=8192)
+def _pronunciation_syllable_count(value: str, language: str) -> int:
+    """Return a conservative eSpeak IPA nucleus count for one English word.
+
+    eSpeak emits model-compatible phones separated by underscores.  Counting
+    vowel-bearing phones rather than vowel characters keeps diphthongs such as
+    /eɪ/ together and mirrors the representation used by the CTC aligner.
+    Missing binaries or unknown words simply leave the existing split intact.
+    """
+    match = EDGE_RE.match(value)
+    core = match.group(2) if match else value
+    if not core or not any(character.isalpha() for character in core):
+        return 0
+    code = "en-us" if language.lower().split("-")[0] == "en" else language
+    try:
+        completed = subprocess.run(
+            ["espeak-ng", "-q", "--ipa=1", "-v", code, core],
+            check=True, capture_output=True, text=True, timeout=2)
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return 0
+    phones = [phone.replace("ˈ", "").replace("ˌ", "").replace("\u200d", "")
+              for phone in completed.stdout.strip().split("_")]
+    return sum(_is_vowel_phone(phone) for phone in phones if phone)
 
 
 def _leading_onset_units(part: str, language: str) -> int:

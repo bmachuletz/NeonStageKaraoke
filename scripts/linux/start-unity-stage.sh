@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 stage="$project_root/src/Karaoke.Stage.Unity/Builds/Linux/NeonStage"
+export NEONSTAGE_SERVER_URL="${NEONSTAGE_SERVER_URL:-http://cloud.hdvtec.de:5274}"
 
 if [[ ! -x "$stage" ]]; then
   echo "Unity-Linux-Build fehlt. Zuerst ausführen:" >&2

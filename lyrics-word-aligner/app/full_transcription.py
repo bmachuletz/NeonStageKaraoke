@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable
 
+from .chunk_ownership import move_ownership_seams_to_quiet_audio
 from .lrc import render_enhanced_lrc
 from .models import LrcLine
 from .transcript_match import compare_transcripts, normalize_words
@@ -86,6 +87,13 @@ def fallback_transcription_windows(sample_count: int, *, initial_was_chunked: bo
     return audio_chunk_windows(
         sample_count, chunk_seconds=chunk_seconds, overlap_seconds=overlap_seconds,
         sample_rate=sample_rate)
+
+
+def quiet_transcription_windows(audio, windows: list[tuple[int, int, float, float]],
+                                *, sample_rate: int = SAMPLE_RATE
+                                ) -> list[tuple[int, int, float, float]]:
+    """Keep ASR context windows, but avoid assigning ownership mid-vocal."""
+    return move_ownership_seams_to_quiet_audio(windows, audio, sample_rate=sample_rate)
 
 
 def keep_owned_words(words: list[dict], *, base_seconds: float,
@@ -185,9 +193,9 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
     # Heavy CUDA modules stay out of the long-lived API process and unit-test
     # import path. They are loaded only inside the isolated worker subprocess.
     from .aligner import QwenWordAligner
-    from .audio import ffmpeg_to_mono16k, load_audio, select_alignment_audio
-    from .candidate_selection import blend_audio
-    from .separator import separate_stems
+    from .analysis_stems import build_analysis_candidates
+    from .audio import ffmpeg_to_mono16k, load_audio
+    from .stem_roles import SeparationConfig
     from .stable_transcriber import transcribe_stable
     from .transcriber import QwenTranscriber, language_code, merge_transcript_chunks
     import numpy as np
@@ -199,27 +207,35 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
         temp = Path(temporary)
         notify(8, "Audiospur wird für die Volltext-Erkennung vorbereitet")
         if separate:
-            notify(12, "Lead-Vocals werden für die Transkription isoliert")
-            separated = separate_stems(audio_path, temp / "separated")
-            vocal_source = separated.vocals
-            notify(34, "Vocal-Separation abgeschlossen; GPU-Speicher wird freigegeben")
+            notify(12, "All-Vocals-Stem wird für die Transkription isoliert")
+            separation_config = SeparationConfig.from_environment()
+            bundle = build_analysis_candidates(
+                audio_path, temp / "analysis", None, separation_config,
+                minimum_rms_ratio=float(os.getenv(
+                    "LRC_MIN_VOCAL_MIX_RMS_RATIO", "0.05")),
+            )
+            selected = bundle.candidates[0]
+            recognition_audio = selected.audio
+            audio_selection = {
+                "source": selected.type,
+                "purpose": "analysis",
+                "selected_candidate": selected.id,
+                "model": selected.metadata.get("model"),
+                "separator": selected.metadata.get("separator"),
+                "fallback_used": bundle.legacy_fallback,
+                "generation_errors": bundle.errors,
+                "original_mix_mode": separation_config.original_mix_mode,
+            }
+            notify(34, "Analysis-Separation abgeschlossen; GPU-Speicher wird freigegeben")
         else:
-            vocal_source = audio_path
+            mix_wav = ffmpeg_to_mono16k(audio_path, temp / "mix-16k.wav")
+            recognition_audio = load_audio(mix_wav)
+            audio_selection = {
+                "source": "original-mix", "purpose": "analysis",
+                "selected_candidate": "separation-disabled",
+                "fallback_used": False,
+            }
         _release_memory()
-
-        vocal_wav = ffmpeg_to_mono16k(vocal_source, temp / "vocals-16k.wav")
-        mix_wav = ffmpeg_to_mono16k(audio_path, temp / "mix-16k.wav")
-        vocals = load_audio(vocal_wav)
-        mix = load_audio(mix_wav)
-        recognition_audio, audio_selection = select_alignment_audio(
-            vocals, mix,
-            minimum_rms_ratio=float(os.getenv("LRC_MIN_VOCAL_MIX_RMS_RATIO", "0.05")),
-        )
-        if separate and not audio_selection["fallback_used"]:
-            mix_ratio = float(os.getenv("LRC_TRANSCRIPTION_MIX_RATIO", "0.15"))
-            recognition_audio = blend_audio(recognition_audio, mix, mix_ratio)
-            audio_selection = {**audio_selection, "source": "vocals-original-blend",
-                               "original_mix_ratio": mix_ratio}
 
         chunk_seconds = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_SECONDS", "20"))
         chunk_overlap = float(os.getenv("LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS", "2"))
@@ -228,6 +244,8 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
         qwen_windows, chunked_transcription = plan_transcription_windows(
             len(recognition_audio), threshold_seconds=chunk_threshold,
             chunk_seconds=chunk_seconds, overlap_seconds=chunk_overlap)
+        if chunked_transcription:
+            qwen_windows = quiet_transcription_windows(recognition_audio, qwen_windows)
         if not qwen_windows:
             raise ValueError("Die Audiospur ist leer.")
         notify(40, (f"Langsong: Qwen3-ASR erkennt den Gesang in "
@@ -275,7 +293,8 @@ def run(audio_path: Path, output_dir: Path, *, language: str, separate: bool,
             if not qwen_chunks and retry_windows:
                 notify(42, ("Qwen3-ASR lieferte für den Gesamttrack keinen Text; "
                             f"erneuter Versuch in {len(retry_windows)} Audioblöcken"))
-                qwen_windows = retry_windows
+                qwen_windows = quiet_transcription_windows(
+                    recognition_audio, retry_windows)
                 chunked_transcription = True
                 chunk_token_limit = int(os.getenv(
                     "LRC_TRANSCRIPTION_MAX_NEW_TOKENS", "256"))

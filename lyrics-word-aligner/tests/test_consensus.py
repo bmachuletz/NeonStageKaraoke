@@ -2,7 +2,8 @@ import unittest
 
 import numpy as np
 
-from app.consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains, reconcile_acoustic_boundaries,
+from app.consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains,
+                           reassign_overlong_connector_sustains, reconcile_acoustic_boundaries,
                            stabilize_acoustic_display_durations)
 from app.models import LrcLine
 
@@ -68,6 +69,42 @@ class ConsensusTests(unittest.TestCase):
         self.assertEqual(2.1, line.words[1]["end"])
         self.assertEqual(1.7, line.words[1]["acoustic_end"])
 
+    def test_repeated_sustain_pass_is_idempotent(self):
+        line = LrcLine(1.0, "zieh weiter", "", words=[
+            {"word": "zieh", "start": 1.0, "end": 1.4,
+             "timing_source": "qwen-forced"},
+            {"word": "weiter", "start": 2.5, "end": 2.9,
+             "timing_source": "qwen-forced"},
+        ])
+
+        first = extend_final_word_sustains([line], [(1.2, 1.8)])
+        second = extend_final_word_sustains([line], [(1.2, 1.8)])
+
+        self.assertEqual(1, first["adjusted_words"])
+        self.assertEqual(0, second["adjusted_words"])
+        self.assertEqual(1.8, line.words[0]["end"])
+        self.assertEqual(1.4, line.words[0]["acoustic_end"])
+
+    def test_remeasures_final_word_after_obsolete_overlap_clip(self):
+        sample_rate = 16000
+        audio = np.zeros(sample_rate * 4, dtype=np.float32)
+        first, last = int(1.0 * sample_rate), int(2.15 * sample_rate)
+        time = np.arange(last - first) / sample_rate
+        audio[first:last] = .1 * np.sin(2 * np.pi * 210 * time)
+        lines = [
+            LrcLine(1.0, "sage", "", words=[
+                {"word": "sage", "start": 1.0, "end": 1.45,
+                 "timing_source": "overlap-display-lane-fallback"}]),
+            LrcLine(2.5, "next", "", words=[
+                {"word": "next", "start": 2.5, "end": 2.8,
+                 "timing_source": "ipa-delayed-first-word-onset"}]),
+        ]
+
+        result = extend_final_word_sustains(lines, [], audio=audio)
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertGreaterEqual(lines[0].words[0]["end"], 2.1)
+
     def test_quiet_tonal_release_extends_beyond_global_activity_limit(self):
         sample_rate = 16000
         audio = np.zeros(sample_rate * 5, dtype=np.float32)
@@ -90,7 +127,7 @@ class ConsensusTests(unittest.TestCase):
         self.assertEqual(1, result["adjusted_words"])
         self.assertGreater(lines[0].words[0]["end"], 3.0)
         self.assertLessEqual(lines[0].words[0]["end"], 3.48)
-        self.assertEqual("local-tonal-sustain-release-v4", result["method"])
+        self.assertEqual("local-tonal-sustain-release-v5", result["method"])
 
     def test_broadband_separator_noise_does_not_become_a_sustain(self):
         generator = np.random.default_rng(7)
@@ -108,6 +145,126 @@ class ConsensusTests(unittest.TestCase):
         extend_final_word_sustains([line], [], audio=audio)
 
         self.assertLess(line.words[0]["end"], 1.4)
+
+    def test_rejected_stage_vocal_tail_is_not_restored_by_later_sustain_pass(self):
+        sample_rate = 16000
+        audio = np.zeros(sample_rate * 4, dtype=np.float32)
+        first, last = int(1.0 * sample_rate), int(1.86 * sample_rate)
+        time = np.arange(last - first) / sample_rate
+        audio[first:last] = .08 * np.sin(2 * np.pi * 220 * time)
+        line = LrcLine(1.0, "Strand", "", words=[
+            {"word": "Strand", "start": 1.0, "end": 1.40,
+             "timing_source": "stable-ts-whisper",
+             "stage_vocal_release_trim_ms": 460.0},
+        ])
+
+        result = extend_final_word_sustains([line], [(1.0, 1.36)], audio=audio)
+
+        self.assertEqual(0, result["adjusted_words"])
+        self.assertEqual(1.40, line.words[0]["end"])
+
+    def test_locked_consonant_release_is_not_extended_again(self):
+        line = LrcLine(1.0, "träumst von", "", words=[
+            {"word": "träumst", "start": 1.0, "end": 1.5,
+             "timing_source": "verified-local-ipa-interval",
+             "phoneme_release_locked": True},
+            {"word": "von", "start": 2.4, "end": 2.7,
+             "timing_source": "ctc-phoneme-alignment"},
+        ])
+
+        result = extend_final_word_sustains([line], [(1.0, 2.2)])
+
+        self.assertEqual(0, result["adjusted_words"])
+        self.assertEqual(1.5, line.words[0]["end"])
+
+    def test_verified_ipa_release_is_not_reopened_into_stem_residue(self):
+        line = LrcLine(91.9, "Flasche", "", words=[
+            {"word": "Flasche", "start": 91.92, "end": 92.40,
+             "timing_source": "coherent-sentence-ipa-path",
+             "phoneme_word_verified": True,
+             "phoneme_alignment_confidence": .493,
+             "phoneme_word_end_candidate": 92.377},
+        ])
+
+        result = extend_final_word_sustains(
+            [line], [(91.9, 92.82)])
+
+        self.assertEqual(0, result["adjusted_words"])
+        self.assertEqual(92.40, line.words[0]["end"])
+
+    def test_verified_ipa_core_does_not_block_a_real_long_sustain(self):
+        line = LrcLine(1.0, "fire", "", words=[
+            {"word": "fire", "start": 1.0, "end": 1.55,
+             "timing_source": "coherent-sentence-ipa-path",
+             "phoneme_word_verified": True,
+             "phoneme_alignment_confidence": .62,
+             "phoneme_word_end_candidate": 1.20},
+        ])
+
+        result = extend_final_word_sustains(
+            [line], [(1.0, 2.40)])
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertEqual(2.40, line.words[0]["end"])
+
+    def test_final_editor_word_can_bridge_short_trough_into_held_release(self):
+        sample_rate = 16000
+        audio = np.zeros(sample_rate * 6, dtype=np.float32)
+        for begin, stop, amplitude in ((1.0, 1.30, .12), (1.80, 4.15, .08)):
+            first, last = int(begin * sample_rate), int(stop * sample_rate)
+            time = np.arange(last - first) / sample_rate
+            audio[first:last] = amplitude * np.sin(2 * np.pi * 220 * time)
+        line = LrcLine(.8, "play", "", source_end_boundary=2.5, words=[
+            {"word": "play", "start": 1.0, "end": 1.28,
+             "timing_source": "input-enhanced-lrc"}])
+
+        result = extend_final_word_sustains([line], [], audio=audio)
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertGreater(line.words[0]["end"], 4.0)
+        self.assertGreaterEqual(line.words[0]["sustain_release_confidence"], .70)
+
+    def test_delayed_ipa_phrase_final_word_keeps_measured_release(self):
+        sample_rate = 16000
+        audio = np.zeros(sample_rate * 4, dtype=np.float32)
+        first, last = int(1.2 * sample_rate), int(2.55 * sample_rate)
+        time = np.arange(last - first) / sample_rate
+        audio[first:last] = .1 * np.sin(2 * np.pi * 210 * time)
+        line = LrcLine(1.2, "standing around", "", words=[
+            {"word": "standing", "start": 1.2, "end": 2.15,
+             "timing_source": "ipa-delayed-phrase-repair"},
+            {"word": "around", "start": 2.15, "end": 2.30,
+             "timing_source": "ipa-delayed-phrase-repair"},
+        ])
+
+        result = extend_final_word_sustains([line], [], audio=audio)
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertGreaterEqual(line.words[-1]["end"], 2.5)
+
+    def test_overlong_and_returns_measured_sustain_to_previous_word(self):
+        sample_rate = 16000
+        audio = np.zeros(sample_rate * 4, dtype=np.float32)
+        first, last = int(.5 * sample_rate), int(2.48 * sample_rate)
+        time = np.arange(last - first) / sample_rate
+        audio[first:last] = .1 * np.sin(2 * np.pi * 220 * time)
+        line = LrcLine(.5, "far away and play", "", words=[
+            {"word": "far", "start": .5, "end": .9,
+             "timing_source": "input-enhanced-lrc"},
+            {"word": "away", "start": .9, "end": 1.4,
+             "timing_source": "input-enhanced-lrc"},
+            {"word": "and", "start": 1.4, "end": 2.65,
+             "timing_source": "input-enhanced-lrc"},
+            {"word": "play", "start": 2.82, "end": 3.1,
+             "timing_source": "input-enhanced-lrc"},
+        ])
+
+        result = reassign_overlong_connector_sustains([line], audio)
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertEqual(2.65, line.words[1]["end"])
+        self.assertEqual(2.65, line.words[2]["start"])
+        self.assertEqual(2.82, line.words[2]["end"])
 
     def test_display_floor_preserves_acoustic_measurement(self):
         line = LrcLine(1.0, "a", "", words=[
@@ -218,6 +375,46 @@ class ConsensusTests(unittest.TestCase):
         self.assertTrue(all(left["end"] <= right["start"]
                             for left, right in zip(previous.words, previous.words[1:])))
         self.assertTrue(all(word["end"] > word["start"] for word in previous.words))
+
+    def test_final_fallback_preserves_manual_release_and_moves_generated_prefix(self):
+        previous = LrcLine(162.183, "keine Frage", "", words=[
+            {"word": "keine", "start": 164.573, "end": 165.168,
+             "timing_source": "input-enhanced-lrc"},
+            {"word": "Frage", "start": 165.196, "end": 166.557,
+             "timing_source": "input-enhanced-lrc"},
+        ])
+        current = LrcLine(165.88, "Ich bin kein Mensch", "", words=[
+            {"word": "Ich", "start": 165.88, "end": 166.8,
+             "timing_source": "stable-ts-whisper"},
+            {"word": "bin", "start": 166.88, "end": 167.1,
+             "timing_source": "stable-ts-whisper"},
+            {"word": "kein", "start": 167.14, "end": 167.44,
+             "timing_source": "stable-ts-whisper"},
+        ])
+
+        result = eliminate_remaining_line_overlaps(
+            [previous, current], protected_line_indices={0})
+
+        self.assertEqual(1, result["adjusted_pairs"])
+        self.assertEqual("preserve-manual-previous-release",
+                         result["adjustments"][0]["method"])
+        self.assertEqual(166.557, previous.words[-1]["end"])
+        self.assertEqual(166.557, current.words[0]["start"])
+        self.assertLessEqual(current.words[0]["end"], current.words[1]["start"])
+
+    def test_final_fallback_preserves_overlap_across_voice_lanes(self):
+        lead = LrcLine(10.0, "Lead", "", words=[
+            {"word": "Lead", "start": 10.0, "end": 13.0,
+             "timing_source": "qwen-forced"}], voice_lane=0)
+        backing = LrcLine(11.0, "Woho", "", words=[
+            {"word": "Woho", "start": 11.0, "end": 14.0,
+             "timing_source": "medleyvox-backing-vocal-activity"}], voice_lane=1)
+
+        result = eliminate_remaining_line_overlaps([lead, backing])
+
+        self.assertEqual(0, result["adjusted_pairs"])
+        self.assertEqual(13.0, lead.words[0]["end"])
+        self.assertEqual(11.0, backing.words[0]["start"])
 
 
 if __name__ == "__main__":

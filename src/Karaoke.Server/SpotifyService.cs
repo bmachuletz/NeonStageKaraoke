@@ -67,12 +67,15 @@ public sealed class SpotifyService(IHttpClientFactory clients, IOptions<SpotifyO
             var artists = string.Join(", ", item.GetProperty("artists").EnumerateArray().Select(a => a.GetProperty("name").GetString()));
             var album = item.GetProperty("album");
             var image = album.GetProperty("images").EnumerateArray().FirstOrDefault();
+            var previewUrl = item.TryGetProperty("preview_url", out var preview) &&
+                             preview.ValueKind == JsonValueKind.String ? preview.GetString() : null;
             return new SpotifyTrackDto(item.GetProperty("id").GetString()!, item.GetProperty("uri").GetString()!, item.GetProperty("name").GetString()!,
                 artists, album.GetProperty("name").GetString() ?? "", image.ValueKind == JsonValueKind.Object ? image.GetProperty("url").GetString() : null,
                 item.GetProperty("duration_ms").GetInt32(), false,
                 item.GetProperty("external_urls").GetProperty("spotify").GetString(),
                 AudioCatalogSource.Spotify,
-                item.GetProperty("external_urls").GetProperty("spotify").GetString());
+                item.GetProperty("external_urls").GetProperty("spotify").GetString(),
+                PreviewUrl: previewUrl);
         }).ToArray();
         return await Task.WhenAll(tracks.Select(track => lyricsAvailability.CheckAsync(track, ct)));
     }

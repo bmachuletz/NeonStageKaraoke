@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="../Karaoke.Contracts/Karaoke.Contracts.csproj" />
+    <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/StagePresentationEngine.cs"
+             Link="Presentation/StagePresentationEngine.cs" />
   </ItemGroup>
 </Project>

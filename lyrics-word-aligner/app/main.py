@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
+from .alignment_profiles import ALIGNMENT_PROFILES
 from .vocal_start import detect_first_vocal
 
 app = FastAPI(title="Lyrics Word Aligner", version="0.2.0")
@@ -38,7 +39,11 @@ def _write_status(job_dir: Path, **changes) -> dict:
         return current
 
 
-def _process_job(job_id: str, audio_path: Path, lrc_path: Path, language: str, separate: bool, device: str) -> None:
+def _process_job(job_id: str, audio_path: Path, lrc_path: Path, language: str,
+                 separate: bool, device: str, alignment_profile: str = "standard",
+                 provided_vocals: Path | None = None,
+                 provided_instrumental: Path | None = None,
+                 baseline_report: Path | None = None) -> None:
     job_dir = OUTPUT_ROOT / job_id
     try:
         _write_status(job_dir, state="queued", percent=1, message="Job wartet auf den freien Verarbeitungsslot")
@@ -46,7 +51,10 @@ def _process_job(job_id: str, audio_path: Path, lrc_path: Path, language: str, s
             _write_status(job_dir, state="processing", percent=2, message="Verarbeitung wird gestartet")
 
             completed = subprocess.run(
-                _worker_command(job_id, audio_path, lrc_path, job_dir, language, separate, device),
+                _worker_command(
+                    job_id, audio_path, lrc_path, job_dir, language, separate, device,
+                    provided_vocals, provided_instrumental, alignment_profile,
+                    baseline_report),
                 check=False,
             )
             status = json.loads(_status_path(job_dir).read_text(encoding="utf-8"))
@@ -58,7 +66,11 @@ def _process_job(job_id: str, audio_path: Path, lrc_path: Path, language: str, s
 
 
 def _worker_command(job_id: str, audio_path: Path, lrc_path: Path, job_dir: Path,
-                    language: str, separate: bool, device: str) -> list[str]:
+                    language: str, separate: bool, device: str,
+                    provided_vocals: Path | None = None,
+                    provided_instrumental: Path | None = None,
+                    alignment_profile: str = "standard",
+                    baseline_report: Path | None = None) -> list[str]:
     command = [
         sys.executable, "-m", "app.job_worker",
         "--job-id", job_id,
@@ -67,9 +79,16 @@ def _worker_command(job_id: str, audio_path: Path, lrc_path: Path, job_dir: Path
         "--output", str(job_dir),
         "--language", language,
         "--device", device,
+        "--alignment-profile", alignment_profile,
     ]
     if separate:
         command.append("--separate")
+    if provided_vocals is not None:
+        command.extend(["--provided-vocals", str(provided_vocals)])
+    if provided_instrumental is not None:
+        command.extend(["--provided-instrumental", str(provided_instrumental)])
+    if baseline_report is not None:
+        command.extend(["--baseline-report", str(baseline_report)])
     return command
 
 
@@ -127,14 +146,29 @@ def create_job(
     background_tasks: BackgroundTasks,
     audio: UploadFile = File(...),
     lyrics: UploadFile = File(...),
+    vocals: UploadFile | None = File(None),
+    instrumental: UploadFile | None = File(None),
+    baseline_report: UploadFile | None = File(None),
     language: str = Form("de"),
     separate: bool = Form(True),
     alignment_device: str = Form("cuda"),
+    alignment_profile: str = Form("standard"),
 ):
     if alignment_device not in {"cpu", "cuda", "auto"}:
         raise HTTPException(400, "alignment_device muss cpu, cuda oder auto sein")
+    if alignment_profile not in ALIGNMENT_PROFILES:
+        raise HTTPException(
+            400, "unbekanntes alignment_profile")
     if not (lyrics.filename or "").lower().endswith(".lrc"):
         raise HTTPException(400, "Die Lyrics-Datei muss eine .lrc-Datei sein")
+    if (vocals is None) != (instrumental is None):
+        raise HTTPException(
+            400, "Vorhandene Vocal- und Instrumentalspur müssen gemeinsam hochgeladen werden")
+    if vocals is not None and not separate:
+        raise HTTPException(400, "Vorhandene Stems erfordern separate=true")
+    if alignment_profile == "basic-pitch-postprocess" and (
+            vocals is None or instrumental is None or baseline_report is None):
+        raise HTTPException(400, "Basic-Pitch-Postprocessing benötigt Stems und Baseline-Report")
 
     job_id = next(tempfile._get_candidate_names())
     job_dir = OUTPUT_ROOT / job_id
@@ -145,6 +179,22 @@ def create_job(
         shutil.copyfileobj(audio.file, f)
     with lrc_path.open("wb") as f:
         shutil.copyfileobj(lyrics.file, f)
+    provided_vocals = None
+    provided_instrumental = None
+    if vocals is not None and instrumental is not None:
+        vocals_suffix = Path(vocals.filename or "vocals.flac").suffix or ".flac"
+        instrumental_suffix = Path(instrumental.filename or "instrumental.flac").suffix or ".flac"
+        provided_vocals = job_dir / f"provided.vocals{vocals_suffix}"
+        provided_instrumental = job_dir / f"provided.instrumental{instrumental_suffix}"
+        with provided_vocals.open("wb") as target:
+            shutil.copyfileobj(vocals.file, target)
+        with provided_instrumental.open("wb") as target:
+            shutil.copyfileobj(instrumental.file, target)
+    saved_baseline_report = None
+    if baseline_report is not None:
+        saved_baseline_report = job_dir / "baseline.alignment.json"
+        with saved_baseline_report.open("wb") as target:
+            shutil.copyfileobj(baseline_report.file, target)
 
     status = {
         "job_id": job_id,
@@ -153,9 +203,15 @@ def create_job(
         "message": "Dateien hochgeladen; Job wartet auf Verarbeitung",
         "audio_name": audio_path.name,
         "lyrics_name": lrc_path.name,
+        "audio_reference": ("provided-library-stems"
+                            if provided_vocals is not None else "new-separation"),
+        "alignment_profile": alignment_profile,
     }
     _write_status(job_dir, **status)
-    background_tasks.add_task(_process_job, job_id, audio_path, lrc_path, language, separate, alignment_device)
+    background_tasks.add_task(
+        _process_job, job_id, audio_path, lrc_path, language, separate,
+        alignment_device, alignment_profile, provided_vocals, provided_instrumental,
+        saved_baseline_report)
     return status
 
 
@@ -212,12 +268,19 @@ def job_status(job_id: str):
 def align(
     audio: UploadFile = File(...),
     lyrics: UploadFile = File(...),
+    vocals: UploadFile | None = File(None),
+    instrumental: UploadFile | None = File(None),
     language: str = Form("de"),
     separate: bool = Form(True),
     alignment_device: str = Form("cuda"),
 ):
     if alignment_device not in {"cpu", "cuda", "auto"}:
         raise HTTPException(400, "alignment_device muss cpu, cuda oder auto sein")
+    if (vocals is None) != (instrumental is None):
+        raise HTTPException(
+            400, "Vorhandene Vocal- und Instrumentalspur müssen gemeinsam hochgeladen werden")
+    if vocals is not None and not separate:
+        raise HTTPException(400, "Vorhandene Stems erfordern separate=true")
     job_id = next(tempfile._get_candidate_names())
     job_dir = OUTPUT_ROOT / job_id
     job_dir.mkdir(parents=True)
@@ -228,12 +291,24 @@ def align(
             shutil.copyfileobj(audio.file, f)
         with lrc_path.open("wb") as f:
             shutil.copyfileobj(lyrics.file, f)
+        provided_vocals = None
+        provided_instrumental = None
+        if vocals is not None and instrumental is not None:
+            vocals_suffix = Path(vocals.filename or "vocals.flac").suffix or ".flac"
+            instrumental_suffix = Path(instrumental.filename or "instrumental.flac").suffix or ".flac"
+            provided_vocals = job_dir / f"provided.vocals{vocals_suffix}"
+            provided_instrumental = job_dir / f"provided.instrumental{instrumental_suffix}"
+            with provided_vocals.open("wb") as target:
+                shutil.copyfileobj(vocals.file, target)
+            with provided_instrumental.open("wb") as target:
+                shutil.copyfileobj(instrumental.file, target)
         _write_status(job_dir, job_id=job_id, state="processing", percent=2,
                       message="Verarbeitung wird gestartet")
         with _PROCESS_LOCK:
             completed = subprocess.run(
                 _worker_command(job_id, audio_path, lrc_path, job_dir, language,
-                                separate, alignment_device),
+                                separate, alignment_device, provided_vocals,
+                                provided_instrumental),
                 check=False,
             )
         result = json.loads(_status_path(job_dir).read_text(encoding="utf-8"))

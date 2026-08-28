@@ -16,7 +16,7 @@ public sealed class PlaybackControllerService
         lock (_sync)
         {
             var now = DateTimeOffset.UtcNow;
-            if (_controllerId is null || _leaseExpiresAt <= now || _controllerId == request.ClientId)
+            if (request.Force || _controllerId is null || _leaseExpiresAt <= now || _controllerId == request.ClientId)
             {
                 _controllerId = request.ClientId;
                 _controllerName = string.IsNullOrWhiteSpace(request.ClientName) ? "Karaoke-App" : request.ClientName.Trim();

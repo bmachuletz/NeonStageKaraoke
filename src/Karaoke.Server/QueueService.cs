@@ -47,8 +47,13 @@ public sealed class QueueService(IOptions<KaraokeOptions> options, IHubContext<K
         try
         {
             await InitializeAsync(cancellationToken);
+            var isActiveEvent = (await events.GetActiveAsync(cancellationToken))?.Id == eventId;
             await using var connection = new SqliteConnection(_connectionString);
             await connection.OpenAsync(cancellationToken);
+            var waitingBefore = connection.CreateCommand();
+            waitingBefore.CommandText = "SELECT COUNT(*) FROM queue_entries WHERE eventId=$eventId AND status='Waiting'";
+            waitingBefore.Parameters.AddWithValue("$eventId", eventId.ToString());
+            var wasEmpty = Convert.ToInt64(await waitingBefore.ExecuteScalarAsync(cancellationToken)) == 0;
             var id = Guid.NewGuid();
             var addedAt = DateTimeOffset.UtcNow;
             var command = connection.CreateCommand();
@@ -62,6 +67,14 @@ public sealed class QueueService(IOptions<KaraokeOptions> options, IHubContext<K
             command.Parameters.AddWithValue("$addedAt", addedAt.ToString("O"));
             command.Parameters.AddWithValue("$eventId", eventId.ToString());
             await command.ExecuteNonQueryAsync(cancellationToken);
+
+            // Die aktive Bühne soll ohne zusätzlichen Admin-Klick loslegen: Der
+            // erste Titel einer zuvor leeren Warteliste wird sofort zum aktuellen
+            // Titel. Vorab befüllte, noch nicht aktive Events bleiben unangetastet.
+            var playback = await ReadPlaybackRowAsync(connection, cancellationToken);
+            if (isActiveEvent && wasEmpty && playback.CurrentId is null)
+                await AdvanceAsync(connection, eventId, null, cancellationToken);
+
             var entry = (await GetEntryAsync(connection, id, cancellationToken))!;
             await PublishStateAsync(connection, eventId, cancellationToken);
             return entry;

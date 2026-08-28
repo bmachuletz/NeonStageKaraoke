@@ -49,6 +49,22 @@ class VocalActivityTests(unittest.TestCase):
         self.assertTrue(all(word["timing_source"] == "vocal-activity-repair"
                             for word in line.words))
 
+    def test_timestamped_pause_bounds_activity_repair(self):
+        line = LrcLine(136.42, "Just get back in the van and drive far away and play", "",
+                       words=[
+                           {"word": word, "start": 136.5, "end": 136.5}
+                           for word in "Just get back in the van and drive far away and play".split()
+                       ], source_timestamp=136.42, source_end_boundary=144.78)
+        following = LrcLine(178.98, "There we were standing around", "",
+                            source_timestamp=178.98)
+
+        count = repair_with_vocal_activity(
+            [line, following], AlignmentConfig(), [(136.5, 178.3)])
+
+        self.assertEqual(1, count)
+        self.assertLessEqual(line.words[-1]["end"], 144.78)
+        self.assertLess(line.words[-1]["end"] - line.words[0]["start"], 9.0)
+
     def test_preserves_valid_phrase_with_a_few_short_function_words(self):
         line = LrcLine(38.2, "I got a lot of toys", "", words=[
             {"word": "I", "start": 38.20, "end": 38.22},

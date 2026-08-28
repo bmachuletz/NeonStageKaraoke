@@ -25,6 +25,34 @@ class VoicingTrack:
     hop_length: int
 
 
+def serialize_voicing_evidence(track: VoicingTrack | None, summary: dict,
+                               *, maximum_points: int = 12000) -> dict:
+    """Compact pYIN F0/voicing evidence for reports and later pitch tooling."""
+    if track is None:
+        return {**summary, "family": "pyin", "track": [],
+                "representation": "local-monophonic-f0-and-voicing"}
+    stride = max(1, int(np.ceil(len(track.times) / max(1, maximum_points))))
+    points = []
+    for index in range(0, len(track.times), stride):
+        f0 = float(track.f0[index])
+        points.append({
+            "time": round(float(track.times[index]), 6),
+            "f0_hz": round(f0, 4) if np.isfinite(f0) else None,
+            "probability": round(float(track.probability[index]), 5),
+            "voiced": bool(track.voiced[index]),
+        })
+    return {
+        **summary,
+        "family": "pyin",
+        "representation": "local-monophonic-f0-and-voicing",
+        "track": points,
+        "track_points": len(points),
+        "source_frames": len(track.times),
+        "stride": stride,
+        "truncated": stride > 1,
+    }
+
+
 def analyze_voicing(audio, sample_rate: int = 16000,
                     *, hop_seconds: float = 0.010,
                     intervals: list[tuple[float, float]] | None = None
@@ -295,6 +323,7 @@ def refine_sustain_releases_with_voicing(
     for line_index, line in enumerate(lines):
         for word_index, word in enumerate(line.words):
             has_prior_sustain = "acoustic_end" in word
+            is_internal_word = word_index + 1 < len(line.words)
             lexical_end = float(word.get("acoustic_end", word["end"]))
             current_end = float(word["end"])
             next_start = _next_word_start(lines, line_index, word_index)
@@ -322,6 +351,15 @@ def refine_sustain_releases_with_voicing(
             elif (has_prior_sustain and -maximum_shortening <= delta <= -0.018
                   and confidence >= 0.68 and tail_probability <= 0.12):
                 apply, reason = True, "confirmed-earlier-voiced-release"
+            activity_end = word.get("sustain_activity_end")
+            if (apply and is_internal_word and delta > 0
+                    and activity_end is not None
+                    and release > float(activity_end) + 0.12):
+                # F0 can remain stable in separator residue or a harmonic
+                # instrument after the lexical vocal has stopped. For an
+                # internal word, unlike a final held note, pitch alone may not
+                # cross far beyond the independently measured vocal island.
+                apply, reason = False, "internal-release-beyond-vocal-activity"
             detail = {
                 "line": line_index + 1, "word": word_index + 1,
                 "text": word.get("word", ""), "old_end": round(current_end, 3),

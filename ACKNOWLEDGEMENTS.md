@@ -37,6 +37,7 @@ Special thanks go to:
   [Qwen](https://huggingface.co/Qwen),
   [OpenAI Whisper](https://github.com/openai/whisper),
   [stable-ts](https://github.com/jianfch/stable-ts),
+  [Spotify Basic Pitch](https://github.com/spotify/basic-pitch),
   [librosa](https://librosa.org/) and the pYIN authors for precise local pitch and voicing analysis,
   [eSpeak NG](https://github.com/espeak-ng/espeak-ng),
   [Meta's multilingual XLSR phoneme model](https://huggingface.co/facebook/wav2vec2-xlsr-53-espeak-cv-ft),
@@ -48,11 +49,19 @@ Special thanks go to:
   [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui),
   and their model authors and contributors for making practical stem
   separation available to the community.
+- The [MedleyVox](https://github.com/jeonchangbin49/MedleyVox) researchers for
+  advancing evaluation of overlapping singing voices, and Carson Evans for
+  publishing the separately licensed `Cyru5/MedleyVox` checkpoint used by the
+  optional shadow analysis.
 - [LRCLIB](https://lrclib.net/) and its community for an open lyrics service.
 - [UltraStar Deluxe](https://github.com/UltraStar-Deluxe/USDX) and its
   community for documenting and maintaining a widely used timed karaoke text
   format. Neon Stage implements compatible TXT import independently and does
   not bundle UltraStar song collections.
+- [USDB Syncer](https://github.com/bohning/usdb_syncer) and its contributors
+  for documenting a working interaction with the classic `usdb.animux.de`
+  service. Neon Stage uses an independent .NET implementation and does not
+  incorporate or distribute the GPL-licensed Syncer code.
 - [Qobuz](https://www.qobuz.com/) for high-quality purchase formats and its
   integration ecosystem. The optional provider only uses download access
   explicitly authorized by Qobuz for the configured account.

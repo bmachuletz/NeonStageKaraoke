@@ -17,9 +17,12 @@ public class MainActivity : AvaloniaMainActivity<Karaoke.App.App>
 {
     static MainActivity()
     {
-        // Vorgabe für eine frische Installation auf der Ikarao-Box. Eine später
-        // in der App gespeicherte Serveradresse hat weiterhin Vorrang.
-        AppPreferences.DefaultServerAddress = "http://192.168.178.91:5274";
+        // Heute verwendeter externer Server. KARAOKE_SERVER hat im gemeinsamen
+        // ViewModel Vorrang vor einer eventuell noch gespeicherten lokalen IP,
+        // sodass auch ein App-Update sofort den erreichbaren Server verwendet.
+        const string serverAddress = "http://cloud.hdvtec.de:5274";
+        AppPreferences.DefaultServerAddress = serverAddress;
+        Environment.SetEnvironmentVariable("KARAOKE_SERVER", serverAddress);
 
         // Muss vor dem Aufbau des MainViewModels gesetzt sein. Android und Desktop
         // verwenden damit exakt dieselbe Master/Vocal-Synchronisationslogik.

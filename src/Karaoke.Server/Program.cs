@@ -1,6 +1,8 @@
 using Karaoke.Contracts;
+using Karaoke.Editor.Core;
 using Karaoke.Server;
 using QRCoder;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(new WebApplicationOptions
 {
@@ -18,7 +20,32 @@ builder.Services.PostConfigure<KaraokeOptions>(options =>
 });
 builder.Services.Configure<SpotifyOptions>(builder.Configuration.GetSection("Spotify"));
 builder.Services.Configure<QobuzOptions>(builder.Configuration.GetSection("Qobuz"));
+builder.Services.Configure<UsdbOptions>(builder.Configuration.GetSection("Usdb"));
+builder.Services.PostConfigure<UsdbOptions>(options =>
+{
+    if (!Path.IsPathFullyQualified(options.CachePath))
+    {
+        var repositoryRoot = Path.GetFullPath(Path.Combine(builder.Environment.ContentRootPath, "..", ".."));
+        options.CachePath = Path.GetFullPath(Path.Combine(repositoryRoot, options.CachePath));
+    }
+});
 builder.Services.AddHttpClient();
+builder.Services.AddHttpClient("Usdb", client =>
+{
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("NeonStageKaraoke/1.0");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/html;q=0.9, */*;q=0.1");
+});
+builder.Services.AddHttpClient("UsdbAnimux", client =>
+{
+    client.DefaultRequestHeaders.Accept.ParseAdd("text/html,application/xhtml+xml;q=0.9,*/*;q=0.1");
+}).ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+{
+    CookieContainer = new System.Net.CookieContainer(),
+    UseCookies = true,
+    AllowAutoRedirect = true,
+    AutomaticDecompression = System.Net.DecompressionMethods.All
+});
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<LibraryRepository>();
 builder.Services.AddSingleton<ChangeFeedService>();
 builder.Services.AddSingleton<StageReactionService>();
@@ -32,7 +59,15 @@ builder.Services.AddSingleton<QobuzCatalogService>();
 builder.Services.AddSingleton<AudioCatalogSearchService>();
 builder.Services.AddSingleton<WishlistRepository>();
 builder.Services.AddSingleton<EventRepository>();
+builder.Services.AddSingleton<PublicServerUrlResolver>();
 builder.Services.AddSingleton<WishlistProcessingService>();
+builder.Services.AddSingleton<UsdbProviderSettingsService>();
+builder.Services.AddSingleton<UsdbClient>();
+builder.Services.AddSingleton<AnimuxUsdbClient>();
+builder.Services.AddSingleton<IUsdbClient, PreferredUsdbClient>();
+builder.Services.AddSingleton<UsdbSongMatcher>();
+builder.Services.AddSingleton<UsdbLyricsSourceService>();
+builder.Services.AddSingleton<UsdbEditorLyricsService>();
 builder.Services.AddSingleton<SongImportService>();
 builder.Services.AddSingleton<FolderImportService>();
 builder.Services.AddSingleton<SongRealignmentService>();
@@ -75,6 +110,9 @@ app.MapGet("/api/changes/stream", async (HttpContext context, ChangeFeedService 
     finally { changes.Unsubscribe(subscription.Id); }
 });
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok", service = "karaoke-server" }));
+app.MapGet("/api/library/contains", async (string title, string artist,
+    LibraryRepository library, CancellationToken ct) =>
+    Results.Ok(new { exists = await library.ContainsSongAsync(title, artist, ct) }));
 app.MapPost("/api/diagnostics/stage-timing", (StageTimingSampleDto sample, StageTimingDiagnosticsService diagnostics) =>
 {
     diagnostics.Add(sample);
@@ -83,6 +121,7 @@ app.MapPost("/api/diagnostics/stage-timing", (StageTimingSampleDto sample, Stage
 app.MapGet("/api/diagnostics/stage-timing", (Guid? songId, int? take, StageTimingDiagnosticsService diagnostics) =>
     Results.Ok(diagnostics.Get(songId, Math.Clamp(take ?? 300, 1, 3600))));
 app.MapGet("/api/events", async (EventRepository events, CancellationToken ct) => Results.Ok(await events.GetAllAsync(ct)));
+app.MapGet("/api/stage-themes", () => Results.Ok(EventRepository.StageThemes));
 app.MapGet("/api/events/active", async (EventRepository events, CancellationToken ct) =>
     await events.GetActiveAsync(ct) is { } item ? Results.Ok(item) : Results.NotFound());
 app.MapGet("/api/events/public/{token}", async (string token, EventRepository events, CancellationToken ct) =>
@@ -133,6 +172,20 @@ app.MapPost("/api/admin/songs/realign-all", (SongRealignmentRequest? request,
     realignment.TryStartAll(request)
         ? Results.Accepted(value: realignment.GetStatus())
         : Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung."));
+app.MapPost("/api/admin/songs/realign-selection", (SongSelectionRealignmentRequest request,
+    SongRealignmentService realignment) =>
+{
+    try
+    {
+        return realignment.TryStartSelection(request)
+            ? Results.Accepted(value: realignment.GetStatus())
+            : Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung.");
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
 app.MapPost("/api/admin/song-packages/export", async (SongPackageExportRequest request,
     HttpContext context, SongPackageService packages, CancellationToken ct) =>
 {
@@ -205,6 +258,40 @@ app.MapPost("/api/admin/folder-import", (FolderImportRequest request, FolderImpo
         return Results.BadRequest(exception.Message);
     }
 });
+app.MapPost("/api/admin/lyrics/resolve-imported", async (
+    ResolveImportedLyricsRequest request,
+    ServerSettingsService settings,
+    UsdbLyricsSourceService usdb,
+    CancellationToken ct) =>
+{
+    var audioPath = Path.GetFullPath(request.AudioPath);
+    var libraryPath = Path.GetFullPath(settings.Get().LibraryPath);
+    var relative = Path.GetRelativePath(libraryPath, audioPath);
+    if (Path.IsPathRooted(relative) || relative == ".." ||
+        relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal))
+        return Results.BadRequest("AudioPath must be located inside the configured library.");
+    if (!File.Exists(audioPath)) return Results.NotFound("Audio file not found.");
+    try
+    {
+        using var file = TagLib.File.Create(audioPath);
+        var title = string.IsNullOrWhiteSpace(request.Title) ? file.Tag.Title : request.Title;
+        var artist = string.IsNullOrWhiteSpace(request.Artist)
+            ? string.Join(", ", file.Tag.Performers)
+            : request.Artist;
+        if (string.IsNullOrWhiteSpace(title)) title = Path.GetFileNameWithoutExtension(audioPath);
+        if (string.IsNullOrWhiteSpace(artist)) artist = "Unknown artist";
+        var duration = request.DurationSeconds is > 0
+            ? TimeSpan.FromSeconds(request.DurationSeconds.Value)
+            : file.Properties.Duration;
+        var result = await usdb.TryResolveAsync(new(audioPath, title, artist,
+            request.Album ?? file.Tag.Album, duration), Path.ChangeExtension(audioPath, ".lrc"), ct);
+        return Results.Ok(result);
+    }
+    catch (Exception exception) when (exception is ArgumentException or IOException or TagLib.CorruptFileException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
 app.MapPost("/api/events/{id:guid}/wishlist/process", async (Guid id, int? max, EventRepository events, WishlistRepository wishes, WishlistProcessingService processing, CancellationToken ct) =>
 {
     var karaokeEvent = await events.GetByIdAsync(id, ct);
@@ -268,17 +355,20 @@ app.MapPost("/api/admin/events/{eventId:guid}/wishlist/{wishId:guid}/adopt-audio
     catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
     catch (InvalidOperationException exception) { return Results.Conflict(exception.Message); }
 });
-app.MapGet("/api/events/{token}/qr", async (string token, HttpRequest request, EventRepository events, CancellationToken ct) =>
+app.MapGet("/api/server/public-url", (HttpRequest request, PublicServerUrlResolver urls) =>
+    Results.Ok(new { baseUrl = urls.GetBaseUrl(request) }));
+app.MapGet("/api/events/{token}/qr", async (string token, HttpRequest request, EventRepository events,
+    PublicServerUrlResolver urls, CancellationToken ct) =>
 {
     if (await events.GetByTokenAsync(token, ct) is null) return Results.NotFound();
-    var url = $"{request.Scheme}://{request.Host}/e/{Uri.EscapeDataString(token)}";
+    var url = urls.GetEventUrl(request, token);
     return Results.Bytes(PngByteQRCodeHelper.GetQRCode(url, QRCodeGenerator.ECCLevel.Q, 12, false), "image/png");
 });
-app.MapGet("/api/stage/guest-qr", async (HttpRequest request, EventRepository events, CancellationToken ct) =>
+app.MapGet("/api/stage/guest-qr", async (HttpRequest request, EventRepository events,
+    PublicServerUrlResolver urls, CancellationToken ct) =>
 {
     var active = await events.GetActiveAsync(ct);
-    var guestUrl = active is null ? $"{request.Scheme}://{request.Host}/" :
-        $"{request.Scheme}://{request.Host}/e/{Uri.EscapeDataString(active.InviteToken)}";
+    var guestUrl = active is null ? urls.GetBaseUrl(request) + "/" : urls.GetEventUrl(request, active.InviteToken);
     var png = PngByteQRCodeHelper.GetQRCode(guestUrl, QRCodeGenerator.ECCLevel.Q, 12, false);
     return Results.Bytes(png, "image/png");
 });
@@ -320,6 +410,41 @@ app.MapPut("/api/admin/songs/{id:guid}/lyrics/import-source", async (Guid id, Im
     catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
     catch (InvalidOperationException exception) { return Results.Conflict(exception.Message); }
 });
+app.MapGet("/api/admin/songs/{id:guid}/lyrics/usdb/search", async (
+    Guid id, string? query, LibraryRepository library, UsdbEditorLyricsService usdb, CancellationToken ct) =>
+{
+    if (await library.GetAsync(id, ct) is not { } song) return Results.NotFound();
+    try { return Results.Ok(await usdb.SearchAsync(song, query, ct)); }
+    catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or
+                                      InvalidOperationException or JsonException)
+    {
+        return Results.Problem("USDB search is currently unavailable: " + exception.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+app.MapPost("/api/admin/songs/{id:guid}/lyrics/usdb/import", async (
+    Guid id, ImportUsdbLyricsRequest request, LibraryRepository library,
+    UsdbEditorLyricsService usdb, SongRealignmentService realignment, CancellationToken ct) =>
+{
+    if (await library.GetAsync(id, ct) is not { } song) return Results.NotFound();
+    try
+    {
+        if (await usdb.ImportAsync(song, request.SelectionToken, ct) is not { } imported)
+            return Results.NotFound("The USDB selection expired or does not belong to this song.");
+        var alignmentStarted = request.StartLocalAlignment &&
+                               await realignment.TryStartAsync(id,
+                                   new SongRealignmentRequest(imported.Version.Id,
+                                       IncludeEditorBasis: true, IncludeOriginalLyrics: false,
+                                       IncludeResearchShadow: false), ct) == true;
+        return Results.Ok(imported with { AlignmentStarted = alignmentStarted });
+    }
+    catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or
+                                      InvalidOperationException or UltraStarFormatException or JsonException)
+    {
+        return Results.Problem("The selected USDB version could not be imported: " + exception.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
 app.MapDelete("/api/admin/songs/{id:guid}", async (Guid id, LibraryRepository repo, CancellationToken ct) =>
     await repo.DeleteSongAsync(id, ct) is { } result ? Results.Ok(result) : Results.NotFound());
 app.MapGet("/api/songs/{id:guid}/lyrics", async (Guid id, LibraryRepository repo, LyricsVersionRepository versions, CancellationToken ct) =>
@@ -336,6 +461,15 @@ app.MapGet("/api/songs/{id:guid}/lyrics", async (Guid id, LibraryRepository repo
 });
 app.MapGet("/api/admin/songs/{id:guid}/lyrics/source", async (Guid id, LibraryRepository repo, CancellationToken ct) =>
     await repo.ReadLyricsAsync(id, ct) is { } lyrics ? Results.Ok(lyrics) : Results.NotFound());
+app.MapGet("/api/admin/songs/{id:guid}/lyrics/base-source", async (Guid id, LibraryRepository repo, CancellationToken ct) =>
+    await repo.ReadBaseLyricsSourceAsync(id, ct) is { } source ? Results.Ok(source) : Results.NotFound());
+app.MapPut("/api/admin/songs/{id:guid}/lyrics/base-source", async (Guid id, UpdateBaseLyricsSourceRequest request,
+    LibraryRepository repo, CancellationToken ct) =>
+{
+    try { return await repo.WriteBaseLyricsSourceAsync(id, request.Lyrics, ct) ? Results.NoContent() : Results.NotFound(); }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+    catch (InvalidOperationException exception) { return Results.Conflict(exception.Message); }
+});
 app.MapGet("/api/songs/{id:guid}/lyrics/editor", async (Guid id, LyricsVersionRepository versions, CancellationToken ct) =>
     await versions.GetLatestDraftAsync(id, ct) is { } version ? Results.Ok(version) : Results.NotFound());
 app.MapGet("/api/songs/{id:guid}/lyrics/versions", async (Guid id, LyricsVersionRepository versions, CancellationToken ct) =>
@@ -468,6 +602,34 @@ app.MapPut("/api/settings/library", async (LibrarySettingsDto request, ServerSet
         return Results.BadRequest(exception.Message);
     }
 });
+app.MapGet("/api/admin/settings/usdb", async (UsdbProviderSettingsService settings, CancellationToken ct) =>
+    Results.Ok(await settings.GetAsync(ct)));
+app.MapPut("/api/admin/settings/usdb", async (HttpContext context,
+    UpdateUsdbProviderSettingsRequest request, UsdbProviderSettingsService settings, CancellationToken ct) =>
+{
+    if (!CanTransmitAdminSecrets(context))
+        return Results.BadRequest("USDB-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
+    try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
+    catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+                                      IOException or UnauthorizedAccessException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
+app.MapPost("/api/admin/settings/usdb/test", async (AnimuxUsdbClient animux, CancellationToken ct) =>
+{
+    try
+    {
+        await animux.TestConnectionAsync(ct);
+        return Results.Ok(new { success = true, message = "USDB Animux login succeeded." });
+    }
+    catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or
+                                      InvalidOperationException)
+    {
+        return Results.Problem("USDB Animux login failed: " + exception.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
 app.MapGet("/api/admin/download-providers/qobuz", async (QobuzPluginSettingsService settings, CancellationToken ct) =>
     Results.Ok(await settings.GetAsync(ct)));
 app.MapPut("/api/admin/download-providers/qobuz", async (HttpContext context,
@@ -525,6 +687,7 @@ app.MapDelete("/api/wishlist/{id:guid}", async (Guid id, string? eventToken, Wis
 // Event activation resets the playback state. Initialize the queue schema before
 // accepting requests so a freshly created database can start a quick session
 // before the queue endpoint has ever been called.
+await app.Services.GetRequiredService<UsdbProviderSettingsService>().InitializeAsync(CancellationToken.None);
 await app.Services.GetRequiredService<QobuzPluginSettingsService>().InitializeAsync(CancellationToken.None);
 await app.Services.GetRequiredService<QueueService>().InitializeAsync(CancellationToken.None);
 

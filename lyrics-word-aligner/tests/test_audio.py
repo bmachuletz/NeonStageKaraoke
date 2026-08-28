@@ -1,8 +1,11 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 import numpy as np
+import soundfile as sf
 
-from app.audio import select_alignment_audio
+from app.audio import load_native_audio, select_alignment_audio
 
 
 class AlignmentAudioSelectionTests(unittest.TestCase):
@@ -25,3 +28,13 @@ class AlignmentAudioSelectionTests(unittest.TestCase):
         self.assertIs(selected, vocals)
         self.assertFalse(report["fallback_used"])
         self.assertEqual("separated-vocals", report["source"])
+
+    def test_native_boundary_audio_preserves_export_sample_rate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "stage-vocals.flac"
+            sf.write(path, np.linspace(-.1, .1, 4410, dtype=np.float32), 44100)
+
+            audio, sample_rate = load_native_audio(path)
+
+        self.assertEqual(44100, sample_rate)
+        self.assertEqual(4410, len(audio))

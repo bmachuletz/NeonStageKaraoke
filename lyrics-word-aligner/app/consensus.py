@@ -12,8 +12,13 @@ ACOUSTIC_SOURCES = {None, "qwen-forced", "ctc-phoneme-alignment",
                     "targeted-deleted-fragment-qwen",
                     "asr-repetition-anchor", "asr-repetition-activity",
                     "transition-block-qwen", "ipa-collapsed-run-repair",
-                    "ipa-vocal-hole-repair",
-                    "stable-repetition-acoustic-onset"}
+                    "ipa-vocal-hole-repair", "ipa-delayed-phrase-repair",
+                    "stable-repetition-acoustic-onset",
+                    "coherent-sentence-ipa-path",
+                    "verified-local-ipa-interval",
+                    "cross-line-transition-onset",
+                    "isolated-supported-ipa-onset",
+                    "cross-line-acoustic-onset-repair"}
 ACOUSTIC_SOURCES.add("ctc-overlap-reanalysis")
 VERIFIED_ACOUSTIC_SOURCES = ACOUSTIC_SOURCES - {None}
 
@@ -114,56 +119,175 @@ def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, fl
         if not line.words:
             continue
         for word_index, word in enumerate(line.words):
-            if word.get("timing_source") not in VERIFIED_ACOUSTIC_SOURCES:
+            source = word.get("timing_source")
+            is_final = word_index == len(line.words) - 1
+            # The exact Stage-vocal gate may already have rejected a tonal
+            # tail because it continued beyond the vocal island exported to
+            # the editor and Stage. A later sustain pass must never restore
+            # that rejected candidate (for example separator residue after a
+            # line ending).
+            if word.get("stage_vocal_release_trim_ms") is not None:
                 continue
-            start, end = float(word["start"]), float(word["end"])
+            # Paired-stem contrast has independently shown that the remaining
+            # tonal tail belongs to separator leakage/accompaniment. Looking
+            # at the vocal stem alone must not restore that rejected tail.
+            if word.get("stem_contrast_release_trim_ms") is not None:
+                continue
+            # A local IPA interval ending in a measured consonant release and
+            # followed by verified silence is already complete.  Re-extending
+            # it here would recreate the stale tail this pass just removed.
+            if word.get("phoneme_release_locked"):
+                continue
+            # A complete local IPA word path can already provide a precise
+            # lexical release.  If that independently measured end agrees
+            # with the current boundary, do not reinterpret a later vocal-
+            # stem residue as a held vowel.  Genuine sustains are unaffected:
+            # for those, the lexical IPA candidate ends noticeably before the
+            # currently measured sung release.
+            phoneme_end = word.get("phoneme_word_end_candidate")
+            phoneme_confidence = float(word.get("phoneme_alignment_confidence", 0.0) or 0.0)
+            if (word.get("phoneme_word_verified") is True
+                    and phoneme_end is not None
+                    and phoneme_confidence >= 0.40
+                    and abs(float(phoneme_end) - float(word["end"])) <= 0.08):
+                continue
+            # A persisted editor onset is a useful anchor, but only the final
+            # word may use the audio detector to extend it. Internal editor
+            # words still require a verified acoustic model to avoid silently
+            # rewriting intentional manual timing.
+            # A display-lane fallback may have shortened the previous phrase
+            # only because the following first word was still misplaced. Once
+            # the sentence verifier repairs that onset, re-measure the final
+            # sung vowel from audio instead of preserving the obsolete clip.
+            enhanced_final = is_final and source in {
+                "input-enhanced-lrc", "overlap-display-lane-fallback"}
+            if source not in VERIFIED_ACOUSTIC_SOURCES and not enhanced_final:
+                continue
+            start = float(word["start"])
+            current_end = float(word["end"])
+            lexical_end = float(word.get("acoustic_end", current_end))
             next_start = None
             if word_index + 1 < len(line.words):
                 next_start = float(line.words[word_index + 1]["start"])
             elif index + 1 < len(lines) and lines[index + 1].words:
                 next_start = float(lines[index + 1].words[0]["start"])
             internal = word_index + 1 < len(line.words)
-            if internal and next_start is not None and next_start - end < 0.18:
+            if internal and next_start is not None and next_start - lexical_end < 0.18:
                 continue
             # A region which continues far beyond the word is usually a later
             # phrase inside one uninterrupted cluster. Internal words therefore
             # need a locally ending island; line endings retain the established
             # boundary cap because backing-vocal tails may touch the next line.
             candidates = [(begin, stop) for begin, stop in vocal_activity
-                          if begin <= end + 0.1 and end + 0.06 < stop <= end + maximum_extension
+                          if begin <= lexical_end + 0.1
+                          and lexical_end + 0.06 < stop <= lexical_end + maximum_extension
                           and stop >= start
                           and (not internal or next_start is None or stop <= next_start + 0.08)]
-            activity_end = max((stop for _begin, stop in candidates), default=end)
+            activity_end = max((stop for _begin, stop in candidates), default=lexical_end)
             sung_release = None
             if audio is not None:
-                upper_bound = end + maximum_sung_extension
+                upper_bound = lexical_end + maximum_sung_extension
                 if next_start is not None:
                     upper_bound = min(upper_bound, next_start - 0.12)
                 sung_release = _measure_sung_release(
-                    audio, start, end, upper_bound, sample_rate=sample_rate)
-            measured_end = max(activity_end, sung_release[0] if sung_release else end)
-            if measured_end <= end + 0.06:
+                    audio, start, lexical_end, upper_bound, sample_rate=sample_rate,
+                    # A held final vowel can contain a breath/reverb trough.
+                    # Internal words retain the strict bridge so this cannot
+                    # jump into the following lyric.
+                    bridge_gap=0.68 if is_final else 0.24)
+            measured_end = max(
+                activity_end, sung_release[0] if sung_release else lexical_end)
+            if measured_end <= lexical_end + 0.06:
                 continue
-            target = min(end + maximum_sung_extension, measured_end + release_padding)
+            target = min(
+                lexical_end + maximum_sung_extension, measured_end + release_padding)
             if next_start is not None:
                 target = min(target, next_start - 0.12)
-            if target - end < 0.08:
+            # Multiple pipeline phases deliberately call this detector. Keep
+            # the operation idempotent: a second pass must evaluate the same
+            # lexical boundary and may refine it, but never walk forward by
+            # another extension window.
+            if target - current_end < 0.08:
                 continue
-            word["acoustic_end"] = round(end, 3)
+            word.setdefault("acoustic_end", round(lexical_end, 3))
             word["end"] = round(target, 3)
             word["sustain_activity_end"] = round(activity_end, 3)
             if sung_release:
+                word["sustain_tonal_release"] = round(sung_release[0], 3)
                 word["sustain_release_confidence"] = round(sung_release[1], 3)
-            word["sustain_extension_ms"] = round((target - end) * 1000)
+            word["sustain_extension_ms"] = round((target - lexical_end) * 1000)
             adjustments.append({"line": index + 1, "word_index": word_index + 1,
                                 "word": word.get("word", ""),
-                                "from": round(end, 3), "to": round(target, 3),
+                                "from": round(current_end, 3), "to": round(target, 3),
                                 "activity_end": round(activity_end, 3),
                                 "tonal_release": round(sung_release[0], 3) if sung_release else None,
                                 "confidence": round(sung_release[1], 3) if sung_release else None})
-    return {"method": "local-tonal-sustain-release-v4",
+    return {"method": "local-tonal-sustain-release-v5",
             "adjusted_words": len(adjustments), "release_padding_ms": round(release_padding * 1000),
             "adjustments": adjustments}
+
+
+def reassign_overlong_connector_sustains(
+        lines: list, audio: np.ndarray | None, *, sample_rate: int = 16000) -> dict:
+    """Return a held vowel that was accidentally assigned to a connector.
+
+    Forced aligners sometimes put a complete long decay into ``and``/``und``
+    between two content words.  Reassign only when the connector is unusually
+    long, has no independent phone timing, a measured tonal release reaches
+    most of its window and the following word has a nearby onset.  The
+    connector remains present in a short transition window; no lyric token is
+    deleted.
+    """
+    if audio is None:
+        return {"method": "acoustic-connector-sustain-reassignment-v1",
+                "adjusted_words": 0, "adjustments": []}
+    connectors = {"and", "&", "und"}
+    adjustments = []
+    for line_index, line in enumerate(lines):
+        for index in range(1, len(line.words) - 1):
+            previous, connector, following = (
+                line.words[index - 1], line.words[index], line.words[index + 1])
+            token = str(connector.get("word", "")).strip(".,!?;:'\"()[]{}").lower()
+            if token not in connectors or connector.get("phonemes"):
+                continue
+            connector_start = float(connector["start"])
+            connector_end = float(connector["end"])
+            following_start = float(following["start"])
+            if (connector_end - connector_start < 0.65
+                    or not 0.04 <= following_start - connector_end <= 0.35):
+                continue
+            release = _measure_sung_release(
+                audio, float(previous["start"]), float(previous["end"]),
+                following_start, sample_rate=sample_rate, bridge_gap=0.28)
+            if (release is None or release[1] < 0.70
+                    or release[0] < connector_end - 0.32):
+                continue
+            old_previous_end = float(previous["end"])
+            old_connector_start = connector_start
+            previous["acoustic_end"] = round(old_previous_end, 3)
+            # Keep the visual word alive until the historical connector end.
+            # This includes the short measured release padding singers expect,
+            # while the following connector gets the remaining transition.
+            previous["end"] = round(connector_end, 3)
+            previous["sustain_activity_end"] = round(release[0], 3)
+            previous["sustain_release_confidence"] = round(release[1], 3)
+            previous["sustain_extension_ms"] = round(
+                (connector_end - old_previous_end) * 1000)
+            connector["start"] = round(connector_end, 3)
+            connector["end"] = round(following_start, 3)
+            connector["timing_source"] = "connector-transition-reassignment"
+            connector["connector_original_start"] = round(old_connector_start, 3)
+            adjustments.append({
+                "line": line_index + 1,
+                "word": previous.get("word", ""),
+                "connector": connector.get("word", ""),
+                "from": round(old_previous_end, 3),
+                "to": round(connector_end, 3),
+                "measured_release": round(release[0], 3),
+                "confidence": round(release[1], 3),
+            })
+    return {"method": "acoustic-connector-sustain-reassignment-v1",
+            "adjusted_words": len(adjustments), "adjustments": adjustments}
 
 
 def stabilize_acoustic_display_durations(lines: list, *, minimum_duration: float = 0.04) -> dict:
@@ -244,7 +368,8 @@ def reconcile_acoustic_boundaries(lines: list, *, maximum_overlap: float = 0.45,
             "adjustments": adjustments}
 
 
-def eliminate_remaining_line_overlaps(lines: list, *, minimum_word_duration: float = 0.04) -> dict:
+def eliminate_remaining_line_overlaps(lines: list, *, minimum_word_duration: float = 0.04,
+                                      protected_line_indices: set[int] | None = None) -> dict:
     """Produce a single monotonic karaoke lane after acoustic reanalysis.
 
     Real recordings can contain a backing-vocal tail and the next lead phrase
@@ -253,7 +378,28 @@ def eliminate_remaining_line_overlaps(lines: list, *, minimum_word_duration: flo
     colliding tail of the previous line. The result is reviewable rather than
     silently emitting two simultaneously active karaoke lines.
     """
+    lanes = sorted({max(0, int(getattr(line, "voice_lane", 0))) for line in lines})
+    if len(lanes) > 1:
+        protected = protected_line_indices or set()
+        combined: list[dict] = []
+        for lane in lanes:
+            global_indices = [index for index, line in enumerate(lines)
+                              if max(0, int(getattr(line, "voice_lane", 0))) == lane]
+            subset = [lines[index] for index in global_indices]
+            local_protected = {local for local, original in enumerate(global_indices)
+                               if original in protected}
+            result = eliminate_remaining_line_overlaps(
+                subset, minimum_word_duration=minimum_word_duration,
+                protected_line_indices=local_protected)
+            for adjustment in result["adjustments"]:
+                item = dict(adjustment)
+                item["voice_lane"] = lane
+                combined.append(item)
+        return {"method": "multi-karaoke-lane-fallback-v1",
+                "adjusted_pairs": len(combined), "adjustments": combined}
+
     adjustments: list[dict] = []
+    protected = protected_line_indices or set()
     for index in range(1, len(lines)):
         previous, current = lines[index - 1], lines[index]
         if not previous.words or not current.words:
@@ -262,6 +408,58 @@ def eliminate_remaining_line_overlaps(lines: list, *, minimum_word_duration: flo
         previous_end = float(previous.words[-1]["end"])
         if previous_end <= boundary + 0.001:
             continue
+
+        # A manually corrected previous line is the stronger boundary. Move
+        # only the colliding prefix of the generated following line. This is
+        # the mirror image of the ordinary fallback below and prevents the
+        # final manual-restore pass from reintroducing an invalid overlap.
+        if index - 1 in protected and index not in protected:
+            prefix_end = 0
+            while (prefix_end + 1 < len(current.words)
+                   and float(current.words[prefix_end + 1]["start"]) < previous_end):
+                prefix_end += 1
+            next_start = (float(current.words[prefix_end + 1]["start"])
+                          if prefix_end + 1 < len(current.words) else
+                          float(current.words[prefix_end]["end"]))
+            prefix_limit = max(float(current.words[prefix_end]["end"]), next_start)
+            count = prefix_end + 1
+            available = prefix_limit - previous_end
+            if available >= count * minimum_word_duration:
+                old_start = float(current.words[0]["start"])
+                old_limit = max(prefix_limit, old_start + 0.001)
+                scale = available / (old_limit - old_start)
+                cursor = previous_end
+                for offset, word in enumerate(current.words[:count]):
+                    original_start = float(word["start"])
+                    original_end = float(word["end"])
+                    remaining = count - offset - 1
+                    latest_end = prefix_limit - remaining * minimum_word_duration
+                    mapped_start = previous_end + (original_start - old_start) * scale
+                    mapped_end = previous_end + (original_end - old_start) * scale
+                    word_start = min(max(cursor, mapped_start), latest_end - minimum_word_duration)
+                    word_end = min(latest_end, max(word_start + minimum_word_duration, mapped_end))
+                    word["start"] = round(word_start, 3)
+                    word["end"] = round(word_end, 3)
+                    word["timing_source"] = "manual-neighbor-overlap-fallback"
+                    for syllable in word.get("syllables", []):
+                        syllable_start = previous_end + (
+                            float(syllable["start"]) - old_start) * scale
+                        syllable_end = previous_end + (
+                            float(syllable["end"]) - old_start) * scale
+                        syllable["start"] = round(
+                            max(float(word["start"]), syllable_start), 3)
+                        syllable["end"] = round(
+                            min(float(word["end"]), max(syllable_start, syllable_end)), 3)
+                    cursor = float(word["end"])
+                current.words[0]["start"] = round(previous_end, 3)
+                adjustments.append({
+                    "previous_line": index, "next_line": index + 1,
+                    "overlap_ms": round((previous_end - boundary) * 1000, 1),
+                    "prefix_words": count,
+                    "boundary": round(previous_end, 3),
+                    "method": "preserve-manual-previous-release",
+                })
+                continue
 
         first = next((word_index for word_index, word in enumerate(previous.words)
                       if float(word["end"]) > boundary), len(previous.words) - 1)

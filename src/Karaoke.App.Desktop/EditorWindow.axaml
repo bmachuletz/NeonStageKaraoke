@@ -23,8 +23,10 @@
             <Button.Flyout><MenuFlyout>
               <MenuItem Header="Wünsche und Downloads" Click="OpenWishlistConsoleClick" />
               <MenuItem Header="Audio-Ordner (MP3/FLAC) importieren …" Click="OpenFolderImportConsoleClick" />
+              <MenuItem Header="USDB auf Lyrics prüfen …" Click="SearchUsdbLyricsClick" />
               <MenuItem Header="UltraStar-Lyrics importieren …" Click="ImportUltraStarLyricsClick" />
               <MenuItem Header="Lyrics vollständig aus Audio erkennen …" Click="RecognizeLyricsClick" />
+              <MenuItem Header="Base-Lyrics anzeigen / bearbeiten …" Click="EditBaseLyricsClick" />
               <MenuItem Header="Download-Provider konfigurieren …" Click="OpenDownloadProviderSettingsClick" />
               <MenuItem Header="Songpakete">
                 <MenuItem Header="Ausgewählten Song exportieren …" Click="ExportCurrentSongPackageClick" />
@@ -35,13 +37,15 @@
               </MenuItem>
               <MenuItem Header="Events verwalten …" Click="OpenEventManagementClick" />
               <MenuItem Header="Admin-Webseite öffnen" Click="OpenAdminWebsiteClick" />
+              <Separator />
+              <MenuItem Header="Einstellungen …" Click="OpenSettingsClick" />
             </MenuFlyout></Button.Flyout>
           </Button>
           <Button Content="↶" Click="UndoClick" ToolTip.Tip="Rückgängig (Strg+Z)" />
           <Button Content="↷" Click="RedoClick" ToolTip.Tip="Wiederholen (Strg+Shift+Z)" />
           <Button Content="Alignment ▾" ToolTip.Tip="GPU-Alignment starten">
             <Button.Flyout><MenuFlyout>
-              <MenuItem Header="Ausgewählten Song neu alignen" Click="RealignSongClick" />
+              <MenuItem Header="Ausgewählte Songs neu alignen" Click="RealignSongClick" />
               <MenuItem Header="Gesamte Bibliothek neu alignen …" Click="RealignAllSongsClick" />
               <Separator />
               <MenuItem Header="Globalen Lyrics-Versatz anwenden …" Click="GlobalLyricsOffsetClick" />
@@ -49,7 +53,7 @@
           </Button>
           <Button Content="Speichern" Click="SaveDraftClick" ToolTip.Tip="Aktuellen Arbeitsstand lokal und auf dem Server sichern" />
           <Button Content="◴ Versionen" Click="ToggleVersionsClick" ToolTip.Tip="Gespeicherte Lyrics-Stände verwalten" />
-          <Button Content="✓ Song freigeben" Click="ApproveSongClick" Background="#DFFF28" Foreground="#11151C" />
+          <Button Content="{Binding SongReleaseActionLabel}" Click="ApproveSongClick" Background="#DFFF28" Foreground="#11151C" />
           <Button Content="🗑 Song löschen" Click="DeleteSongClick" Background="#D94762" Foreground="White" />
         </StackPanel>
       </Grid>
@@ -75,13 +79,19 @@
               </Border>
             </Grid>
           </Border>
-          <ListBox x:Name="SongList" Grid.Row="4" ItemsSource="{Binding FilteredSongs}" SelectionChanged="SongSelectionChanged">
+          <ListBox x:Name="SongList" Grid.Row="4" ItemsSource="{Binding FilteredSongs}"
+                   SelectionMode="Multiple" SelectionChanged="SongSelectionChanged"
+                   ToolTip.Tip="Strg+Klick: einzelne Songs auswählen · Shift+Klick: Bereich auswählen">
             <ListBox.ItemTemplate>
               <DataTemplate>
                 <StackPanel Margin="4,6">
                   <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
                   <TextBlock Text="{Binding Artist}" Foreground="#8993A6" FontSize="11" TextTrimming="CharacterEllipsis" />
                   <TextBlock Text="{Binding ReviewStatusLabel}" Foreground="#FF3CBD" FontSize="10" />
+                  <TextBlock Text="✓ SYNCHRONISIERTE LYRICS" Foreground="#79E6C9" FontSize="9"
+                             IsVisible="{Binding HasSynchronizedLyrics}" />
+                  <TextBlock Text="○ KEINE SYNCHRONISIERTEN LYRICS" Foreground="#E8A45C" FontSize="9"
+                             IsVisible="{Binding !HasSynchronizedLyrics}" />
                 </StackPanel>
               </DataTemplate>
             </ListBox.ItemTemplate>
@@ -100,16 +110,44 @@
 
       <Grid Grid.Column="1" RowDefinitions="250,*,64">
         <Border Background="#08040F" BorderBrush="#2A303B" BorderThickness="0,0,0,1">
-          <Grid RowDefinitions="24,*">
-            <TextBlock Text="UNITY-STAGE LIVE-VORSCHAU" Foreground="#8993A6" FontSize="10" Margin="10,6,0,0" />
-            <local:StageLyricsPreviewControl Grid.Row="1" Document="{Binding Document}" Position="{Binding Playhead}"
-                                             Revision="{Binding PreviewRevision}" />
+          <Grid RowDefinitions="28,*">
+            <Grid ColumnDefinitions="*,Auto,Auto" Margin="10,0">
+              <TextBlock Text="UNITY-STAGE LIVE-VORSCHAU" Foreground="#8993A6" FontSize="10"
+                         VerticalAlignment="Center" />
+              <CheckBox Grid.Column="1" Content="Wahrnehmungs-Vorlauf · 80 ms"
+                        IsChecked="{Binding PerceptualLeadEnabled}" VerticalAlignment="Center"
+                        IsEnabled="{Binding KaraokeTimingAvailable}"
+                        FontSize="10" Foreground="#B8C0D0"
+                        ToolTip.Tip="Nur die sichtbare Wortfüllung läuft 80 ms voraus. Audio und gespeicherte Lyrics bleiben unverändert." />
+              <CheckBox Grid.Column="2" Content="Karaoke-Timing · Beat-Vorschau"
+                        IsChecked="{Binding KaraokeTimingEnabled}" VerticalAlignment="Center"
+                        IsEnabled="{Binding KaraokeTimingAvailable}"
+                        Margin="14,0,0,0" FontSize="10" Foreground="#DFFF28"
+                        ToolTip.Tip="{Binding KaraokeTimingDescription}" />
+            </Grid>
+            <local:StageLyricsPreviewControl Grid.Row="1" Document="{Binding TimingPreviewDocument}" Position="{Binding Playhead}"
+                                             Revision="{Binding PreviewRevision}"
+                                             PerceptualLeadEnabled="{Binding PerceptualLeadEnabled}"
+                                             KaraokeTimingEnabled="{Binding KaraokeTimingEnabled}" />
           </Grid>
         </Border>
-        <local:EditorTimelineControl Grid.Row="1" x:Name="Timeline" Document="{Binding Document}" Waveform="{Binding Waveform}"
+        <local:EditorTimelineControl Grid.Row="1" x:Name="Timeline" Document="{Binding TimingPreviewDocument}" Waveform="{Binding Waveform}"
+                                     PitchEvidence="{Binding PitchEvidence}"
+                                     EditingEnabled="True"
                                      Playhead="{Binding Playhead}" Revision="{Binding TimelineRevision}">
           <local:EditorTimelineControl.ContextMenu>
-            <ContextMenu>
+            <ContextMenu Placement="Pointer">
+              <MenuItem Header="In Loop wiedergeben" Tag="play-word-loop" IsVisible="False"
+                        Click="PlayWordInLoopClick" />
+              <Separator Tag="play-word-loop" IsVisible="False" />
+              <MenuItem Header="Zur anderen Stimme verschieben" Tag="move-other-voice"
+                        IsVisible="False" Click="MoveToOtherVoiceClick" />
+              <Separator Tag="move-other-voice" IsVisible="False" />
+              <MenuItem Header="Alles markieren nach links" Tag="select-direction"
+                        IsVisible="False" Click="SelectAllLeftClick" />
+              <MenuItem Header="Alles markieren nach rechts" Tag="select-direction"
+                        IsVisible="False" Click="SelectAllRightClick" />
+              <Separator Tag="select-direction" IsVisible="False" />
               <MenuItem Header="Kopieren    Strg+C" Click="CopyLyricsSegmentsClick" />
               <MenuItem Header="Ausschneiden    Strg+X" Click="CutLyricsSegmentsClick" />
               <MenuItem Header="Einfügen am Abspielcursor    Strg+V" Click="PasteLyricsSegmentsClick" />
@@ -122,6 +160,13 @@
             <Button Content="▶ / Ⅱ" Click="PlayPauseClick" MinWidth="82" />
             <Button Content="▶ Grenze" Click="PlayBoundaryClick" ToolTip.Tip="300 ms vor und nach der ausgewählten Grenze als Loop" />
             <Button Content="{Binding LoopLabel}" Click="ToggleLoopClick" ToolTip.Tip="Bereich mit Shift + Ziehen markieren" />
+            <TextBlock Text="TEMPO" Foreground="#8993A6" FontSize="10" FontWeight="SemiBold"
+                       VerticalAlignment="Center" Margin="10,0,0,0" />
+            <Slider Minimum="10" Maximum="100" TickFrequency="10" IsSnapToTickEnabled="True"
+                    Value="{Binding PlaybackSpeedPercent}" Width="150"
+                    ToolTip.Tip="Wiedergabe verlangsamen, ohne die Song- oder Lyrics-Zeiten zu verändern" />
+            <TextBlock Text="{Binding PlaybackSpeedLabel}" Foreground="#DFFF28" FontFamily="monospace"
+                       Width="48" VerticalAlignment="Center" />
             <TextBlock Text="{Binding PlayheadLabel}" FontFamily="monospace" Foreground="#DFFF28" VerticalAlignment="Center" Margin="12,0,0,0" />
           </StackPanel>
         </Border>
@@ -138,15 +183,25 @@
                    IsEnabled="{Binding CanDeleteSegment}" LostFocus="SegmentTextLostFocus" />
           <StackPanel IsVisible="{Binding CanEditLine}" Spacing="6">
             <TextBlock Text="STAGE-DARSTELLUNG" Foreground="#8993A6" FontSize="10" FontWeight="SemiBold" />
-            <TextBlock Text="Haltezeit nach der Zeile (Sekunden, leer = automatisch)" TextWrapping="Wrap" Foreground="#AAB2C1" />
-            <TextBox x:Name="HoldAfterBox" Text="{Binding SelectedHoldAfterText, Mode=OneWay}" Watermark="automatisch" />
+            <TextBlock Text="Die Außenränder des Zeilenbalkens steuern Einblendzeit und Nachlauf. Wort- und Silbenzeiten bleiben unverändert."
+                       TextWrapping="Wrap" Foreground="#AAB2C1" />
             <ComboBox x:Name="StageEffectBox" ItemsSource="{Binding StageEffects}"
                       SelectedItem="{Binding SelectedStageEffect, Mode=OneWay}" />
+            <TextBlock Text="Gesangsspur" Foreground="#AAB2C1" />
+            <ComboBox x:Name="VoiceLaneBox" SelectedIndex="{Binding SelectedVoiceLane, Mode=OneWay}">
+              <ComboBoxItem Content="Lead / Stimme 1" />
+              <ComboBoxItem Content="Stimme 2" />
+              <ComboBoxItem Content="Stimme 3" />
+              <ComboBoxItem Content="Stimme 4" />
+            </ComboBox>
             <Button Content="Darstellung übernehmen" Click="ApplyLinePresentationClick" />
           </StackPanel>
           <TextBlock Text="TIMING · 10 ms" Foreground="#8993A6" FontSize="10" FontWeight="SemiBold" />
           <Button Content="⟷ Synchronisieren" Click="SynchronizeSelectionClick" HorizontalAlignment="Stretch"
-                  ToolTip.Tip="Mehrfachauswahl: Strg + Klick. Waveform-Bereich: Shift + Ziehen. Danach exakt einpassen." />
+                  ToolTip.Tip="Mehrfachauswahl: Strg + Klick. Waveform-Bereich: Shift + Ziehen. Wörter und Silben werden auf plausible akustische Übergänge ausgerichtet." />
+          <Button Content="↔ Auswahl proportional skalieren …" Click="ScaleSelectionClick"
+                  HorizontalAlignment="Stretch" IsEnabled="{Binding CanDeleteSegment}"
+                  ToolTip.Tip="Strg+A markiert alle Objekte der aktiven Ebene. Faktor und Zeitanker bestimmen die gemeinsame Skalierung." />
           <UniformGrid Columns="2" Rows="3">
             <Button Content="← verschieben" Click="MoveBackClick" IsEnabled="{Binding CanDeleteSegment}" />
             <Button Content="verschieben →" Click="MoveForwardClick" IsEnabled="{Binding CanDeleteSegment}" />
@@ -198,7 +253,7 @@
           <Button Grid.Column="4" Content="✕" Click="ToggleConsoleClick" Margin="8,0,0,0" />
         </Grid>
 
-        <Grid Grid.Row="2" IsVisible="{Binding WishlistConsoleVisible}" RowDefinitions="Auto,42,130,*">
+        <Grid Grid.Row="2" IsVisible="{Binding WishlistConsoleVisible}" RowDefinitions="Auto,42,*,Auto">
           <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,4,0,4">
             <TextBox Watermark="Spotify oder Qobuz: Titel oder Interpret suchen …" Text="{Binding AdminWishQuery}"
                      KeyDown="AdminWishQueryKeyDown" />
@@ -206,13 +261,36 @@
             <Button Grid.Column="2" Content="▶ ALLE EVENTS ABARBEITEN" Click="StartWishProcessingClick" Margin="8,0,0,0" />
           </Grid>
           <ListBox Grid.Row="2" ItemsSource="{Binding AdminWishSearchResults}" Background="#0B1017" BorderThickness="0">
-            <ListBox.ItemTemplate><DataTemplate><Grid ColumnDefinitions="Auto,*,Auto" Margin="6,3"><Border Padding="7,3" Margin="0,0,9,0" CornerRadius="8" Background="#3A214C" VerticalAlignment="Center"><TextBlock Text="{Binding SourceLabel}" Foreground="#FF69D9" FontSize="9" FontWeight="Bold"/></Border><StackPanel Grid.Column="1"><TextBlock Text="{Binding Title}" FontWeight="SemiBold"/><TextBlock Text="{Binding Artist}" Foreground="#8993A6" FontSize="10"/><StackPanel Orientation="Horizontal" Spacing="9"><TextBlock Text="✓ Lyrics gefunden" Foreground="#45E6D0" FontSize="10" IsVisible="{Binding HasSyncedLyrics}"/><TextBlock Text="{Binding PriceLabel}" Foreground="#DFFF28" FontSize="10" FontWeight="Bold" IsVisible="{Binding HasPrice}"/><TextBlock Text="{Binding AudioQuality}" Foreground="#67BFFF" FontSize="10"/></StackPanel></StackPanel><Button Grid.Column="2" Content="IMPORTIEREN →" Tag="{Binding}" Click="ImportAdminWishClick" /></Grid></DataTemplate></ListBox.ItemTemplate>
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <Grid ColumnDefinitions="Auto,*,Auto,Auto" Margin="6,4">
+                  <Border Padding="7,3" Margin="0,0,9,0" CornerRadius="8" Background="#3A214C" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding SourceLabel}" Foreground="#FF69D9" FontSize="9" FontWeight="Bold"/>
+                  </Border>
+                  <StackPanel Grid.Column="1">
+                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding Artist}" Foreground="#8993A6" FontSize="10"/>
+                    <StackPanel Orientation="Horizontal" Spacing="9">
+                      <TextBlock Text="{Binding DurationLabel}" Foreground="#D8DEEA" FontSize="10" FontWeight="SemiBold"/>
+                      <TextBlock Text="DOWNLOAD:" Foreground="#677185" FontSize="10"/>
+                      <TextBlock Text="{Binding DownloadSourceLabel}" Foreground="#FFB347" FontSize="10" FontWeight="Bold"/>
+                      <TextBlock Text="✓ Lyrics gefunden" Foreground="#45E6D0" FontSize="10" IsVisible="{Binding HasSyncedLyrics}"/>
+                      <TextBlock Text="{Binding PriceLabel}" Foreground="#DFFF28" FontSize="10" FontWeight="Bold" IsVisible="{Binding HasPrice}"/>
+                      <TextBlock Text="{Binding AudioQuality}" Foreground="#67BFFF" FontSize="10"/>
+                    </StackPanel>
+                  </StackPanel>
+                  <Button Grid.Column="2" Content="▶ 30 s" Tag="{Binding}" Click="PreviewCatalogTrackClick"
+                          IsVisible="{Binding HasPreview}" ToolTip.Tip="30-Sekunden-Audiovorschau abspielen" Margin="6,0" />
+                  <Button Grid.Column="3" Content="IMPORTIEREN →" Tag="{Binding}" Click="ImportAdminWishClick" />
+                </Grid>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
           </ListBox>
           <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,2,0,8">
             <ProgressBar Minimum="0" Maximum="100" Value="{Binding WishProgress}" Height="12" Foreground="#DFFF28" Background="#202717" />
             <StackPanel Grid.Column="1" Margin="12,0,0,0"><TextBlock Text="{Binding WishProgressLabel}" Foreground="#DFFF28" FontFamily="monospace"/><TextBlock Text="{Binding AdminWishSearchStatus}" Foreground="#8993A6" FontSize="10"/></StackPanel>
           </Grid>
-          <ListBox Grid.Row="3" ItemsSource="{Binding Wishes}" Background="#10151D" BorderThickness="0">
+          <ListBox Grid.Row="3" ItemsSource="{Binding Wishes}" Background="#10151D" BorderThickness="0" MaxHeight="145">
             <ListBox.ItemTemplate><DataTemplate><Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" Margin="6,2"><StackPanel><TextBlock Text="{Binding Title}" FontWeight="SemiBold"/><TextBlock Text="{Binding Details}" Foreground="#8993A6" FontSize="10"/></StackPanel><TextBlock Grid.Column="1" Text="{Binding Event.Name}" Foreground="#FF3CBD" VerticalAlignment="Center" Margin="8,0"/><Button Grid.Column="2" Content="▶ Verarbeiten" Tag="{Binding}" Click="ProcessSingleWishClick"/><Button Grid.Column="3" Content="✓ Übernehmen" Tag="{Binding}" IsVisible="{Binding CanAdopt}" Click="AdoptWishAudioClick" Margin="6,0,0,0"/><Button Grid.Column="4" Content="✕" Tag="{Binding}" IsEnabled="{Binding CanRemove}" Click="RemoveWishClick" ToolTip.Tip="Wunsch entfernen" Margin="6,0,0,0"/></Grid></DataTemplate></ListBox.ItemTemplate>
           </ListBox>
         </Grid>
@@ -244,7 +322,7 @@
           </Grid>
         </Grid>
 
-        <ListBox Grid.Row="3" ItemsSource="{Binding ConsoleLines}" Background="#050805" Foreground="#74FF6A"
+        <ListBox x:Name="ConsoleLogList" Grid.Row="3" ItemsSource="{Binding ConsoleLines}" Background="#050805" Foreground="#74FF6A"
                  FontFamily="monospace" FontSize="11" BorderThickness="0" Padding="8" />
       </Grid>
     </Border>

@@ -1,9 +1,12 @@
+using System.Collections.Specialized;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Controls.Primitives;
 using Avalonia.Input.Platform;
 using Avalonia.VisualTree;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
+using Karaoke.App.Services;
 using Karaoke.Contracts;
 using Karaoke.Editor.Core;
 
@@ -13,6 +16,10 @@ public partial class EditorWindow : Window
 {
     private string? _lyricsClipboardFallback;
     private bool _selectionOriginatesFromTimeline;
+    private INotifyCollectionChanged? _consoleLogSource;
+    private IAudioPlaybackService? _catalogPreviewAudio;
+    private CancellationTokenSource? _catalogPreviewCancellation;
+    private string? _catalogPreviewTrackId;
 
     public EditorWindow()
     {
@@ -22,6 +29,8 @@ public partial class EditorWindow : Window
             EditorLocale.Apply(this);
             if (DataContext is not EditorViewModel viewModel) return;
             Timeline.History = viewModel.History;
+            _consoleLogSource = viewModel.ConsoleLines;
+            _consoleLogSource.CollectionChanged += ConsoleLinesCollectionChanged;
             Timeline.PositionRequested += (_, position) => viewModel.Seek(position);
             Timeline.SegmentSelected += (_, segment) =>
             {
@@ -30,6 +39,9 @@ public partial class EditorWindow : Window
                 finally { _selectionOriginatesFromTimeline = false; }
             };
             Timeline.RangeSelected += (_, range) => viewModel.SetLoopRange(range.Start, range.End);
+            Timeline.TrackedWordLoopRangeChanged += (_, range) =>
+                viewModel.UpdateTrackedWordLoopRange(range.Start, range.End);
+            Timeline.TrackedWordLoopCleared += (_, _) => viewModel.ClearLoopRange();
             Timeline.SegmentEdited += (_, _) => viewModel.NotifyTimelineEdit();
             viewModel.PropertyChanged += (_, args) =>
             {
@@ -42,14 +54,35 @@ public partial class EditorWindow : Window
                     Timeline.SetLoopRange(viewModel.LoopStart, viewModel.LoopEnd);
             };
             await viewModel.InitializeAsync();
+            ScrollConsoleToEnd();
+        };
+        Closed += (_, _) =>
+        {
+            if (_consoleLogSource is not null)
+                _consoleLogSource.CollectionChanged -= ConsoleLinesCollectionChanged;
+            StopCatalogPreview();
+            _catalogPreviewAudio?.Dispose();
+            _catalogPreviewAudio = null;
         };
         KeyDown += OnEditorKeyDown;
+    }
+
+    private void ConsoleLinesCollectionChanged(object? sender, NotifyCollectionChangedEventArgs eventArgs) =>
+        Dispatcher.UIThread.Post(ScrollConsoleToEnd, DispatcherPriority.Background);
+
+    private void ScrollConsoleToEnd()
+    {
+        var lastIndex = ConsoleLogList.ItemCount - 1;
+        if (lastIndex >= 0) ConsoleLogList.ScrollIntoView(lastIndex);
     }
 
     private async void SongSelectionChanged(object? sender, SelectionChangedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel viewModel || sender is not ListBox list) return;
-        viewModel.SelectedSong = list.SelectedItem as SongDto;
+        var activeSong = eventArgs.AddedItems.OfType<SongDto>().LastOrDefault()
+                         ?? list.SelectedItem as SongDto;
+        if (activeSong?.Id == viewModel.SelectedSong?.Id) return;
+        viewModel.SelectedSong = activeSong;
         await viewModel.LoadSelectedSongAsync();
     }
 
@@ -60,7 +93,133 @@ public partial class EditorWindow : Window
 
     private async void PlayBoundaryClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
+        Timeline.ClearTrackedWordLoop();
         if (DataContext is EditorViewModel viewModel) await viewModel.PlaySelectedBoundaryAsync();
+    }
+
+    private async void PlayWordInLoopClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel ||
+            !Timeline.TryTrackContextWordLoop(out var range)) return;
+        await viewModel.PlayLoopRangeAsync(range.Start, range.End);
+    }
+
+    private void MoveToOtherVoiceClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        if (!Timeline.EditingEnabled)
+        {
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? "Zum Bearbeiten zuerst die Beat-Vorschau ausschalten."
+                : "Turn off the beat preview before editing.");
+            return;
+        }
+        try
+        {
+            var moved = viewModel.MoveToOtherVoice(Timeline.GetSelectedSegments());
+            Timeline.SelectSegments(moved);
+        }
+        catch (InvalidOperationException exception)
+        {
+            viewModel.ReportTimelineStatus(exception.Message);
+        }
+    }
+
+    private void SelectAllLeftClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        ReportDirectionalSelection(Timeline.SelectContextRange(toRight: false));
+
+    private void SelectAllRightClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        ReportDirectionalSelection(Timeline.SelectContextRange(toRight: true));
+
+    private void ReportDirectionalSelection(int count)
+    {
+        if (count > 0 && DataContext is EditorViewModel viewModel)
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? $"{count} Segmente markiert."
+                : $"Selected {count} segments.");
+    }
+
+    private async void PreviewCatalogTrackClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (sender is not Button { Tag: SpotifyTrackDto track } ||
+            !Uri.TryCreate(track.PreviewUrl, UriKind.Absolute, out var previewUri) ||
+            previewUri.Scheme is not ("http" or "https")) return;
+
+        if (_catalogPreviewTrackId == track.Id)
+        {
+            StopCatalogPreview();
+            if (DataContext is EditorViewModel stoppedViewModel)
+                stoppedViewModel.ReportTimelineStatus(EditorLocale.German
+                    ? "Audiovorschau beendet."
+                    : "Audio preview stopped.");
+            return;
+        }
+
+        StopCatalogPreview();
+        var cancellation = new CancellationTokenSource();
+        _catalogPreviewCancellation = cancellation;
+        _catalogPreviewTrackId = track.Id;
+        if (DataContext is EditorViewModel editorViewModel)
+            editorViewModel.PauseEditorPlaybackForCatalogPreview();
+        var player = GetCatalogPreviewAudio();
+        try
+        {
+            await player.PlayAsync(previewUri, cancellationToken: cancellation.Token);
+            if (DataContext is EditorViewModel viewModel)
+                viewModel.ReportTimelineStatus(EditorLocale.German
+                    ? $"30-Sekunden-Vorschau: {track.Title} · {track.Artist}"
+                    : $"30-second preview: {track.Title} · {track.Artist}");
+            _ = StopCatalogPreviewAfterDelayAsync(track.Id, cancellation.Token);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception)
+        {
+            StopCatalogPreview();
+            if (DataContext is EditorViewModel viewModel)
+                viewModel.ReportTimelineStatus((EditorLocale.German
+                    ? "Audiovorschau konnte nicht gestartet werden: "
+                    : "Audio preview could not be started: ") + exception.Message);
+        }
+    }
+
+    private IAudioPlaybackService GetCatalogPreviewAudio()
+    {
+        if (_catalogPreviewAudio is not null) return _catalogPreviewAudio;
+        var player = new LibVlcAudioPlaybackService { Volume = 75 };
+        player.PlaybackFailed += (_, error) => Dispatcher.UIThread.Post(() =>
+        {
+            StopCatalogPreview();
+            if (DataContext is EditorViewModel viewModel)
+                viewModel.ReportTimelineStatus((EditorLocale.German
+                    ? "Audiovorschau fehlgeschlagen: "
+                    : "Audio preview failed: ") + error);
+        });
+        player.PlaybackEnded += (_, _) => Dispatcher.UIThread.Post(StopCatalogPreview);
+        _catalogPreviewAudio = player;
+        return player;
+    }
+
+    private async Task StopCatalogPreviewAfterDelayAsync(string trackId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (_catalogPreviewTrackId == trackId) StopCatalogPreview();
+            });
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private void StopCatalogPreview()
+    {
+        var cancellation = _catalogPreviewCancellation;
+        _catalogPreviewCancellation = null;
+        _catalogPreviewTrackId = null;
+        cancellation?.Cancel();
+        cancellation?.Dispose();
+        _catalogPreviewAudio?.Stop();
     }
 
     private async void CoverPointerPressed(object? sender, PointerPressedEventArgs eventArgs)
@@ -142,10 +301,19 @@ public partial class EditorWindow : Window
 
     private async void RealignSongClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
-        if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel) return;
-        var choice = await new ConfirmRealignSongWindow(song.Title, song.Artist)
+        if (DataContext is not EditorViewModel viewModel) return;
+        var songs = (SongList.SelectedItems?.OfType<SongDto>() ?? [])
+            .DistinctBy(song => song.Id).ToArray();
+        if (songs.Length == 0 && viewModel.SelectedSong is { } activeSong)
+            songs = [activeSong];
+        if (songs.Length == 0) return;
+        var choice = await new ConfirmRealignSongWindow(
+                songs.Length == 1 ? songs[0].Title : null,
+                songs.Length == 1 ? songs[0].Artist : null,
+                songs.Length > 1 ? songs.Length : null)
             .ShowDialog<AlignmentVariantChoice?>(this);
-        if (choice is { } selected) await viewModel.StartSelectedSongRealignmentAsync(selected);
+        if (choice is { } selected)
+            await viewModel.StartSelectedSongsRealignmentAsync(songs, selected);
     }
 
     private async void RealignAllSongsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
@@ -183,6 +351,53 @@ public partial class EditorWindow : Window
             await viewModel.StartCompleteLyricsRecognitionAsync();
     }
 
+    private async void EditBaseLyricsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel)
+        {
+            (DataContext as EditorViewModel)?.ReportTimelineStatus(EditorLocale.German
+                ? "Bitte zuerst einen Song auswählen."
+                : "Select a song first.");
+            return;
+        }
+        if (song.ReviewStatus != SongReviewStatus.InReview)
+        {
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? "Base-Lyrics lassen sich nur bearbeiten, solange der Song in Review ist."
+                : "Base lyrics can only be edited while the song is in review.");
+            return;
+        }
+        try
+        {
+            var source = await viewModel.LoadBaseLyricsSourceAsync();
+            if (source is null)
+            {
+                await new EditorMessageWindow(
+                    EditorLocale.German ? "Keine Base-Lyrics" : "No base lyrics",
+                    EditorLocale.German
+                        ? "Für diesen Song wurden keine erkannten oder heruntergeladenen Base-Lyrics gefunden."
+                        : "No recognized or downloaded base lyrics were found for this song.")
+                    .ShowDialog(this);
+                return;
+            }
+            var edited = await new BaseLyricsWindow(song.Title, song.Artist, source)
+                .ShowDialog<string?>(this);
+            if (edited is not null)
+                await viewModel.SaveBaseLyricsSourceAsync(edited);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or
+                                          System.Text.Json.JsonException or TaskCanceledException)
+        {
+            var message = EditorLocale.German
+                ? "Base-Lyrics konnten nicht geöffnet werden: " + exception.Message
+                : "Base lyrics could not be opened: " + exception.Message;
+            viewModel.ReportTimelineStatus(message);
+            await new EditorMessageWindow(
+                EditorLocale.German ? "Base-Lyrics nicht verfügbar" : "Base lyrics unavailable",
+                message).ShowDialog(this);
+        }
+    }
+
     private async void ApproveSongClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is EditorViewModel viewModel) await viewModel.ApproveSelectedSongAsync();
@@ -201,8 +416,8 @@ public partial class EditorWindow : Window
     private void MarkReviewedClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
         (DataContext as EditorViewModel)?.MarkSelectedReviewed();
 
-    private void MoveBackClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.MoveSelected(-10);
-    private void MoveForwardClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.MoveSelected(10);
+    private void MoveBackClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => ShiftTimelineSelection(-10);
+    private void MoveForwardClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => ShiftTimelineSelection(10);
     private void StartEarlierClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.ResizeSelected(true, -10);
     private void StartLaterClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.ResizeSelected(true, 10);
     private void EndEarlierClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.ResizeSelected(false, -10);
@@ -211,7 +426,16 @@ public partial class EditorWindow : Window
     private void AddSyllableClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.AddSyllable();
     private void AddLineClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.AddLine(false);
     private void DuplicateLineClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.AddLine(true);
-    private void DeleteSegmentClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) => (DataContext as EditorViewModel)?.DeleteSelected();
+    private void DeleteSegmentClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        try
+        {
+            viewModel.DeleteSelected(Timeline.GetSelectedSegments());
+            Timeline.SelectOnly(viewModel.SelectedSegment);
+        }
+        catch (InvalidOperationException exception) { viewModel.ReportTimelineStatus(exception.Message); }
+    }
     private void SegmentTextLostFocus(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (sender is TextBox textBox) (DataContext as EditorViewModel)?.ChangeSelectedText(textBox.Text ?? string.Empty);
@@ -219,7 +443,7 @@ public partial class EditorWindow : Window
     private void ApplyLinePresentationClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is EditorViewModel viewModel && StageEffectBox.SelectedItem is StageLineEffect effect)
-            viewModel.ChangeLinePresentation(HoldAfterBox.Text ?? string.Empty, effect);
+            viewModel.ChangeLinePresentation(effect, Math.Max(0, VoiceLaneBox.SelectedIndex));
     }
     private void ToggleLoopClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
         (DataContext as EditorViewModel)?.ToggleLoop();
@@ -228,14 +452,46 @@ public partial class EditorWindow : Window
         if (DataContext is not EditorViewModel viewModel) return;
         try
         {
-            var count = Timeline.SynchronizeSelectionToRange();
+            var result = Timeline.SynchronizeSelectionToRange();
             viewModel.ReportTimelineStatus(EditorLocale.German
-                ? count == 1
-                    ? "Segment exakt mit dem Waveform-Bereich synchronisiert."
-                    : $"{count} Segmente gemeinsam mit dem Waveform-Bereich synchronisiert."
-                : count == 1
-                    ? "Segment synchronized exactly with the waveform range."
-                    : $"{count} segments synchronized together with the waveform range.");
+                ? result.UsedWaveform
+                    ? $"{result.SegmentCount} Segment(e) synchronisiert · {result.AcousticBoundaries} Wort-/Silbengrenze(n) akustisch angepasst."
+                    : $"{result.SegmentCount} Segment(e) exakt eingepasst · Waveform ohne eindeutige Übergänge."
+                : result.UsedWaveform
+                    ? $"{result.SegmentCount} segment(s) synchronized · {result.AcousticBoundaries} word/syllable boundary adjustment(s) guided by the waveform."
+                    : $"{result.SegmentCount} segment(s) fitted exactly · no unambiguous waveform transitions found.");
+        }
+        catch (InvalidOperationException exception) { viewModel.ReportTimelineStatus(exception.Message); }
+    }
+
+    private void ShiftTimelineSelection(int milliseconds)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        try
+        {
+            TimeSpan? duration = viewModel.SelectedSong is { } song
+                ? TimeSpan.FromSeconds(song.DurationSeconds) : null;
+            var changed = Timeline.ShiftSelection(TimeSpan.FromMilliseconds(milliseconds), duration);
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? $"{changed} ausgewählte(s) Segment(e) um {milliseconds:+#;-#;0} ms verschoben."
+                : $"Shifted {changed} selected segment(s) by {milliseconds:+#;-#;0} ms.");
+        }
+        catch (InvalidOperationException exception) { viewModel.ReportTimelineStatus(exception.Message); }
+    }
+
+    private async void ScaleSelectionClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel viewModel) return;
+        var request = await new ScaleLyricsSelectionWindow().ShowDialog<ScaleLyricsSelectionRequest?>(this);
+        if (request is null) return;
+        try
+        {
+            TimeSpan? duration = viewModel.SelectedSong is { } song
+                ? TimeSpan.FromSeconds(song.DurationSeconds) : null;
+            var changed = Timeline.ScaleSelection(request.Factor, request.Anchor, duration);
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? $"{changed} ausgewählte(s) Segment(e) mit Faktor {request.Factor:0.####} skaliert."
+                : $"Scaled {changed} selected segment(s) by factor {request.Factor:0.####}.");
         }
         catch (InvalidOperationException exception) { viewModel.ReportTimelineStatus(exception.Message); }
     }
@@ -249,6 +505,13 @@ public partial class EditorWindow : Window
     private async Task CopyLyricsSegmentsAsync(bool cut)
     {
         if (DataContext is not EditorViewModel viewModel) return;
+        if (cut && !Timeline.EditingEnabled)
+        {
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? "Zum Ausschneiden zuerst die Beat-Vorschau ausschalten."
+                : "Turn off the beat preview before cutting.");
+            return;
+        }
         try
         {
             var selection = Timeline.GetSelectedSegments();
@@ -267,6 +530,13 @@ public partial class EditorWindow : Window
     private async Task PasteLyricsSegmentsAsync()
     {
         if (DataContext is not EditorViewModel viewModel) return;
+        if (!Timeline.EditingEnabled)
+        {
+            viewModel.ReportTimelineStatus(EditorLocale.German
+                ? "Zum Einfügen zuerst die Beat-Vorschau ausschalten."
+                : "Turn off the beat preview before pasting.");
+            return;
+        }
         try
         {
             var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
@@ -335,6 +605,29 @@ public partial class EditorWindow : Window
                 ? "UltraStar-Import fehlgeschlagen: "
                 : "UltraStar import failed: ") + exception.Message);
         }
+    }
+    private async void SearchUsdbLyricsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel)
+        {
+            (DataContext as EditorViewModel)?.ReportTimelineStatus(EditorLocale.German
+                ? "Bitte zuerst einen Song auswählen."
+                : "Select a song first.");
+            return;
+        }
+        var imported = await new UsdbLyricsSearchWindow(viewModel.ServerAddress, song)
+            .ShowDialog<ImportUsdbLyricsResultDto?>(this);
+        if (imported is null) return;
+        var saved = imported.Version;
+        await viewModel.LoadLyricsVersionAsync(new EditorLyricsVersionItem(
+            new LyricsVersionSummaryDto(saved.Id, saved.SongId, saved.Revision, saved.Status,
+                saved.AnalysisRunId, saved.CreatedAt, saved.UpdatedAt,
+                saved.AlignmentReportJson is not null), true));
+        viewModel.ReportTimelineStatus(EditorLocale.German
+            ? $"USDB #{imported.UsdbVersionId} als Revision {imported.Version.Revision} gespeichert · {imported.LineCount} Zeilen · {imported.SyllableCount} Silben" +
+              (imported.AlignmentStarted ? " · lokale GPU-Ausrichtung läuft" : "")
+            : $"USDB #{imported.UsdbVersionId} saved as revision {imported.Version.Revision} · {imported.LineCount} lines · {imported.SyllableCount} syllables" +
+              (imported.AlignmentStarted ? " · local GPU alignment is running" : ""));
     }
     private async void ExportCurrentSongPackageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
@@ -418,15 +711,20 @@ public partial class EditorWindow : Window
     }
     private async void SearchAdminWishesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
+        StopCatalogPreview();
         if (DataContext is EditorViewModel viewModel) await viewModel.SearchAdminWishesAsync();
     }
     private async void AdminWishQueryKeyDown(object? sender, KeyEventArgs eventArgs)
     {
         if (eventArgs.Key == Key.Enter && DataContext is EditorViewModel viewModel)
+        {
+            StopCatalogPreview();
             await viewModel.SearchAdminWishesAsync();
+        }
     }
     private async void ImportAdminWishClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
+        StopCatalogPreview();
         if (DataContext is EditorViewModel viewModel && sender is Button { Tag: SpotifyTrackDto track })
             await viewModel.ImportAdminWishAsync(track);
     }
@@ -446,6 +744,11 @@ public partial class EditorWindow : Window
     {
         if (DataContext is EditorViewModel viewModel)
             await new QobuzPluginSettingsWindow(viewModel.ServerAddress).ShowDialog(this);
+    }
+    private async void OpenSettingsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is EditorViewModel viewModel)
+            await new SettingsWindow(viewModel.ServerAddress).ShowDialog(this);
     }
     private void OpenAdminWebsiteClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
@@ -479,7 +782,7 @@ public partial class EditorWindow : Window
                         sourceControl?.GetVisualAncestors().OfType<TextBox>().Any() == true;
         if (editsText && !eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control)) return;
         if (editsText && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control) &&
-            eventArgs.Key is Key.C or Key.X or Key.V) return;
+            eventArgs.Key is Key.A or Key.C or Key.X or Key.V) return;
         if (eventArgs.Key == Key.Space) { await viewModel.PlayPauseAsync(); eventArgs.Handled = true; }
         else if (eventArgs.Key == Key.Z && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
@@ -489,6 +792,14 @@ public partial class EditorWindow : Window
         else if (eventArgs.Key == Key.S && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
         {
             await viewModel.SaveDraftAsync();
+            eventArgs.Handled = true;
+        }
+        else if (eventArgs.Key == Key.A && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            if (Timeline.SelectAllAtCurrentLevel() is { } selection)
+                viewModel.ReportTimelineStatus(EditorLocale.German
+                    ? $"{selection.Count} {SelectionTypeName(selection.Type, true)} ausgewählt."
+                    : $"Selected all {selection.Count} {SelectionTypeName(selection.Type, false)}.");
             eventArgs.Handled = true;
         }
         else if (eventArgs.Key == Key.C && eventArgs.KeyModifiers.HasFlag(KeyModifiers.Control))
@@ -509,4 +820,15 @@ public partial class EditorWindow : Window
         else if (eventArgs.Key == Key.N) { viewModel.SelectNextReviewSegment(); eventArgs.Handled = true; }
         else if (eventArgs.Key == Key.R) { viewModel.MarkSelectedReviewed(); eventArgs.Handled = true; }
     }
+
+    private static string SelectionTypeName(LyricSegmentType type, bool german) => (type, german) switch
+    {
+        (LyricSegmentType.Line, true) => "Zeilen",
+        (LyricSegmentType.Word, true) => "Wörter",
+        (LyricSegmentType.Syllable, true) => "Silben",
+        (LyricSegmentType.Line, false) => "lines",
+        (LyricSegmentType.Word, false) => "words",
+        (LyricSegmentType.Syllable, false) => "syllables",
+        _ => german ? "Segmente" : "segments"
+    };
 }

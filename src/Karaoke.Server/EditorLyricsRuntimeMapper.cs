@@ -18,24 +18,49 @@ internal static class EditorLyricsRuntimeMapper
             {
                 var syllables = Children(word, "Syllable").Select((syllable, syllableIndex) =>
                     new LyricsSyllableDto(Time(syllable, "start"), Text(syllable), TimeOrNull(syllable, "end"),
-                        syllableIndex, Number(syllable, "confidence"))).ToArray();
+                        syllableIndex, Number(syllable, "confidence"),
+                        Boolean(syllable, "karaokeTimingLocked"))).ToArray();
                 return new LyricsWordDto(Time(word, "start"), Text(word), TimeOrNull(word, "end"), wordIndex,
-                    syllables.Length == 0 ? null : syllables, Number(word, "confidence"));
+                    syllables.Length == 0 ? null : syllables, Number(word, "confidence"),
+                    Boolean(word, "karaokeTimingLocked"));
             }).ToArray();
 
             var runtimeText = words.Length == 0 ? Text(line) : string.Join(" ", words.Select(word => word.Text));
             return new LyricsLineDto(Time(line, "start"), runtimeText, TimeOrNull(line, "end"), lineIndex,
                 words.Length == 0 ? null : words, IntegerOrNull(line, "holdAfterMilliseconds"),
-                StringOrNull(line, "stageEffect"));
+                StringOrNull(line, "stageEffect"), IntegerOrNull(line, "voiceLane") ?? 0,
+                StringOrNull(line, "voiceLabel"), Boolean(line, "karaokeTimingLocked"));
         }).ToArray();
 
-        return lines.Length == 0 ? fallback : fallback with { Lines = lines };
+        var ultraStarHeritage = Boolean(document.RootElement, "hasUltraStarTimingHeritage") ||
+            StringOrNull(document.RootElement, "analysisRunId")?.StartsWith("usdb:",
+                StringComparison.OrdinalIgnoreCase) == true ||
+            StringOrNull(document.RootElement, "modelVersion")?.Contains("UltraStar",
+                StringComparison.OrdinalIgnoreCase) == true ||
+            sourceLines.EnumerateArray().SelectMany(line => DescendantsAndSelf(line))
+                .Any(segment => StringOrNull(segment, "origin") == "ImportedFromUltraStar");
+
+        return lines.Length == 0 ? fallback : fallback with
+        {
+            Lines = lines,
+            HasUltraStarTimingHeritage = fallback.HasUltraStarTimingHeritage || ultraStarHeritage
+        };
     }
 
     private static IEnumerable<JsonElement> Children(JsonElement parent, string type) =>
         parent.TryGetProperty("children", out var children) && children.ValueKind == JsonValueKind.Array
             ? children.EnumerateArray().Where(child => StringOrNull(child, "type") == type)
             : [];
+
+    private static IEnumerable<JsonElement> DescendantsAndSelf(JsonElement element)
+    {
+        yield return element;
+        if (!element.TryGetProperty("children", out var children) || children.ValueKind != JsonValueKind.Array)
+            yield break;
+        foreach (var child in children.EnumerateArray())
+            foreach (var descendant in DescendantsAndSelf(child))
+                yield return descendant;
+    }
 
     private static string Text(JsonElement element) => StringOrNull(element, "text") ?? string.Empty;
 
@@ -56,4 +81,7 @@ internal static class EditorLyricsRuntimeMapper
     private static double Number(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var parsed)
             ? parsed : 0;
+
+    private static bool Boolean(JsonElement element, string property) =>
+        element.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True;
 }

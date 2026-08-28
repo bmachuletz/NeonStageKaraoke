@@ -232,6 +232,8 @@ def repair_with_vocal_activity(lines: list, cfg: AlignmentConfig,
                       else source_start + cfg.last_line_duration)
         window_start = max(previous_end, float(source_start) - cfg.pre_roll)
         window_end = float(next_start if next_start is not None else source_start + cfg.last_line_duration) + cfg.post_roll
+        if line.source_end_boundary is not None:
+            window_end = min(window_end, float(line.source_end_boundary))
         if index + 1 < len(lines):
             next_anchors = [word for word in lines[index + 1].words
                             if word.get("timing_source") == "asr-repetition-anchor"]

@@ -1,7 +1,9 @@
 import unittest
 
-from app.lyrics_engine_v2 import (capture_candidate, fuse_alignment_candidates,
-                                  preserve_better_enhanced_input)
+from app.lyrics_engine_v2 import (_source_reliability, capture_candidate,
+                                  fuse_alignment_candidates,
+                                  preserve_better_enhanced_input,
+                                  preserve_uncorroborated_internal_editor_boundaries)
 from app.models import LrcLine
 
 
@@ -17,6 +19,109 @@ def line(text, start, end, source="qwen-forced", source_timestamp=None):
 
 
 class LyricsEngineV2Tests(unittest.TestCase):
+    def test_coarse_internal_rewrite_cannot_replace_editor_word_boundaries(self):
+        editor = [line("Und wertvollen Gemälden an der Wand", 20.0, 24.0,
+                       source="input-enhanced-lrc", source_timestamp=20.0)]
+        generated = [line("Und wertvollen Gemälden an der Wand", 20.0, 24.0,
+                          source="qwen-forced", source_timestamp=20.0)]
+        # Same sentence edges and text, but the coarse recogniser filled a
+        # real internal pause and moved both sides of that word boundary.
+        generated[0].words[2]["end"] = 22.9
+        generated[0].words[3]["start"] = 22.9
+        editor[0].words[2]["end"] = 22.35
+        editor[0].words[3]["start"] = 22.75
+
+        selected, report = preserve_uncorroborated_internal_editor_boundaries(
+            generated, capture_candidate(
+                "input", "editor", editor, "human-editor"))
+
+        self.assertEqual(1, report["preserved_lines"])
+        self.assertEqual(22.35, selected[0].words[2]["end"])
+        self.assertEqual(22.75, selected[0].words[3]["start"])
+
+    def test_precisely_verified_internal_rewrite_is_retained(self):
+        editor = [line("drei genaue Wörter", 10.0, 12.0,
+                       source="input-enhanced-lrc", source_timestamp=10.0)]
+        generated = [line("drei genaue Wörter", 10.0, 12.0,
+                          source="ctc-phoneme-alignment", source_timestamp=10.0)]
+        generated[0].words[0]["end"] = 10.35
+        generated[0].words[1]["start"] = 10.55
+
+        selected, report = preserve_uncorroborated_internal_editor_boundaries(
+            generated, capture_candidate(
+                "input", "editor", editor, "human-editor"))
+
+        self.assertEqual(0, report["preserved_lines"])
+        self.assertEqual(10.35, selected[0].words[0]["end"])
+        self.assertEqual(10.55, selected[0].words[1]["start"])
+
+    def test_measured_left_release_does_not_require_unchanged_right_onset_proof(self):
+        editor = [line("Und davon berühmt", 10.0, 12.0,
+                       source="input-enhanced-lrc", source_timestamp=10.0)]
+        generated = [line("Und davon berühmt", 10.0, 12.0,
+                          source="stable-ts-whisper", source_timestamp=10.0)]
+        generated[0].words[1]["end"] = 10.95
+        generated[0].words[1]["sustain_tonal_release"] = 10.95
+        generated[0].words[1]["sustain_release_confidence"] = .91
+        editor[0].words[1]["end"] = 11.45
+        # The right onset did not move and therefore needs no second vote.
+        generated[0].words[2]["start"] = editor[0].words[2]["start"]
+
+        selected, report = preserve_uncorroborated_internal_editor_boundaries(
+            generated, capture_candidate(
+                "input", "editor", editor, "human-editor"))
+
+        self.assertEqual(0, report["preserved_lines"])
+        self.assertEqual(10.95, selected[0].words[1]["end"])
+
+    def test_unproven_long_final_release_cannot_disable_editor_prefix_guard(self):
+        editor = [line("Na klar ich werde älter", 10.0, 12.0,
+                       source="input-enhanced-lrc", source_timestamp=10.0)]
+        generated = [line("Na klar ich werde älter", 10.04, 14.0,
+                          source="stable-ts-whisper", source_timestamp=10.0)]
+        generated[0].words[1]["end"] += .25
+        generated[0].words[2]["start"] += .25
+
+        selected, report = preserve_uncorroborated_internal_editor_boundaries(
+            generated, capture_candidate(
+                "input", "editor", editor, "human-editor"))
+
+        self.assertEqual(1, report["preserved_lines"])
+        self.assertEqual(editor[0].words[2]["start"], selected[0].words[2]["start"])
+        self.assertEqual(editor[0].words[-1]["end"], selected[0].words[-1]["end"])
+        self.assertFalse(report["lines"][0]["preserved_precise_generated_release"])
+
+    def test_precise_final_release_survives_restored_editor_prefix(self):
+        editor = [line("Na klar ich werde älter", 10.0, 12.0,
+                       source="input-enhanced-lrc", source_timestamp=10.0)]
+        generated = [line("Na klar ich werde älter", 10.04, 13.0,
+                          source="stable-ts-whisper", source_timestamp=10.0)]
+        generated[0].words[1]["end"] += .25
+        generated[0].words[2]["start"] += .25
+        generated[0].words[-1]["sustain_tonal_release"] = 13.0
+        generated[0].words[-1]["sustain_release_confidence"] = .92
+
+        selected, report = preserve_uncorroborated_internal_editor_boundaries(
+            generated, capture_candidate(
+                "input", "editor", editor, "human-editor"))
+
+        self.assertEqual(editor[0].words[2]["start"], selected[0].words[2]["start"])
+        self.assertEqual(13.0, selected[0].words[-1]["end"])
+        self.assertTrue(report["lines"][0]["preserved_precise_generated_release"])
+
+    def test_low_confidence_sofa_section_is_not_scored_as_highly_reliable(self):
+        weak = _source_reliability({
+            "timing_source": "sofa-singing-alignment",
+            "sofa_confidence": .43,
+        })
+        strong = _source_reliability({
+            "timing_source": "sofa-singing-alignment",
+            "sofa_confidence": .95,
+        })
+
+        self.assertLess(weak, .40)
+        self.assertGreater(strong, .80)
+
     def test_selects_acoustically_supported_chorus_instead_of_old_lrc_position(self):
         old = [line("Wir ham die Scheiße satt", 56.2, 57.5,
                     source="vocal-activity-repair", source_timestamp=56.2)]
@@ -67,6 +172,80 @@ class LyricsEngineV2Tests(unittest.TestCase):
 
         self.assertEqual(2.0, selected[0].words[-1]["end"])
         self.assertFalse(report["lines"][0]["options"]["unsupported"]["eligible"])
+
+    def test_corroborated_scope_boundary_replaces_leading_window_edge_fallback(self):
+        baseline = [line("Lichtenhagen NSU das alles war kein Zufall", 59.34, 64.78,
+                         source_timestamp=59.79)]
+        baseline[0].words[0]["window_edge_fallback"] = True
+        long_scope = [line("Lichtenhagen NSU das alles war kein Zufall", 60.87, 65.35,
+                           source="stable-ts-whisper", source_timestamp=59.79)]
+        short_scope = [line("Lichtenhagen NSU das alles war kein Zufall", 60.81, 65.37,
+                            source="stable-ts-whisper", source_timestamp=59.79)]
+        long_scope[0].words[0]["window_edge_fallback"] = True
+        short_scope[0].words[0]["window_edge_fallback"] = True
+
+        selected, report = fuse_alignment_candidates(
+            [capture_candidate("baseline", "baseline", baseline, "legacy"),
+             capture_candidate("long", "long scope", long_scope,
+                               "full-transcript-stable-ts"),
+             capture_candidate("short", "short scope", short_scope,
+                               "full-transcript-stable-ts")],
+            [(59.20, 60.30), (60.78, 65.42)], baseline_id="baseline",
+            mode="select", minimum_line_improvement=.035)
+
+        self.assertNotEqual("baseline", report["lines"][0]["selected"])
+        self.assertGreaterEqual(selected[0].words[0]["start"], 60.80)
+        self.assertTrue(report["lines"][0]["options"]["short"]["edge_fallback_rescue"])
+        self.assertTrue(report["lines"][0]["options"]["short"]
+                        ["corroborated_scope_edge"])
+        self.assertNotIn("window_edge_fallback", selected[0].words[0])
+        self.assertTrue(selected[0].words[0]["window_edge_fallback_resolved"])
+        self.assertEqual(1, report["lines"][0]["options"]["short"]
+                         ["independent_boundary_support"])
+
+    def test_same_family_scopes_do_not_override_unmarked_baseline(self):
+        baseline = [line("Lichtenhagen NSU", 59.34, 62.94, source_timestamp=59.79)]
+        long_scope = [line("Lichtenhagen NSU", 60.87, 63.10,
+                           source="stable-ts-whisper", source_timestamp=59.79)]
+        short_scope = [line("Lichtenhagen NSU", 60.81, 63.12,
+                            source="stable-ts-whisper", source_timestamp=59.79)]
+
+        selected, report = fuse_alignment_candidates(
+            [capture_candidate("baseline", "baseline", baseline, "legacy"),
+             capture_candidate("long", "long scope", long_scope, "stable-ts"),
+             capture_candidate("short", "short scope", short_scope, "stable-ts")],
+            [(59.20, 60.30), (60.78, 63.20)], baseline_id="baseline",
+            mode="select", minimum_line_improvement=0)
+
+        self.assertEqual("baseline", report["lines"][0]["selected"])
+        self.assertEqual(59.34, selected[0].words[0]["start"])
+
+    def test_boundary_only_rescue_does_not_replace_line_or_move_word_end(self):
+        baseline = [line("Ständig nur Gelaber", 18.88, 21.92,
+                         source_timestamp=19.33)]
+        baseline[0].words[0]["window_edge_fallback"] = True
+        baseline[0].words[0]["end"] = 21.12
+        baseline[0].words[1]["start"] = 21.12
+        baseline[0].words[1]["end"] = 21.50
+        baseline[0].words[2]["start"] = 21.50
+        measured = [line("Ständig nur Gelaber", 20.35, 22.19,
+                         source="stable-ts-whisper", source_timestamp=19.33)]
+        measured[0].words[0]["window_edge_fallback"] = True
+        original_end = baseline[0].words[0]["end"]
+
+        selected, report = fuse_alignment_candidates(
+            [capture_candidate("baseline", "baseline", baseline, "legacy"),
+             capture_candidate("measured", "measured", measured,
+                               "full-transcript-stable-ts")],
+            [(20.30, 22.20)], baseline_id="baseline", mode="select",
+            minimum_line_improvement=10.0)
+
+        self.assertEqual("baseline", report["lines"][0]["selected"])
+        self.assertEqual(20.35, selected[0].words[0]["start"])
+        self.assertEqual(original_end, selected[0].words[0]["end"])
+        self.assertEqual(1, report["leading_boundary_rescues"])
+        self.assertEqual("boundary-only-acoustic-onset",
+                         report["lines"][0]["leading_boundary_rescue"]["method"])
 
     def test_ineligible_candidate_never_wins_to_avoid_baseline_transition_penalty(self):
         baseline = [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -23,6 +24,8 @@ class CandidateSelectionConfig:
     coverage_weight: float = 0.35
     matching_weight: float = 0.35
     similarity_weight: float = 0.30
+    alignment_quality_weight: float = 0.15
+    pitch_quality_weight: float = 0.08
     keep_candidate_files: bool = False
 
     @classmethod
@@ -40,6 +43,10 @@ class CandidateSelectionConfig:
             coverage_weight=float(os.getenv("LRC_ALIGNMENT_WEIGHT_COVERAGE", "0.35")),
             matching_weight=float(os.getenv("LRC_ALIGNMENT_WEIGHT_MATCHING", "0.35")),
             similarity_weight=float(os.getenv("LRC_ALIGNMENT_WEIGHT_SIMILARITY", "0.30")),
+            alignment_quality_weight=float(os.getenv(
+                "LRC_ALIGNMENT_WEIGHT_ALIGNMENT_QUALITY", "0.15")),
+            pitch_quality_weight=float(os.getenv(
+                "LRC_ALIGNMENT_WEIGHT_PITCH_QUALITY", "0.08")),
             keep_candidate_files=_enabled("LRC_ALIGNMENT_KEEP_CANDIDATES"),
         )
         config.validate()
@@ -50,8 +57,12 @@ class CandidateSelectionConfig:
             raise ValueError("LRC_ALIGNMENT_MIN_IMPROVEMENT muss zwischen 0 und 1 liegen")
         if any(ratio <= 0 or ratio >= 1 for ratio in self.blend_ratios):
             raise ValueError("Vocal/Original-Mischungsverhältnisse müssen zwischen 0 und 1 liegen")
-        if min(self.coverage_weight, self.matching_weight, self.similarity_weight) < 0:
+        if min(self.coverage_weight, self.matching_weight, self.similarity_weight,
+               self.alignment_quality_weight) < 0:
             raise ValueError("Kandidaten-Gewichtungen dürfen nicht negativ sein")
+        if not 0 <= self.pitch_quality_weight <= .10:
+            raise ValueError(
+                "LRC_ALIGNMENT_WEIGHT_PITCH_QUALITY darf höchstens 0.10 betragen")
         if self.coverage_weight + self.matching_weight + self.similarity_weight <= 0:
             raise ValueError("Mindestens eine Kandidaten-Gewichtung muss positiv sein")
 
@@ -64,6 +75,35 @@ class AudioAlignmentCandidate:
     type: str
     legacy: bool = False
     metadata: dict = field(default_factory=dict)
+
+
+def timed_anchor_alignment_quality(lines: list, activity: list[tuple[float, float]]) -> float | None:
+    """Measure whether a candidate supports existing LRC anchors.
+
+    Untimed lyrics deliberately return ``None`` so the optional metric cannot
+    invent a quality penalty where no temporal reference exists.
+    """
+    anchors = [float(line.source_timestamp if line.source_timestamp is not None
+                     else line.timestamp)
+               for line in lines if getattr(line, "timed_input", False)]
+    if len(anchors) < 2 or not activity:
+        return None
+    scores = []
+    for index, start in enumerate(anchors):
+        end = anchors[index + 1] if index + 1 < len(anchors) else start + 6.0
+        containing = [region for region in activity
+                      if region[0] <= start + .35 and region[1] >= start - .35]
+        if containing:
+            distance = min(abs(region[0] - start) for region in containing)
+        else:
+            distance = min(abs(region[0] - start) for region in activity)
+        onset = math.exp(-distance / .55)
+        window = max(.1, end - start)
+        overlap = sum(max(0.0, min(end, upper) - max(start, lower))
+                      for lower, upper in activity if upper > start and lower < end)
+        coverage = min(1.0, overlap / window)
+        scores.append(.60 * onset + .40 * coverage)
+    return float(sum(scores) / len(scores))
 
 
 def blend_audio(vocals: np.ndarray, original: np.ndarray, ratio: float,
@@ -95,18 +135,35 @@ def blend_audio(vocals: np.ndarray, original: np.ndarray, ratio: float,
     return np.ascontiguousarray(mixed, dtype=np.float32)
 
 
-def transcript_score(comparison: dict, config: CandidateSelectionConfig) -> tuple[float, dict]:
+def transcript_score(comparison: dict, config: CandidateSelectionConfig,
+                     alignment_quality: float | None = None,
+                     pitch_quality: float | None = None) -> tuple[float, dict]:
     expected = max(1, int(comparison.get("expected_words", 0)))
     coverage = min(1.0, int(comparison.get("recognized_words", 0)) / expected)
     matching = min(1.0, int(comparison.get("matching_words", 0)) / expected)
     similarity = min(1.0, max(0.0, float(comparison.get("similarity", 0.0))))
     weight = config.coverage_weight + config.matching_weight + config.similarity_weight
-    score = (coverage * config.coverage_weight + matching * config.matching_weight +
-             similarity * config.similarity_weight) / weight
+    total = (coverage * config.coverage_weight + matching * config.matching_weight +
+             similarity * config.similarity_weight)
+    normalized_alignment = None
+    if alignment_quality is not None:
+        normalized_alignment = min(1.0, max(0.0, float(alignment_quality)))
+        total += normalized_alignment * config.alignment_quality_weight
+        weight += config.alignment_quality_weight
+    normalized_pitch = None
+    if pitch_quality is not None:
+        normalized_pitch = min(1.0, max(0.0, float(pitch_quality)))
+        total += normalized_pitch * config.pitch_quality_weight
+        weight += config.pitch_quality_weight
+    score = total / weight
     return score, {
         "lyrics_coverage": round(coverage, 4),
         "matching_word_coverage": round(matching, 4),
         "similarity": round(similarity, 4),
+        "alignment_quality": (round(normalized_alignment, 4)
+                              if normalized_alignment is not None else None),
+        "tonal_pitch_quality": (round(normalized_pitch, 4)
+                                if normalized_pitch is not None else None),
     }
 
 
@@ -127,9 +184,14 @@ def select_alignment_candidate(
     for candidate in candidates:
         try:
             result = evaluate(candidate)
-            score, parts = transcript_score(result["comparison"], config)
+            score, parts = transcript_score(
+                result["comparison"], config, result.get("alignment_quality"),
+                result.get("pitch_quality"))
             diagnostics.append({"id": candidate.id, "type": candidate.type, "status": "success",
-                                "score": round(score, 4), **parts, "metadata": candidate.metadata})
+                                "score": round(score, 4), **parts,
+                                "pitch_quality_diagnostics": result.get(
+                                    "pitch_quality_diagnostics"),
+                                "metadata": candidate.metadata})
             evaluated.append((candidate, result, score))
         except Exception as error:  # Optional candidates may fail independently.
             diagnostics.append({"id": candidate.id, "type": candidate.type, "status": "failed",

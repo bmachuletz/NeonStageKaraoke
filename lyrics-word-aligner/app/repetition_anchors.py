@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import statistics
+
 from .transcript_match import normalize_words
 
 
@@ -23,7 +25,13 @@ def local_repetition_requests(lines: list, comparison: dict, total_duration: flo
         else:
             end = min(total_duration, float(lines[last_line].timestamp) + 15.0)
         recognized = pair["recognized"]
-        transcript = " ".join([recognized["unit"]] * int(recognized["repetitions"]))
+        # ASR repetition counts are diagnostic only: singing models can split
+        # one elongated/collapsed call into an additional apparent occurrence.
+        # Forced alignment keeps the canonical lyric count and uses ASR only
+        # to locate its acoustic window.
+        unit = expected.get("unit", recognized["unit"])
+        repetitions = int(expected.get("repetitions", recognized["repetitions"]))
+        transcript = " ".join([unit] * repetitions)
         pair["expected_lrc_start"] = round(float(lines[first_line].timestamp), 3)
         if last_line + 1 < len(lines):
             pair["expected_lrc_end"] = round(float(lines[last_line + 1].timestamp), 3)
@@ -148,21 +156,105 @@ def timestamp_repetition_pairs(comparison: dict, recognized_words: list[dict]) -
         start, end = float(first["start"]), float(last["end"])
         if end <= start:
             continue
+        expected = pair.get("expected", {})
+        expected_repetitions = int(expected.get("repetitions", 0))
+        recognized_repetitions = int(block.get("repetitions", 0))
+        unit_words = int(expected.get("unit_words", 0))
+        if unit_words <= 0:
+            unit_words = len(normalize_words(str(expected.get("unit", ""))))
+        block_tokens = [item[1] for item in normalized[start_index:end_index]]
+        measured_words, collapsed = _canonical_repetition_words(
+            block_tokens, unit_words, expected_repetitions, recognized_repetitions)
+        if expected_repetitions and not measured_words:
+            # Do not stretch a structurally contradictory ASR block over the
+            # canonical text. The bounded forced-aligner remains available as
+            # the conservative fallback.
+            continue
         pair["audio_start"] = round(start, 3)
         pair["audio_end"] = round(end, 3)
         pair["audio_duration"] = round(end - start, 3)
+        if measured_words:
+            pair["audio_words"] = measured_words
+            pair["recognized_repetitions_collapsed"] = collapsed
+            pair["timestamp_method"] = "stable-ts-canonical-repetition-collapse-v1"
         timed.append(pair)
     return timed
+
+
+def _canonical_repetition_words(tokens: list[dict], unit_words: int,
+                                expected_repetitions: int,
+                                recognized_repetitions: int) -> tuple[list[dict], int]:
+    """Collapse a demonstrably split ASR call without inventing lyric repeats.
+
+    Singing ASR occasionally reports the release/re-attack of one elongated
+    call as a complete extra repetition.  It is only safe to collapse when the
+    closest onset interval is substantially shorter than the median period of
+    the surrounding repeated calls.
+    """
+    if unit_words <= 0 or expected_repetitions <= 0 or recognized_repetitions <= 0:
+        return [], 0
+    required = unit_words * recognized_repetitions
+    if len(tokens) < required:
+        return [], 0
+    occurrences = [tokens[index:index + unit_words]
+                   for index in range(0, required, unit_words)]
+    collapsed = 0
+    while len(occurrences) > expected_repetitions:
+        starts = [float(group[0]["start"]) for group in occurrences]
+        periods = [right - left for left, right in zip(starts, starts[1:])
+                   if right > left]
+        if len(periods) < 2:
+            return [], 0
+        typical_period = statistics.median(periods)
+        closest_index, closest_period = min(enumerate(periods), key=lambda item: item[1])
+        if typical_period <= 0 or closest_period > typical_period * 0.65:
+            return [], 0
+        left, right = occurrences[closest_index:closest_index + 2]
+        merged_start = min(float(left[0]["start"]), float(right[0]["start"]))
+        merged_end = max(float(left[-1]["end"]), float(right[-1]["end"]))
+        if merged_end - merged_start < 0.06 * unit_words:
+            return [], 0
+        boundaries = [merged_start]
+        for word_index in range(1, unit_words):
+            candidates = [float(left[word_index]["start"]),
+                          float(right[word_index]["start"])]
+            boundary = max(candidates)
+            minimum = boundaries[-1] + 0.03
+            maximum = merged_end - 0.03 * (unit_words - word_index)
+            boundaries.append(min(max(boundary, minimum), maximum))
+        boundaries.append(merged_end)
+        merged = [{
+            "word": str(left[index].get("word", right[index].get("word", ""))),
+            "start": boundaries[index],
+            "end": boundaries[index + 1],
+        } for index in range(unit_words)]
+        occurrences[closest_index:closest_index + 2] = [merged]
+        collapsed += 1
+    if len(occurrences) != expected_repetitions:
+        return [], 0
+    measured = []
+    previous_end = None
+    for occurrence in occurrences:
+        for token in occurrence:
+            start, end = float(token["start"]), float(token["end"])
+            if end - start < 0.025 or (previous_end is not None and start + 0.015 < previous_end):
+                return [], 0
+            measured.append({"start": round(start, 3), "end": round(end, 3)})
+            previous_end = end
+    return measured, collapsed
 
 
 def apply_repetition_anchors(lines: list, timed_pairs: list[dict], *, max_start_deviation: float = 3.0) -> dict:
     """Replace collapsed repeated lyric words with ASR-confirmed acoustic windows."""
     flattened: list[dict] = []
+    word_lines: dict[int, object] = {}
     for line in lines:
         for word in line.words:
             for _ in normalize_words(str(word["word"])):
                 flattened.append(word)
+                word_lines[id(word)] = line
     anchored_words = anchored_blocks = rejected_blocks = 0
+    rescaled_following_tail_words = 0
     for pair in timed_pairs:
         expected = pair["expected"]
         start_index, end_index = int(expected["start"]), int(expected["end"])
@@ -207,15 +299,69 @@ def apply_repetition_anchors(lines: list, timed_pairs: list[dict], *, max_start_
         # words with the wrong occurrence. Never keep an anchor when it makes
         # the emitted word stream run backwards; fall back to the previous
         # acoustic candidate instead.
-        affected_lines = {id(line): line for line in lines if any(id(word) in unique_words for word in line.words)}
-        monotonic = True
-        for line in affected_lines.values():
-            starts = [float(word["start"]) for word in line.words]
-            ends = [float(word["end"]) for word in line.words]
-            if (any(right + 0.001 < left for left, right in zip(starts, starts[1:]))
-                    or any(end <= start for start, end in zip(starts, ends))):
-                monotonic = False
-                break
+        # Validate the replaced stream and its two direct neighbours. An
+        # unrelated pre-existing defect elsewhere in the same lyric line must
+        # not make a locally sound canonical anchor disappear.
+        starts = [float(word["start"]) for word in words]
+        ends = [float(word["end"]) for word in words]
+        if end_index < len(flattened):
+            following_start = float(flattened[end_index]["start"])
+            if (ends[-1] > following_start
+                    and following_start - starts[-1] >= 0.04):
+                repeated_line = word_lines.get(id(words[-1]))
+                following_line = word_lines.get(id(flattened[end_index]))
+                tail = []
+                if repeated_line is following_line and repeated_line is not None:
+                    first_tail = next(
+                        index for index, candidate in enumerate(repeated_line.words)
+                        if candidate is flattened[end_index])
+                    tail = repeated_line.words[first_tail:]
+                # A lexical tail after a repeated call belongs to the same
+                # continuous phrase.  If at least two words remain, preserve
+                # the measured refrain end and compress/expand only that tail
+                # inside its already established outer end.  Clipping the
+                # refrain to a stale first-tail onset caused cascading early
+                # timings in dense choruses.
+                tail_end = float(tail[-1]["end"]) if tail else following_start
+                if len(tail) >= 2 and tail_end - ends[-1] >= len(tail) * 0.04:
+                    old_tail_start = float(tail[0]["start"])
+                    old_span = max(0.001, tail_end - old_tail_start)
+                    new_span = tail_end - ends[-1]
+                    cursor = ends[-1]
+                    for offset, tail_word in enumerate(tail):
+                        old_start = float(tail_word["start"])
+                        old_end = float(tail_word["end"])
+                        remaining = len(tail) - offset - 1
+                        latest_end = tail_end - remaining * 0.04
+                        mapped_start = ends[-1] + (
+                            old_start - old_tail_start) / old_span * new_span
+                        mapped_end = ends[-1] + (
+                            old_end - old_tail_start) / old_span * new_span
+                        new_start = min(max(cursor, mapped_start), latest_end - 0.04)
+                        new_end = min(latest_end, max(new_start + 0.04, mapped_end))
+                        tail_word["repetition_tail_original_start"] = round(old_start, 3)
+                        tail_word["repetition_tail_original_end"] = round(old_end, 3)
+                        tail_word["start"] = round(new_start, 3)
+                        tail_word["end"] = round(new_end, 3)
+                        tail_word["timing_source"] = "repetition-following-tail-rescale"
+                        cursor = new_end
+                    rescaled_following_tail_words += len(tail)
+                else:
+                    words[-1]["repetition_following_boundary_clip_ms"] = round(
+                        (ends[-1] - following_start) * 1000)
+                    words[-1]["end"] = round(following_start, 3)
+                    ends[-1] = following_start
+        monotonic = not (
+            any(right + 0.001 < left for left, right in zip(starts, starts[1:]))
+            or any(end <= start for start, end in zip(starts, ends))
+            or any(right + 0.001 < left
+                   for left, right in zip(ends, starts[1:])))
+        if start_index > 0:
+            previous = flattened[start_index - 1]
+            monotonic = monotonic and float(previous["start"]) <= starts[0] + 0.001
+        if end_index < len(flattened):
+            following = flattened[end_index]
+            monotonic = monotonic and starts[-1] <= float(following["start"]) + 0.001
         if not monotonic:
             for word, old_start, old_end, old_source in original:
                 word["start"] = old_start
@@ -238,6 +384,7 @@ def apply_repetition_anchors(lines: list, timed_pairs: list[dict], *, max_start_
                 line.timestamp = float(line.words[0]["start"])
     return {"blocks": anchored_blocks, "words": anchored_words,
             "rejected_blocks": rejected_blocks,
+            "rescaled_following_tail_words": rescaled_following_tail_words,
             "method": "asr-structural-repetition-v1"}
 
 

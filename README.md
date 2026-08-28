@@ -253,15 +253,45 @@ single-song or full-library job, choose exactly what the GPU worker should run:
 - **Variant 2 — LRCLIB + full transcript:** maps the original LRCLIB text onto a
   newly generated full-audio transcript. Use it for missing repetitions, incorrect
   line structure, or a heavily shifted source.
-- **Both variants:** runs both paths independently and stores two comparison
-  versions. If one path fails, the other result is still retained.
+- **Editor-guided realignment:** uses the latest saved manual corrections as
+  local calibration anchors. Exact reviewed lines stay fixed; only nearby
+  untouched lines may inherit a bounded correction after outlier rejection and
+  comparison against the final vocal stem.
+- **Research shadow — clean-room alignment:** always starts from the immutable
+  `.pre-align.lrc`, discards every existing word/syllable timestamp and Neon
+  editor marker inside the GPU worker, and independently runs the phoneme,
+  duration, multiband, pitch/voicing, and release analysis. Its generated
+  version is labelled as a research shadow and can be loaded in the editor for
+  an audible comparison without replacing the current working version.
+- **All variants:** runs all four paths independently and stores separate
+  comparison versions. If one path fails, the other results are still retained.
 
 Variant 1.2 is selected by default so an alignment does not automatically perform
 the more expensive full-transcript pass. Full-library jobs process songs
 sequentially and isolate errors per song and variant. Automatic results return to
 review and are never silently released to the stage.
 
+The same clean-room profile is available to automation:
+
+```bash
+./scripts/linux/align-library.sh --library /path/to/library --force \
+  --match 'Artist - Title.mp3' --profile research-shadow
+```
+
 For a song with missing or unusable lyrics, select it and choose **Management → Recognize complete lyrics from audio…**. This queues an isolated GPU workflow that separates vocals, transcribes the complete sung text with Qwen3-ASR, checks text and acoustic timing with Stable-TS `large-v3`, creates monotonic word windows with Qwen Forced Aligner, and finally passes the result through the regular word/syllable alignment pipeline. Models load sequentially, and the worker subprocess exits before the next queued job starts so its CPU and CUDA allocations are returned to the operating system. Existing editor work is saved as a separate version first; generated output always returns as **In review**.
+
+The library list supports native batch selection: **Ctrl+click** toggles
+individual songs and **Shift+click** selects a contiguous range. Choosing
+**Alignment → Realign selected songs** submits exactly that selection as one
+server job; songs and requested variants run sequentially on the single GPU,
+and a failure remains isolated to its song instead of aborting the batch.
+
+For an **In review** song, **Management → Show / edit base lyrics…** opens the
+recognized or downloaded source text used by the next realignment. Saving it
+does not mutate the currently loaded timeline. Section annotations such as
+`[Chorus]`, `Refrain`, `Verse 1`, `Bridge`, or `Instrumental` are retained in
+the editable source but ignored as non-sung structure markers when lyrics are
+loaded or aligned, so they never become timed words.
 
 Use **Alignment → Apply global lyrics shift…** for a uniform timing correction. Positive milliseconds move every line, word, and syllable later; negative values move all of them earlier. Neon Stage changes the actual segment coordinates rather than writing an LRC offset tag. The operation is one atomic undo step and is rejected if any segment would move before the audio start or beyond its end.
 
@@ -319,7 +349,7 @@ A stage-ready library entry requires audio, lyrics, instrumental, and vocal stem
 
 If request processing downloaded valid audio but could not obtain or align suitable lyrics, the request stays open and the editor exposes two explicit admin actions. **Remove** discards the request. **Adopt** keeps the audio as an unreleased **Without lyrics** project, which can be found through the matching editor status filter. Imported lyrics become the source for a later per-song alignment. The project moves into the regular **In review** category only after usable lyrics and both instrumental and vocal stems exist; incomplete projects can never enter the guest library, queue, or stage.
 
-The editor exposes the same folder workflow under **Management → Import audio folder (MP3/FLAC)**. It reads ID3 or Vorbis-comment metadata, preserves the original MP3 or lossless FLAC master, prefers adjacent or embedded lyrics, and then tries LRCLIB. Existing lyrics enter Variant 1.2 IPA word/syllable alignment. If no usable text exists at all, the GPU worker automatically creates a full transcript with word boundaries and passes that result through Variant 1.2 as well. The workflow runs stem separation and automatically admits only technically complete projects. The explicit **Adopt** action above is the sole incomplete-project exception and remains stage-blocked. Spotify and the optional Qobuz integration supply catalog metadata for request imports; neither is treated as a lyrics source. Neon Stage therefore obtains lyrics from configured lyric sources such as LRCLIB or from its local full-transcription worker.
+The editor exposes the same folder workflow under **Management → Import audio folder (MP3/FLAC)**. It reads ID3 or Vorbis-comment metadata, preserves the original MP3 or lossless FLAC master, and prefers adjacent or embedded lyrics. Without local lyrics, request and folder imports first look for a recording-compatible UltraStar TXT on USDB, then fall back to LRCLIB unchanged. A trusted UltraStar recording match keeps its original beat/note, word, and syllable geometry: Neon Stage creates the stems and applies at most one rigid recording offset, while skipping ASR/CTC/AI lyrics alignment. If the recording check is not conclusive, the normal Variant 1.2 path remains the fallback. If neither source yields usable text, the GPU worker creates a full transcript with word boundaries and passes it through Variant 1.2. Every import route performs the same normalized title/artist duplicate check; existing review and without-lyrics projects also count as imported. The workflow automatically admits only technically complete projects. The explicit **Adopt** action above is the sole incomplete-project exception and remains stage-blocked. Spotify and the optional Qobuz integration supply catalog metadata for request imports; neither is treated as a lyrics source. See [USDB lyrics-source integration](docs/usdb-lyrics-source.md) for configuration, matching safeguards, cache behavior, and known brittle points.
 
 ### Import UltraStar Deluxe lyrics
 
@@ -337,6 +367,9 @@ syllables for the live editor preview.
   available before closing, and **Save** creates a new version.
 - The MP3/FLAC-folder and server song-import workflows recognize UltraStar TXT
   sidecars as well and convert their timing to Enhanced LRC before alignment.
+- **Management → Check USDB for lyrics…** searches USDB on the server for the
+  loaded song, preselects the best candidate, and creates a separate review
+  revision only after the operator confirms **Select**.
 
 Variable-BPM directives and duet tracks are currently rejected explicitly
 because Neon Stage cannot preserve those semantics yet. Malformed source files
@@ -352,7 +385,7 @@ Web portals use the browser locale: German for `de`, English otherwise. `localSt
 
 ## Media, services, and privacy
 
-Operators are responsible for all media rights and third-party terms. Neon Stage is not affiliated with or endorsed by Spotify, Qobuz, LRCLIB, artists, or labels. See [`docs/legal/media-and-services.md`](docs/legal/media-and-services.md).
+Operators are responsible for all media rights and third-party terms. Neon Stage is not affiliated with or endorsed by Spotify, Qobuz, USDB, LRCLIB, artists, or labels. See [`docs/legal/media-and-services.md`](docs/legal/media-and-services.md).
 
 ## License
 

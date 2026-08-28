@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import os
+import re
 import tempfile
 import gc
 import soundfile as sf
@@ -10,54 +11,467 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable
 from .aligner import QwenWordAligner
-from .audio import ffmpeg_to_flac, ffmpeg_to_mono16k, load_audio, select_alignment_audio
+from .alignment_profiles import ALIGNMENT_PROFILES
+from .audio import (ffmpeg_to_flac, ffmpeg_to_mono16k, load_audio,
+                    load_native_audio)
 from .asr_prompt import build_asr_prompt
+from .basic_pitch_evidence import (analyze_and_refine_line_onsets,
+                                   candidate_pitch_quality)
+from .analysis_stems import build_analysis_candidates
 from .candidate_selection import (AudioAlignmentCandidate, CandidateSelectionConfig,
-                                  blend_audio, select_alignment_candidate,
-                                  select_stage_stem_candidate)
+                                  select_alignment_candidate,
+                                  timed_anchor_alignment_quality)
 from .canonical_lyrics import transfer_canonical_lines
 from .ctc_aligner import realign_heuristic_lines, realign_overlapping_line_pairs
 from .easy_aligner import realign_with_easyaligner
-from .consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains, reconcile_acoustic_boundaries,
+from .consensus import (eliminate_remaining_line_overlaps, extend_final_word_sustains,
+                        reassign_overlong_connector_sustains, reconcile_acoustic_boundaries,
                         stabilize_acoustic_display_durations)
 from .fragment_recovery import recover_deleted_fragments
 from .lrc import parse_lrc, render_enhanced_lrc
 from .lyrics_engine_v2 import (capture_candidate, fuse_alignment_candidates,
-                               preserve_better_enhanced_input)
+                               preserve_better_enhanced_input,
+                               preserve_uncorroborated_internal_editor_boundaries)
 from .mms_aligner import realign_remaining_lines
 from .models import AlignmentConfig
 from .onset_validation import apply_supported_onset_refinements, validate_line_onsets
-from .phoneme_ctc_aligner import annotate_phoneme_boundaries
+from .phoneme_ctc_aligner import (align_global_phoneme_path,
+                                  annotate_phoneme_boundaries,
+                                  audit_final_word_boundaries)
 from .micro_boundaries import (analyze_voicing, compare_timing_reference,
+                               serialize_voicing_evidence,
                                sustain_voicing_intervals,
                                refine_sustain_releases_with_voicing)
 from .vocal_boundaries import constrain_to_stage_vocals
-from .separator import KARAOKE_MODEL, separate_stems
+from .collapsed_lines import repair_collapsed_lines, repair_compressed_word_runs
+from .boundary_evidence import leakage_aware_evidence
+from .transcript_quality import (detect_hallucinated_runs,
+                                 measure_transcript_coverage, score_transcript,
+                                 selection_rank)
+from .separator import KARAOKE_MODEL, StemPaths, separate_stems
+from .stem_roles import SeparationConfig, separator_family
 from .sofa_aligner import realign_english_singing
 from .stable_transcriber import realign_with_stable_words, transcribe_stable_variants
-from .repair import repair_collapsed_timings
+from .stem_leakage import recover_complementary_stem_lines
+from .repair import (constrain_final_words_to_source_boundaries,
+                     repair_collapsed_timings)
 from .repetition_anchors import (apply_local_timestamp, apply_repetition_anchors,
                                  apply_transition_words, local_repetition_requests,
-                                 refine_stretched_repetition_anchors, transition_requests)
+                                 refine_stretched_repetition_anchors,
+                                 timestamp_repetition_pairs, transition_requests)
 from .repeated_phrase_refinement import refine_repeated_phrase_words
 from .syllables import enrich_lines_with_syllables
-from .transcriber import QwenTranscriber, language_code, merge_transcript_chunks
-from .transcript_match import compare_transcripts
+from .transcriber import (QwenTranscriber, language_code,
+                          merge_transcript_chunks, reconcile_detected_language)
+from .transcript_match import compare_transcripts, normalize_words
 from .validator import validate
 from .chorus_anchors import apply_trusted_chorus_anchors, recover_missing_initial_chorus
 from .vocal_activity import (detect_vocal_activity, repair_anchor_context,
                              repair_anchor_line_tails, repair_with_vocal_activity)
+from .editor_guidance import build_editor_guided_candidate
+from .evidence_fusion import fuse_syllable_evidence
+from .note_alignment import align_notes_to_syllables
 from .completeness import (apply_completeness_gate, apply_targeted_gap_results,
-                           assess_lyric_completeness)
+                           assess_lyric_completeness,
+                           constrain_lyrics_before_nonlexical_vocalizations)
 from .gap_recovery import recover_vocal_gap_lines
 from .full_transcription import (fallback_transcription_windows,
                                  plan_transcription_windows)
 from .timestamp_calibration import calibrate_source_timestamps
+from .stem_contrast import refine_final_releases_with_stem_contrast
+from .medleyvox import (analyze_multiple_singing_voices,
+                        apply_multiple_singing_voice_proposals,
+                        planned_voice_lanes)
 
 ProgressCallback = Callable[[int, str], None]
 
+# Architectural contract: broad/lexical models establish hypotheses first;
+# increasingly local acoustic stages follow; syllables are derived only after
+# the final immutable word geometry.  The runtime trace is persisted in every
+# report and fails fast if a future edit enters phases out of order.
+PIPELINE_PHASE_ORDER = (
+    "input-and-audio-preparation",
+    "transcript-evidence",
+    "primary-word-alignment",
+    "independent-forced-refinement",
+    "stage-stem-finalization",
+    "timing-candidate-fusion",
+    "macro-boundary-refinement",
+    "missing-lyrics-recovery",
+    "late-word-geometry",
+    "editor-boundary-protection",
+    "hard-boundary-precheck",
+    "sentence-word-verification",
+    "final-hard-constraints",
+    "syllable-derivation",
+    "validation-and-export",
+)
+
 def _noop(_percent: int, _message: str) -> None:
     pass
+
+
+_MANUAL_RANGE_RE = re.compile(
+    r"^\[neon-manual:(?P<start>\d+(?:\.\d+)?),(?P<end>\d+(?:\.\d+)?)\]$")
+
+
+def _manual_editor_ranges(headers: list[str]) -> list[tuple[float, float]]:
+    ranges = []
+    for header in headers:
+        match = _MANUAL_RANGE_RE.fullmatch(header.strip())
+        if match is None:
+            continue
+        start, end = float(match.group("start")), float(match.group("end"))
+        if end > start:
+            ranges.append((start, end))
+    return ranges
+
+
+def _restore_manual_editor_lines(lines: list, enhanced_candidate,
+                                 ranges: list[tuple[float, float]]) -> dict:
+    summary = {"enabled": bool(ranges), "preserved_lines": 0,
+               "method": "immutable-manual-editor-lines-v1", "line_indices": []}
+    if enhanced_candidate is None or not ranges or len(enhanced_candidate.lines) != len(lines):
+        return summary
+    for index, (current, source) in enumerate(zip(lines, enhanced_candidate.lines)):
+        if normalize_words(current.text) != normalize_words(source.text) or not source.words:
+            continue
+        # The editor line may deliberately start shortly before its first word
+        # (for display preparation/lead-in). The marker describes the line,
+        # not the first word, so compare it with the source timestamp.
+        start = float(source.timestamp)
+        end = float(source.words[-1]["end"])
+        # The marker describes this exact source line.  Merely intersecting a
+        # range could also freeze an adjacent line after an earlier alignment
+        # accidentally created an overlap.
+        matched_range = next((
+            (range_start, range_end)
+            for range_start, range_end in ranges
+            if abs(start - range_start) <= 0.002 and end <= range_end + 0.002
+        ), None)
+        if matched_range is None:
+            continue
+        range_start, range_end = matched_range
+        restored = deepcopy(source)
+        restored.manual_adjusted = True
+        restored.manual_editor_start = range_start
+        restored.manual_editor_end = range_end
+        for word in restored.words:
+            if word.get("editor_word_manual_adjusted"):
+                word["manual_adjusted"] = True
+        lines[index] = restored
+        summary["preserved_lines"] += 1
+        summary["line_indices"].append(index + 1)
+    return summary
+
+
+def _restore_manual_editor_syllables(lines: list, enhanced_candidate) -> dict:
+    """Restore edited syllable structure after automatic syllable derivation.
+
+    This deliberately runs after ``enrich_lines_with_syllables``. Automatic
+    alignment may improve untouched words, while explicitly edited syllables
+    (including inserted or removed syllables) remain the human authority.
+    """
+    summary = {"enabled": enhanced_candidate is not None, "preserved_words": 0,
+               "preserved_syllables": 0,
+               "method": "immutable-manual-editor-syllables-v1"}
+    if enhanced_candidate is None or len(enhanced_candidate.lines) != len(lines):
+        return summary
+    for current_line, source_line in zip(lines, enhanced_candidate.lines):
+        if normalize_words(current_line.text) != normalize_words(source_line.text):
+            continue
+        if len(current_line.words) != len(source_line.words):
+            continue
+        for current_word, source_word in zip(current_line.words, source_line.words):
+            edited = source_word.get("editor_syllables")
+            if normalize_words(str(current_word.get("word", ""))) != normalize_words(
+                    str(source_word.get("word", ""))):
+                continue
+            if (abs(float(current_word["start"]) - float(source_word["start"])) > 0.002
+                    or abs(float(current_word.get("end", current_word["start"]))
+                           - float(source_word.get("end", source_word["start"]))) > 0.002):
+                continue
+            if source_word.get("editor_word_manual_adjusted"):
+                current_word["start"] = float(source_word.get(
+                    "editor_word_start", source_word["start"]))
+                current_word["end"] = float(source_word.get(
+                    "editor_word_end", source_word.get("end", source_word["start"])))
+                current_word["manual_adjusted"] = True
+            if not isinstance(edited, list) or not edited:
+                continue
+            current_word["syllables"] = deepcopy(edited)
+            current_word["syllable_confidence"] = min(
+                (float(item.get("confidence", 1.0)) for item in edited), default=1.0)
+            current_word["syllable_method"] = "manual-editor"
+            summary["preserved_words"] += 1
+            summary["preserved_syllables"] += len(edited)
+    return summary
+
+
+def _constrain_following_lines_after_manual_editor_holds(lines: list) -> dict:
+    """Keep an automatic neighbour outside a manually authored line window.
+
+    Editor lines may intentionally keep a short display tail after their final
+    word. The ordinary overlap pass only sees sung word intervals, so an
+    automatically realigned following line could otherwise move into that
+    protected display interval and make the reconstructed editor hierarchy
+    invalid. Shift only the automatic neighbour; two manual neighbours are
+    already authoritative and must not be rewritten here.
+    """
+    adjustments = []
+    for index in range(len(lines) - 1):
+        previous, following = lines[index], lines[index + 1]
+        boundary = previous.manual_editor_end
+        if boundary is None or following.manual_adjusted:
+            continue
+        delta = float(boundary) - float(following.timestamp)
+        if delta <= 0.000001:
+            continue
+        old_start = float(following.timestamp)
+        following.timestamp = float(boundary)
+        for word in following.words:
+            word["start"] = float(word["start"]) + delta
+            word["end"] = float(word.get("end", word["start"])) + delta
+        adjustments.append({
+            "preceding_line": index + 1,
+            "following_line": index + 2,
+            "old_start": round(old_start, 6),
+            "new_start": round(float(boundary), 6),
+            "shift_ms": round(delta * 1000.0, 3),
+        })
+    return {
+        "method": "manual-editor-display-boundary-v1",
+        "adjusted_lines": len(adjustments),
+        "adjustments": adjustments,
+    }
+
+
+def _constrain_preceding_lines_before_manual_editor_starts(
+        lines: list, *, minimum_word_duration: float = 0.04) -> dict:
+    """Keep generated sung tails out of a protected editor display window.
+
+    A manually authored line may intentionally be displayed shortly before its
+    first sung word. The ordinary overlap resolver compares word to word and
+    therefore cannot see a generated predecessor extending into this lead-in.
+    Preserve the manual line and compress only its automatic predecessor tail.
+    """
+    adjustments = []
+    unresolved = []
+    for index in range(1, len(lines)):
+        previous, current = lines[index - 1], lines[index]
+        if not current.manual_adjusted or previous.manual_adjusted or not previous.words:
+            continue
+        boundary = current.manual_editor_start
+        if boundary is None:
+            boundary = float(current.timestamp)
+        boundary = float(boundary)
+        previous_end = float(previous.words[-1].get(
+            "end", previous.words[-1]["start"]))
+        if previous_end <= boundary + 0.000001:
+            continue
+
+        first = next((word_index for word_index, word in enumerate(previous.words)
+                      if float(word.get("end", word["start"])) > boundary),
+                     len(previous.words) - 1)
+        while first > 0 and boundary - float(previous.words[first]["start"]) < (
+                len(previous.words) - first) * minimum_word_duration:
+            first -= 1
+        old_start = float(previous.words[first]["start"])
+        available = boundary - old_start
+        required = (len(previous.words) - first) * minimum_word_duration
+        if available < required or previous_end <= old_start:
+            unresolved.append({
+                "preceding_line": index,
+                "manual_line": index + 1,
+                "overlap_ms": round((previous_end - boundary) * 1000.0, 3),
+                "reason": "insufficient-safe-tail-space",
+            })
+            continue
+
+        tail = previous.words[first:]
+        originals = [(float(word["start"]),
+                      float(word.get("end", word["start"]))) for word in tail]
+        scale = available / max(0.001, previous_end - old_start)
+        cursor = old_start
+        for offset, (word, (original_start, original_end)) in enumerate(
+                zip(tail, originals)):
+            remaining = len(tail) - offset - 1
+            latest_end = boundary - remaining * minimum_word_duration
+            mapped_start = old_start + (original_start - old_start) * scale
+            mapped_end = old_start + (original_end - old_start) * scale
+            word_start = min(max(cursor, mapped_start),
+                             latest_end - minimum_word_duration)
+            word_end = min(latest_end,
+                           max(word_start + minimum_word_duration, mapped_end))
+            word["start"] = round(word_start, 3)
+            word["end"] = round(word_end, 3)
+            word["timing_source"] = "manual-successor-display-boundary"
+            for syllable in word.get("syllables", []):
+                syllable_start = old_start + (
+                    float(syllable["start"]) - old_start) * scale
+                syllable_end = old_start + (
+                    float(syllable["end"]) - old_start) * scale
+                syllable["start"] = round(
+                    max(float(word["start"]), syllable_start), 3)
+                syllable["end"] = round(
+                    min(float(word["end"]),
+                        max(float(syllable["start"]), syllable_end)), 3)
+            cursor = float(word["end"])
+        previous.words[-1]["end"] = round(boundary, 3)
+        if previous.words[-1].get("syllables"):
+            previous.words[-1]["syllables"][-1]["end"] = round(boundary, 3)
+        adjustments.append({
+            "preceding_line": index,
+            "manual_line": index + 1,
+            "overlap_ms": round((previous_end - boundary) * 1000.0, 3),
+            "tail_words": len(tail),
+            "boundary": round(boundary, 3),
+        })
+    return {
+        "method": "manual-editor-preceding-display-boundary-v1",
+        "adjusted_lines": len(adjustments),
+        "adjustments": adjustments,
+        "unresolved": unresolved,
+    }
+
+
+def _restore_editor_tail_after_delayed_first_word(lines: list,
+                                                   enhanced_candidate) -> dict:
+    """Restore only explicitly edited neighbours after an onset repair.
+
+    An enhanced LRC is also used as an automatically generated alignment
+    basis. Treating every boundary in it as human-authored used to discard a
+    substantially better acoustic path for all words after a repaired first
+    onset. Only boundaries carrying the editor's explicit manual marker are
+    authoritative here.
+    """
+    summary = {"enabled": enhanced_candidate is not None, "restored_lines": 0,
+               "restored_word_boundaries": 0,
+               "method": "delayed-first-word-editor-tail-guard-v2", "lines": []}
+    if enhanced_candidate is None or len(enhanced_candidate.lines) != len(lines):
+        return summary
+    for line_index, (current, source) in enumerate(
+            zip(lines, enhanced_candidate.lines)):
+        if (not current.words or not source.words
+                or current.words[0].get("timing_source")
+                != "ipa-delayed-first-word-onset"
+                or len(current.words) != len(source.words)
+                or normalize_words(current.text) != normalize_words(source.text)):
+            continue
+        if [normalize_words(str(word.get("word", ""))) for word in current.words] != [
+                normalize_words(str(word.get("word", ""))) for word in source.words]:
+            continue
+        repaired_start = float(current.words[0]["start"])
+        source_first_end = float(source.words[0]["end"])
+        restored = 0
+        if (source.words[0].get("editor_word_manual_adjusted")
+                and source_first_end - repaired_start >= 0.04):
+            current.words[0]["end"] = source_first_end
+            restored += 1
+        for current_word, source_word in zip(current.words[1:], source.words[1:]):
+            if not source_word.get("editor_word_manual_adjusted"):
+                continue
+            current_word["start"] = float(source_word["start"])
+            current_word["end"] = float(source_word["end"])
+            current_word["timing_source"] = "editor-tail-after-delayed-first-word"
+            restored += 2
+        if not restored:
+            continue
+        current.timestamp = repaired_start
+        summary["restored_lines"] += 1
+        summary["restored_word_boundaries"] += restored
+        summary["lines"].append({
+            "line": line_index + 1,
+            "text": current.text,
+            "repaired_first_start": round(repaired_start, 6),
+            "restored_first_end": round(source_first_end, 6),
+            "restored_boundaries": restored,
+        })
+    return summary
+
+
+def _restore_editor_syllable_tail_after_delayed_first_word(
+        lines: list, enhanced_candidate) -> dict:
+    """Restore only the unchanged following syllables after the onset repair.
+
+    Syllables are derived after the final word-boundary pass, so the matching
+    word guard above cannot protect them yet.  The first word deliberately
+    remains acoustic: shortening its false prefix changes its usable syllable
+    window. Only following words explicitly adjusted by a person retain their
+    editor syllables; generated references must not override acoustic output.
+    """
+    summary = {"enabled": enhanced_candidate is not None, "restored_words": 0,
+               "restored_syllables": 0,
+               "method": "delayed-first-word-editor-syllable-tail-guard-v2"}
+    if enhanced_candidate is None or len(enhanced_candidate.lines) != len(lines):
+        return summary
+    for current, source in zip(lines, enhanced_candidate.lines):
+        if (not current.words or not source.words
+                or current.words[0].get("timing_source")
+                != "ipa-delayed-first-word-onset"
+                or len(current.words) != len(source.words)
+                or normalize_words(current.text) != normalize_words(source.text)):
+            continue
+        for current_word, source_word in zip(current.words[1:], source.words[1:]):
+            if not source_word.get("editor_word_manual_adjusted"):
+                continue
+            if normalize_words(str(current_word.get("word", ""))) != normalize_words(
+                    str(source_word.get("word", ""))):
+                continue
+            if (abs(float(current_word["start"]) - float(source_word["start"])) > 0.002
+                    or abs(float(current_word.get("end", current_word["start"]))
+                           - float(source_word.get("end", source_word["start"]))) > 0.002):
+                continue
+            source_syllables = source_word.get("editor_reference_syllables")
+            if not isinstance(source_syllables, list) or not source_syllables:
+                source_syllables = source_word.get("editor_syllables")
+            if not isinstance(source_syllables, list) or not source_syllables:
+                continue
+            current_word["syllables"] = deepcopy(source_syllables)
+            current_word["syllable_confidence"] = min(
+                (float(item.get("confidence", 1.0)) for item in source_syllables),
+                default=1.0)
+            current_word["syllable_method"] = "editor-tail-after-delayed-first-word"
+            summary["restored_words"] += 1
+            summary["restored_syllables"] += len(source_syllables)
+    return summary
+
+
+def _prepare_research_shadow_input(headers: list[str], lines: list) -> tuple[list[str], dict]:
+    """Remove every editor-derived timing authority from a shadow run.
+
+    The immutable pre-align file supplies text, line order and optional rough
+    line cues only. Enhanced word timestamps, manual ranges, editor syllables,
+    holds, and effects must never leak into the clean-room comparison. This is
+    repeated inside the worker even though the server already selects the
+    pre-align source, making the guarantee independent of caller behaviour.
+    """
+    clean_headers = [header for header in headers if not header.strip().lower().startswith(
+        ("[neon-manual:", "[neon-editor-syllables:", "[neon-voice:"))]
+    removed_words = 0
+    cleared_manual_lines = 0
+    for line in lines:
+        removed_words += len(line.words)
+        cleared_manual_lines += int(bool(
+            line.manual_adjusted or line.manual_editor_start is not None
+            or line.manual_editor_end is not None))
+        line.words = []
+        line.manual_adjusted = False
+        line.manual_editor_start = None
+        line.manual_editor_end = None
+        line.voice_lane = 0
+        line.voice_label = None
+        line.status = "pending"
+        line.reason = None
+    return clean_headers, {
+        "enabled": True,
+        "method": "immutable-pre-align-clean-room-v1",
+        "removed_editor_headers": len(headers) - len(clean_headers),
+        "removed_word_timing_records": removed_words,
+        "cleared_manual_lines": cleared_manual_lines,
+        "retained_line_cues": len(lines),
+        "manual_timing_authority": False,
+    }
 
 
 def _release_stage_gpu_memory() -> None:
@@ -133,8 +547,29 @@ def _transcribe_for_verification(session: QwenTranscriber, audio, language: str,
 
 
 def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, separator: bool, device: str,
-        progress: ProgressCallback | None = None) -> dict:
+        progress: ProgressCallback | None = None,
+        provided_vocals: Path | None = None,
+        provided_instrumental: Path | None = None,
+        alignment_profile: str = "standard") -> dict:
+    if alignment_profile not in ALIGNMENT_PROFILES:
+        raise ValueError(
+            "unbekanntes alignment_profile")
+    if (provided_vocals is None) != (provided_instrumental is None):
+        raise ValueError("Vorhandene Vocal- und Instrumentalspur müssen gemeinsam angegeben werden.")
+    provided_stage_stems = provided_vocals is not None
+    if provided_stage_stems and not separator:
+        raise ValueError("Vorhandene Stems erfordern aktivierte Separation/Stem-Verarbeitung.")
     notify = progress or _noop
+    phase_trace: list[str] = []
+
+    def enter_phase(name: str) -> None:
+        expected = PIPELINE_PHASE_ORDER[len(phase_trace)]
+        if name != expected:
+            raise RuntimeError(
+                f"Ungültige Alignment-Reihenfolge: erwartet '{expected}', erhielt '{name}'.")
+        phase_trace.append(name)
+
+    enter_phase("input-and-audio-preparation")
     output_dir.mkdir(parents=True, exist_ok=True)
     notify(5, "LRC-Datei wird eingelesen")
     cfg = AlignmentConfig(
@@ -146,14 +581,66 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         section_max_duration=float(os.getenv("LRC_SECTION_MAX_DURATION", "45")),
     )
     headers, lines = parse_lrc(lrc_path)
+    research_shadow_input = {"enabled": False, "method": "standard-editor-aware-input"}
+    if alignment_profile == "research-shadow":
+        headers, research_shadow_input = _prepare_research_shadow_input(headers, lines)
+    manual_editor_ranges = (_manual_editor_ranges(headers)
+                            if alignment_profile in {"standard", "editor-guided", "basic-pitch-ab"} else [])
+    # Experimental recovery of lines placed in measured silence. It moves whole
+    # lines and is therefore restricted to the clean-room profile until it has
+    # been evaluated; variant 1.2 and every editor-aware run keep the previous
+    # behaviour. The variable stays available for a diagnostic opt-out.
+    shadow_silent_prefix_recovery = (
+        alignment_profile == "research-shadow"
+        and os.getenv("LRC_SHADOW_SILENT_PREFIX_RECOVERY", "true").strip().lower()
+        in {"1", "true", "yes", "on"})
+    # Same staging for the language cross-check: it changes syllabification and
+    # model selection for the whole run, so variant 1.2 keeps the ASR verdict
+    # until this has been evaluated in the clean room.
+    shadow_language_reconciliation = (
+        alignment_profile == "research-shadow"
+        and os.getenv("LRC_SHADOW_LANGUAGE_RECONCILIATION", "true").strip().lower()
+        in {"1", "true", "yes", "on"})
+    language_reconciliation = {"enabled": shadow_language_reconciliation,
+                               "applied": False, "reason": "not-evaluated"}
+    # Coverage and hallucination are measured for every profile because they
+    # are read-only diagnostics. Only the clean room lets them decide which
+    # transcript wins, since that changes every downstream stage.
+    shadow_transcript_selection = (
+        alignment_profile == "research-shadow"
+        and os.getenv("LRC_SHADOW_TRANSCRIPT_SELECTION", "true").strip().lower()
+        in {"1", "true", "yes", "on"})
+    # A song whose lyrics arrive without any timing gets no line anchors at
+    # all, so the whole-song forced alignment has to place every word from text
+    # alone. The transcript scaffolds can supply those anchors.
+    shadow_untimed_scaffolds = (
+        alignment_profile == "research-shadow"
+        and os.getenv("LRC_SHADOW_UNTIMED_SCAFFOLDS", "true").strip().lower()
+        in {"1", "true", "yes", "on"})
     untimed_input = all(not line.timed_input for line in lines)
     if not lines:
         raise ValueError("Die LRC-Datei enthält keine synchronisierten Textzeilen.")
+    # Immutable canonical input for the anchor-free primary path. It must not
+    # inherit geometry later produced by Qwen, Stable-TS or the input LRC.
+    global_phoneme_input = deepcopy(lines)
+    global_phoneme_mode = os.getenv(
+        "LRC_GLOBAL_PHONEME_MODE", "primary").strip().lower()
+    if global_phoneme_mode not in {"off", "shadow", "primary"}:
+        raise ValueError("LRC_GLOBAL_PHONEME_MODE muss off, shadow oder primary sein.")
+    # Architecture changes remain clean-room-only until their regression set
+    # has been measured. Variant 1.2 and manual editor timing stay untouched.
+    if alignment_profile != "research-shadow":
+        global_phoneme_mode = "off"
     engine_v2_mode = os.getenv("LRC_ENGINE_V2_MODE", "select").strip().lower()
     if engine_v2_mode not in {"off", "shadow", "select"}:
         raise ValueError("LRC_ENGINE_V2_MODE muss off, shadow oder select sein.")
     engine_v2_candidates = []
     engine_v2_candidate_errors: list[dict] = []
+    editor_guidance_summary = {
+        "enabled": alignment_profile == "editor-guided",
+        "reason": "awaiting-final-stage-stem" if alignment_profile == "editor-guided"
+                  else "profile-disabled",
+    }
     enhanced_input_candidate = (
         capture_candidate("enhanced-input", "Gespeicherter Editor-Stand",
                           lines, "human-editor")
@@ -175,103 +662,66 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
     }
     stem_outputs: dict[str, str] = {}
     stage_stem_selection: dict = {"enabled": False, "reason": "separator-disabled"}
+    analysis_stem_selection: dict = {"enabled": False, "reason": "separator-disabled"}
     stage_separator_model: str | None = None
+    separation_config = SeparationConfig.from_environment()
     with tempfile.TemporaryDirectory(prefix="lyrics-align-") as temp:
         temp_dir = Path(temp)
-        instrumental_audio = None
+        analysis_accompaniment_audio = None
+        stage_instrumental_audio = None
         if separator:
-            notify(12, "Lead-Vocals werden isoliert")
-            separated = separate_stems(audio_path, temp_dir / "separated")
-            source = separated.vocals
+            if provided_stage_stems:
+                notify(12, "Gespeicherte Bibliotheksspuren werden als feste Audioreferenz geladen")
+                stage_stems = StemPaths(Path(provided_vocals), Path(provided_instrumental))
+                stage_separator_model = "provided-library-stems"
+            else:
+                notify(12, "Stage-Vocals und Instrumental werden getrennt")
+                stage_stems = separate_stems(
+                    audio_path, temp_dir / "stage-separated",
+                    model_name=separation_config.stage_model)
+                stage_separator_model = separation_config.stage_model
             vocals_out = output_dir / f"{stem}.vocals.flac"
             instrumental_out = output_dir / f"{stem}.instrumental.flac"
             stem_outputs = {
                 "vocals": vocals_out.name,
                 "instrumental": instrumental_out.name,
             }
-            stage_stem_candidates = {
-                "existing-pipeline": (separated, KARAOKE_MODEL),
+            stage_stem_selection = {
+                "enabled": True,
+                "selected_candidate": "provided-stage-stems" if provided_stage_stems
+                                      else "configured-stage-separator",
+                "reason": "provided-library-stems-locked" if provided_stage_stems
+                          else "stage-purpose-is-fixed",
+                "purpose": "stage",
+                "separator": ("provided" if provided_stage_stems
+                              else separator_family(stage_separator_model)),
+                "separator_model": stage_separator_model,
+                "candidate_score": None,
             }
-            notify(48, "Vocal-Separation abgeschlossen")
+            notify(48, ("Gespeicherte Bibliotheksspuren geladen"
+                        if provided_stage_stems else "Vocal-Separation abgeschlossen"))
         else:
-            source = audio_path
+            stage_stems = None
             notify(25, "Vocal-Separation wurde übersprungen")
 
-        notify(52, "Audio wird für das Alignment vorbereitet")
-        wav = ffmpeg_to_mono16k(source, temp_dir / "vocals-16k.wav")
-        separated_audio = load_audio(wav)
-        audio = separated_audio
-        alignment_audio = {"source": "input-audio", "fallback_used": False,
-                           "method": "direct-input-v1"}
-        mix_audio = None
-        if separator:
-            mix_wav = ffmpeg_to_mono16k(audio_path, temp_dir / "mix-16k.wav")
-            mix_audio = load_audio(mix_wav)
-            instrumental_wav = ffmpeg_to_mono16k(
-                separated.instrumental, temp_dir / "instrumental-16k.wav")
-            instrumental_audio = load_audio(instrumental_wav)
-            audio, alignment_audio = select_alignment_audio(
-                audio, mix_audio,
-                minimum_rms_ratio=float(os.getenv("LRC_MIN_VOCAL_MIX_RMS_RATIO", "0.05")),
-            )
-            if alignment_audio["fallback_used"]:
-                notify(53, "Vocal-Stem ist zu leise; Alignment verwendet den Originalmix")
+        notify(49, "All-Vocals-Kandidaten für die Analyse werden erzeugt")
+        effective_separation_config = (separation_config if separator else
+                                       replace(separation_config, analysis_enabled=False))
+        analysis_bundle = build_analysis_candidates(
+            audio_path, temp_dir / "analysis", stage_stems, effective_separation_config,
+            minimum_rms_ratio=float(os.getenv("LRC_MIN_VOCAL_MIX_RMS_RATIO", "0.05")),
+        )
+        candidates = analysis_bundle.candidates
+        mix_audio = analysis_bundle.mix_audio
+        audio = candidates[0].audio
+        alignment_audio = {
+            "source": candidates[0].type,
+            "fallback_used": analysis_bundle.legacy_fallback,
+            "method": "role-separated-analysis-audio-v1",
+        }
         candidate_config = CandidateSelectionConfig.from_environment()
         selected_candidate_transcript = None
-        candidate_generation_errors: list[dict] = []
-        baseline_type = "original-mix-fallback" if alignment_audio["fallback_used"] else "existing-vocals"
-        candidates = [AudioAlignmentCandidate(
-            "existing-pipeline", "Bisherige Pipeline", audio, baseline_type, legacy=True,
-            metadata={"energy_fallback_used": alignment_audio["fallback_used"]},
-        )]
         selected_candidate = candidates[0]
-        if candidate_config.enabled and mix_audio is not None:
-            if candidate_config.include_original_mix:
-                candidates.append(AudioAlignmentCandidate(
-                    "original-mix", "Originalmix", mix_audio, "original-mix"))
-            for ratio in candidate_config.blend_ratios:
-                candidate_id = f"vocals-original-{ratio:.2f}"
-                try:
-                    candidates.append(AudioAlignmentCandidate(
-                        candidate_id, f"Vocals + {ratio:.0%} Originalmix",
-                        blend_audio(separated_audio, mix_audio, ratio), "vocal-original-blend",
-                        metadata={"original_mix_ratio": ratio,
-                                  "source_length_samples": len(separated_audio),
-                                  "original_length_samples": len(mix_audio),
-                                  "tail_adjustment_samples": len(mix_audio) - len(separated_audio)},
-                    ))
-                except Exception as error:
-                    candidate_generation_errors.append({
-                        "id": candidate_id, "status": "failed", "error": str(error)[:500],
-                        "source_length_samples": len(separated_audio),
-                        "original_length_samples": len(mix_audio),
-                    })
-            if os.getenv("LRC_ALIGNMENT_CANDIDATE_ALTERNATIVE", "false").strip().lower() in {
-                    "1", "true", "yes", "on"}:
-                alternative_model = os.getenv("LRC_ALIGNMENT_ALTERNATIVE_MODEL", "").strip()
-                if not alternative_model:
-                    candidate_generation_errors.append({
-                        "id": "alternative-separator", "status": "failed",
-                        "error": "LRC_ALIGNMENT_ALTERNATIVE_MODEL ist nicht konfiguriert",
-                    })
-                else:
-                    try:
-                        alternative = separate_stems(
-                            audio_path, temp_dir / "alternative-separated", model_name=alternative_model)
-                        alternative_wav = ffmpeg_to_mono16k(
-                            alternative.vocals, temp_dir / "alternative-vocals-16k.wav")
-                        candidates.append(AudioAlignmentCandidate(
-                            "alternative-separator", "Alternatives Separator-Modell",
-                            load_audio(alternative_wav), "alternative-separator",
-                            metadata={"model": alternative_model},
-                        ))
-                        stage_stem_candidates["alternative-separator"] = (
-                            alternative, alternative_model)
-                    except Exception as error:
-                        candidate_generation_errors.append({
-                            "id": "alternative-separator", "status": "failed",
-                            "error": str(error)[:500], "model": alternative_model,
-                        })
         expected_text = "\n".join(line.text for line in lines)
         if candidate_config.enabled:
             notify(54, f"{len(candidates)} Audio-Kandidaten werden anhand der Lyrics bewertet")
@@ -280,63 +730,68 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 def evaluate_candidate(candidate: AudioAlignmentCandidate) -> dict:
                     candidate_asr = _transcribe_for_verification(
                         candidate_transcriber, candidate.audio, language, qwen_prompt)
-                    return {**candidate_asr,
-                            "comparison": compare_transcripts(
-                                expected_text, candidate_asr["text"], min_repetitions=2)}
+                    result = {**candidate_asr,
+                              "comparison": compare_transcripts(
+                                  expected_text, candidate_asr["text"], min_repetitions=2)}
+                    result["alignment_quality"] = timed_anchor_alignment_quality(
+                        lines, detect_vocal_activity(candidate.audio))
+                    if os.getenv(
+                            "LRC_BASIC_PITCH_USE_FOR_SEPARATOR_SCORE", "false"
+                            ).strip().lower() in {"1", "true", "yes", "on"}:
+                        pitch = candidate_pitch_quality(candidate.audio)
+                        result["pitch_quality_diagnostics"] = pitch
+                        if pitch.get("eligible"):
+                            result["pitch_quality"] = pitch["quality"]
+                    return result
 
                 selected_candidate, selected_candidate_transcript, candidate_selection = (
                     select_alignment_candidate(candidates, evaluate_candidate, candidate_config)
                 )
             _release_stage_gpu_memory()
             audio = selected_candidate.audio
-            candidate_selection["generation_errors"] = candidate_generation_errors
+            candidate_selection["generation_errors"] = analysis_bundle.errors
             alignment_audio = {**alignment_audio, "selected_candidate": selected_candidate.id,
                                "selected_candidate_type": selected_candidate.type}
-            if separator:
-                auto_select_stage_stems = os.getenv(
-                    "LRC_STAGE_STEM_AUTO_SELECT", "true").strip().lower() in {
-                        "1", "true", "yes", "on"
-                    }
-                if auto_select_stage_stems:
-                    selected_stage_stem, stage_stem_selection = select_stage_stem_candidate(
-                        set(stage_stem_candidates), candidate_selection,
-                        minimum_improvement=float(os.getenv(
-                            "LRC_STAGE_STEM_MIN_IMPROVEMENT", "0.05")),
-                    )
-                else:
-                    selected_stage_stem = "existing-pipeline"
-                    stage_stem_selection = {
-                        "enabled": False,
-                        "selected_candidate": selected_stage_stem,
-                        "reason": "feature-disabled",
-                    }
-                stage_stems, stage_separator_model = stage_stem_candidates[selected_stage_stem]
-                stage_stem_selection["separator_model"] = stage_separator_model
             if candidate_config.keep_candidate_files:
                 for candidate in candidates:
                     sf.write(output_dir / f"{stem}.alignment-candidate-{candidate.id}.wav",
                              candidate.audio, 16000, subtype="PCM_16")
         else:
-            candidate_selection = {"enabled": False, "selected_candidate": "existing-pipeline",
-                                   "reason": "feature-disabled", "candidates": []}
-            if separator:
-                stage_stems, stage_separator_model = stage_stem_candidates["existing-pipeline"]
-                stage_stem_selection = {
-                    "enabled": False,
-                    "selected_candidate": "existing-pipeline",
-                    "reason": "alignment-candidates-disabled",
-                    "separator_model": stage_separator_model,
-                }
-        # Recognition may deliberately use an original-mix blend. Karaoke
-        # boundaries, however, must be judged against the exact vocal stem
-        # exported to the Stage/editor waveform.
+            candidate_selection = {"enabled": False, "selected_candidate": selected_candidate.id,
+                                   "reason": "feature-disabled", "candidates": [
+                                       {"id": candidate.id, "type": candidate.type,
+                                        "status": "not-evaluated",
+                                        "metadata": candidate.metadata}
+                                       for candidate in candidates
+                                   ]}
+        selected_score = candidate_selection.get("selected_candidate_score")
+        analysis_stem_selection = {
+            "enabled": effective_separation_config.analysis_enabled,
+            "selected_candidate": selected_candidate.id,
+            "selected_candidate_type": selected_candidate.type,
+            "candidate_score": selected_score,
+            "reason": candidate_selection.get("reason"),
+            "purpose": "analysis",
+            "model": selected_candidate.metadata.get("model"),
+            "separator": selected_candidate.metadata.get("separator"),
+            "legacy_fallback": analysis_bundle.legacy_fallback,
+            "candidate_count": len(candidates),
+            "generation_errors": analysis_bundle.errors,
+        }
+        analysis_accompaniment_audio = analysis_bundle.accompaniment_audio.get(
+            selected_candidate.id)
+        if analysis_accompaniment_audio is None:
+            analysis_stem_selection["accompaniment_reference"] = "unavailable-for-mix-candidate"
+        else:
+            analysis_stem_selection["accompaniment_reference"] = "matching-analysis-pair"
+
         if separator:
-            if Path(stage_stems.vocals).resolve() == Path(separated.vocals).resolve():
-                stage_vocal_audio = separated_audio
-            else:
-                stage_vocal_wav = ffmpeg_to_mono16k(
-                    stage_stems.vocals, temp_dir / "stage-vocals-16k.wav")
-                stage_vocal_audio = load_audio(stage_vocal_wav)
+            stage_vocal_wav = ffmpeg_to_mono16k(
+                stage_stems.vocals, temp_dir / "stage-vocals-16k.wav")
+            stage_vocal_audio = load_audio(stage_vocal_wav)
+            stage_instrumental_wav = ffmpeg_to_mono16k(
+                stage_stems.instrumental, temp_dir / "stage-instrumental-16k.wav")
+            stage_instrumental_audio = load_audio(stage_instrumental_wav)
         else:
             stage_vocal_audio = audio
         vocal_activity = detect_vocal_activity(audio)
@@ -344,6 +799,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         enable_anchor_context = os.getenv("LRC_EXPERIMENTAL_ANCHOR_CONTEXT", "false").strip().lower() in {
             "1", "true", "yes", "on"
         }
+        enter_phase("transcript-evidence")
         transcript_verification: dict = {"enabled": False}
         stable_ts_summary: dict = {"enabled": False, "reason": "Qwen-ASR ausreichend"}
         stable_ts_short_summary: dict = {
@@ -362,6 +818,14 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 _release_stage_gpu_memory()
             if auto_language:
                 language = language_code(asr.get("language"), expected_text)
+                # ASR on shouted, distorted singing reports a confident but
+                # wrong language often enough to damage syllabification and
+                # model choice. The canonical lyrics are exact evidence and may
+                # overrule it when they are unambiguous.
+                if shadow_language_reconciliation:
+                    language, language_evidence = reconcile_detected_language(
+                        language, expected_text)
+                    language_reconciliation = {"enabled": True, **language_evidence}
                 cfg = replace(cfg, language=language)
                 notify(56, f"Gesangssprache automatisch erkannt: {language}")
             transcript_verification = {
@@ -404,26 +868,68 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                         str(word.get("word", "")) for word in stable.get("words", [])
                     )
                     stable_comparison = compare_transcripts(expected_text, stable_word_text)
+
+                    def judge(words, candidate_comparison):
+                        """Covered, non-invented matches instead of raw matches."""
+                        coverage = measure_transcript_coverage(
+                            words or [], vocal_activity)
+                        hallucination = detect_hallucinated_runs(
+                            words or [], expected_text)
+                        return coverage, hallucination, score_transcript(
+                            candidate_comparison, coverage, hallucination)
+
+                    stable_coverage, stable_hallucination, stable_score = judge(
+                        stable.get("words"), stable_comparison)
                     stable_ts_summary = {"enabled": True, **stable,
-                                         "comparison": stable_comparison}
-                    qwen_rank = (comparison["matching_words"], comparison["similarity"])
-                    stable_rank = (stable_comparison["matching_words"],
-                                   stable_comparison["similarity"])
-                    if stable_rank > qwen_rank:
-                        transcript_verification = {
-                            "enabled": True, "model": stable["model"],
-                            "language": stable["language"], "text": stable["text"],
-                            "comparison": stable_comparison,
-                            "selected_from": "stable-ts",
-                        }
+                                         "comparison": stable_comparison,
+                                         "coverage": stable_coverage,
+                                         "hallucination": stable_hallucination,
+                                         "selection_score": stable_score}
+                    # Qwen has no word timeline here, so it cannot be measured
+                    # for coverage; it keeps its raw match count.
+                    qwen_rank = (float(comparison["matching_words"]),
+                                 comparison["similarity"])
+                    transcript_candidates = [("stable-ts", stable_score, stable,
+                                   stable_comparison)]
                     if "short" in stable_variants:
                         short_stable = stable_variants["short"]
                         short_text = " ".join(
                             str(word.get("word", ""))
                             for word in short_stable.get("words", []))
+                        short_comparison = compare_transcripts(expected_text, short_text)
+                        short_coverage, short_hallucination, short_score = judge(
+                            short_stable.get("words"), short_comparison)
                         stable_ts_short_summary = {
                             "enabled": True, **short_stable,
-                            "comparison": compare_transcripts(expected_text, short_text),
+                            "comparison": short_comparison,
+                            "coverage": short_coverage,
+                            "hallucination": short_hallucination,
+                            "selection_score": short_score,
+                        }
+                        transcript_candidates.append(("stable-ts-short", short_score,
+                                           short_stable, short_comparison))
+                    if not shadow_transcript_selection:
+                        # Variant 1.2 keeps the historical rule: the long
+                        # window competes on raw matches only. Coverage and
+                        # hallucination are still measured for the report.
+                        transcript_candidates = transcript_candidates[:1]
+                        qwen_rank = (float(comparison["matching_words"]),
+                                     comparison["similarity"])
+                        stable_score = {**stable_score,
+                                        "effective_matches": float(
+                                            stable_comparison["matching_words"]),
+                                        "similarity": stable_comparison["similarity"]}
+                        transcript_candidates[0] = ("stable-ts", stable_score, stable,
+                                         stable_comparison)
+                    best_name, best_score, best, best_comparison = max(
+                        transcript_candidates, key=lambda item: selection_rank(item[1]))
+                    if selection_rank(best_score) > qwen_rank:
+                        transcript_verification = {
+                            "enabled": True, "model": best["model"],
+                            "language": best["language"], "text": best["text"],
+                            "comparison": best_comparison,
+                            "selected_from": best_name,
+                            "selection_score": best_score,
                         }
                 except (RuntimeError, ValueError) as stable_error:
                     stable_ts_summary = {"enabled": True, "error": str(stable_error)}
@@ -447,6 +953,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         alignment_selected = "full-song" if use_full_song else "line-windows"
         notify(58, f"{len(lines)} Lyrics-Zeilen werden wortgenau ausgerichtet" +
                (" (globale Vollspur)" if use_full_song else " (LRC-Zeilenfenster)"))
+        enter_phase("primary-word-alignment")
         aligner = QwenWordAligner(device=device)
         alignment_attempts: list[dict] = []
         timed_repetition_pairs: list[dict] = []
@@ -464,7 +971,13 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 requests = local_repetition_requests(
                     lines, transcript_verification["comparison"], len(audio) / 16000
                 )
+                stable_repetition_pairs = timestamp_repetition_pairs(
+                    transcript_verification["comparison"], stable_ts_summary.get("words", []))
+                stable_pair_ids = {id(pair) for pair in stable_repetition_pairs}
                 for request in requests:
+                    if id(request["pair"]) in stable_pair_ids:
+                        timed_repetition_pairs.append(request["pair"])
+                        continue
                     chunk = audio[int(request["start"] * 16000):int(request["end"] * 16000)]
                     recognized_words = aligner.align_text(chunk, request["transcript"], language)
                     if apply_local_timestamp(request["pair"], recognized_words, request["start"]):
@@ -564,20 +1077,37 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                         )
                         use_full_song = alignment_selected == "full-song"
                 except (RuntimeError, ValueError) as error:
-                    if untimed_input:
+                    if untimed_input and global_phoneme_mode != "primary":
                         raise
+                    if untimed_input:
+                        # The canonical full-track phoneme path below does not
+                        # need this failed ASR geometry. Continue with a clean
+                        # text-only copy instead of making Qwen a prerequisite.
+                        lines = deepcopy(global_phoneme_input)
+                        repaired_timings = 0
+                        alignment_selected = "global-phoneme-pending"
+                        alignment_attempts.append({
+                            "mode": "full-song",
+                            "error": str(error)[:500],
+                            "fallback": "global-phoneme-primary",
+                        })
+                        use_full_song = False
+                        continue_after_qwen_failure = True
+                    else:
+                        continue_after_qwen_failure = False
                     # Timed LRC remains a safe fallback for unusually long songs
                     # or GPUs that cannot hold a complete track in one pass.
-                    notify(62, f"Vollspur nicht möglich ({error}); verwende LRC-Zeilenfenster")
-                    aligner.align(audio, lines, cfg)
-                    repetition_anchor_summary = apply_repetition_anchors(lines, timed_repetition_pairs)
-                    anchor_tail_repairs = repair_anchor_line_tails(lines, vocal_activity)
-                    anchor_context_repairs = (repair_anchor_context(lines, cfg, vocal_activity)
-                                              if enable_anchor_context else 0)
-                    activity_repaired_timings = repair_with_vocal_activity(lines, cfg, vocal_activity)
-                    use_full_song = False
-                    alignment_selected = "line-windows"
-                    repaired_timings = repair_collapsed_timings(lines, cfg)
+                    if not continue_after_qwen_failure:
+                        notify(62, f"Vollspur nicht möglich ({error}); verwende LRC-Zeilenfenster")
+                        aligner.align(audio, lines, cfg)
+                        repetition_anchor_summary = apply_repetition_anchors(lines, timed_repetition_pairs)
+                        anchor_tail_repairs = repair_anchor_line_tails(lines, vocal_activity)
+                        anchor_context_repairs = (repair_anchor_context(lines, cfg, vocal_activity)
+                                                  if enable_anchor_context else 0)
+                        activity_repaired_timings = repair_with_vocal_activity(lines, cfg, vocal_activity)
+                        use_full_song = False
+                        alignment_selected = "line-windows"
+                        repaired_timings = repair_collapsed_timings(lines, cfg)
             else:
                 aligner.align(audio, lines, cfg)
                 repetition_anchor_summary = apply_repetition_anchors(lines, timed_repetition_pairs)
@@ -645,7 +1175,15 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                      stable_ts_short_summary),
                 ]
                 for candidate_id, window_family, stable_source in stable_scaffolds:
-                    if not stable_source.get("words") or untimed_input:
+                    if not stable_source.get("words"):
+                        continue
+                    # These two candidates take their timing from the
+                    # transcript, not from the input file, so plain lyrics do
+                    # not disqualify them - they are in fact the only candidates
+                    # able to produce anchors for a song that has none. The
+                    # clean room evaluates that first; variant 1.2 keeps the
+                    # previous behaviour until it is proven.
+                    if untimed_input and not shadow_untimed_scaffolds:
                         continue
                     try:
                         _candidate_headers, transcript_scaffold = parse_lrc(lrc_path)
@@ -670,6 +1208,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                         })
         finally:
             aligner.close()
+        enter_phase("independent-forced-refinement")
         repetition_activity_summary = refine_stretched_repetition_anchors(
             lines, vocal_activity
         )
@@ -723,58 +1262,201 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 "enabled": True,
                 **stable_post_alignment,
             }
+        enter_phase("stage-stem-finalization")
+        # Stage stems are already final and are never replaced by an analysis
+        # winner. Candidate fusion is scored against the selected all-vocals
+        # analysis activity map.
         engine_v2_summary = {
             "version": 2, "mode": engine_v2_mode, "applied": False,
             "reason": "feature-disabled", "candidate_errors": engine_v2_candidate_errors,
         }
+        enhanced_input_preservation = {
+            "enabled": enhanced_input_candidate is not None,
+            "preserved_lines": 0,
+            "reason": "awaiting-final-stage-stem",
+        }
+        all_vocals_selected = selected_candidate.type == "analysis-vocal-separator"
+        if all_vocals_selected:
+            stem_leakage_summary = {
+                "enabled": False,
+                "reason": "all-vocals-alignment-source-selected",
+                "candidate_lines": 0,
+                "recovered_lines": 0,
+            }
+        else:
+            notify(87, "Im Instrumental gelandete Gesangszeilen werden lokal geprüft")
+            leakage_recognition_candidates = [("original-mix", mix_audio)]
+            stem_leakage_summary = recover_complementary_stem_lines(
+                stage_vocal_audio, stage_instrumental_audio, lines, language, device,
+                recognition_audio=mix_audio,
+                recognition_audio_source="original-mix",
+                recognition_candidates=leakage_recognition_candidates)
+        stem_hybrid_summary = {
+            "enabled": False, "reason": "stage-analysis-role-separation",
+            "intervals": [],
+        }
+        # ASR/CTC keep their required 16 kHz signal.  Final word releases are
+        # measured on the exact native-rate stem that is exported below; a
+        # quiet decay can disappear early in the model resample even though it
+        # remains audible and visible in the editor waveform.
+        if separator:
+            stage_release_audio, stage_release_sample_rate = load_native_audio(
+                stage_stems.vocals)
+            notify(87, "Mögliche parallele Gesangsstimmen werden im Schattenlauf geprüft")
+            multi_voice_analysis = analyze_multiple_singing_voices(
+                stage_stems.vocals, lines, output_dir, device=device,
+                discover_solo_singers=alignment_profile == "research-shadow")
+        else:
+            stage_release_audio, stage_release_sample_rate = stage_vocal_audio, 16000
+            multi_voice_analysis = {
+                "enabled": False, "reason": "vocal-separation-disabled",
+                "method": "medleyvox-targeted-overlap-add-shadow-v1",
+            }
+        global_phoneme_summary = {
+            "enabled": False,
+            "mode": global_phoneme_mode,
+            "reason": ("standard-profile-protected" if alignment_profile != "research-shadow"
+                       else "feature-disabled"),
+        }
+        global_phoneme_candidate_id: str | None = None
+        if global_phoneme_mode != "off":
+            notify(87, "Globaler IPA-Phonempfad platziert den vollständigen Liedtext")
+            global_lines = deepcopy(global_phoneme_input)
+            try:
+                global_phoneme_summary = {
+                    "mode": global_phoneme_mode,
+                    **align_global_phoneme_path(
+                        audio, global_lines, language, device,
+                        chunk_seconds=float(os.getenv(
+                            "LRC_GLOBAL_PHONEME_CHUNK_SECONDS", "24")),
+                        context_seconds=float(os.getenv(
+                            "LRC_GLOBAL_PHONEME_CONTEXT_SECONDS", "1.2"))),
+                }
+                if global_phoneme_mode == "primary":
+                    global_phoneme_candidate_id = "global-phoneme-ctc"
+                    engine_v2_candidates.append(capture_candidate(
+                        global_phoneme_candidate_id,
+                        ("Kanonischer Volltext auf einem globalen, ankerfreien "
+                         "XLSR/eSpeak-Phonempfad"),
+                        global_lines, "global-phoneme-forced"))
+                else:
+                    global_phoneme_summary["candidate_state"] = "diagnostic-only"
+            except (RuntimeError, ValueError, OSError) as global_phoneme_error:
+                global_phoneme_summary = {
+                    "enabled": True,
+                    "mode": global_phoneme_mode,
+                    "error": str(global_phoneme_error)[:1000],
+                    "placed_lines": 0,
+                    "placed_words": 0,
+                }
+                engine_v2_candidate_errors.append({
+                    "id": "global-phoneme-ctc",
+                    "error": str(global_phoneme_error)[:500],
+                })
+        enter_phase("timing-candidate-fusion")
         if engine_v2_mode != "off":
-            baseline_id = "legacy-cascade"
+            legacy_baseline_id = "legacy-cascade"
             engine_v2_candidates.append(capture_candidate(
-                baseline_id,
+                legacy_baseline_id,
                 "Bisherige sequentielle Pipeline einschließlich Stable-TS",
                 lines, "legacy-cascade"))
+            if (alignment_profile == "editor-guided"
+                    and enhanced_input_candidate is not None):
+                guided_lines, editor_guidance_summary = build_editor_guided_candidate(
+                    lines, enhanced_input_candidate.lines, manual_editor_ranges,
+                    maximum_influence_seconds=float(os.getenv(
+                        "LRC_EDITOR_GUIDANCE_MAX_DISTANCE", "45")),
+                    maximum_shift_seconds=float(os.getenv(
+                        "LRC_EDITOR_GUIDANCE_MAX_SHIFT", "1.5")))
+                if editor_guidance_summary.get("guided_lines", 0) > 0:
+                    engine_v2_candidates.append(capture_candidate(
+                        "editor-guided-calibration",
+                        ("Lokale Timing-Kalibrierung aus unveränderlichen, "
+                         "manuell ausgerichteten Nachbarzeilen"),
+                        guided_lines, "human-guided-acoustic-calibration"))
+            # ``primary`` means that the anchor-free global CTC path is a real
+            # placement hypothesis, not merely a read-only verifier.  It must
+            # nevertheless not become the Engine-v2 safety baseline: a single
+            # monotone CTC path can choose the wrong occurrence of repeated
+            # choruses while still producing valid-looking geometry.  Making
+            # that path the baseline grants every such line unconditional
+            # eligibility and can force the Viterbi path through a bad late
+            # occurrence.  The established cascade remains the immutable
+            # safety path; global CTC wins individual lines only when acoustic
+            # evidence or an independent candidate family corroborates it.
+            baseline_id = legacy_baseline_id
+            if global_phoneme_candidate_id is not None:
+                global_phoneme_summary["candidate_state"] = (
+                    "primary-hypothesis-with-independent-safety-baseline")
+                global_phoneme_summary["safety_baseline"] = legacy_baseline_id
             if (enhanced_input_candidate is not None
                     and len(enhanced_input_candidate.lines) == len(lines)
                     and all(source.text == current.text
                             for source, current in zip(enhanced_input_candidate.lines, lines))):
                 engine_v2_candidates.append(enhanced_input_candidate)
-            notify(86, "Lyrics Engine v2 bewertet die Zeitkandidaten zeilenweise")
+            notify(88, "Zeitkandidaten werden gegen den finalen Stage-Stem bewertet")
             lines, engine_v2_summary = fuse_alignment_candidates(
-                engine_v2_candidates, stage_vocal_activity, baseline_id=baseline_id,
+                engine_v2_candidates, vocal_activity, baseline_id=baseline_id,
                 mode=engine_v2_mode,
                 minimum_line_improvement=float(os.getenv(
                     "LRC_ENGINE_V2_MIN_LINE_IMPROVEMENT", "0.035")))
             engine_v2_summary["candidate_errors"] = engine_v2_candidate_errors
-            if engine_v2_summary.get("applied"):
+            selected_global_lines = sum(
+                1 for decision in engine_v2_summary.get("lines", [])
+                if decision.get("selected") == global_phoneme_candidate_id)
+            global_phoneme_summary["selected_lines"] = selected_global_lines
+            if selected_global_lines:
+                alignment_selected = (
+                    f"{alignment_selected}+global-phoneme-fusion")
+            elif global_phoneme_candidate_id is not None:
+                global_phoneme_summary["candidate_state"] = (
+                    "evaluated-but-rejected-by-independent-fusion")
+                if engine_v2_summary.get("applied"):
+                    alignment_selected = f"{alignment_selected}+lyrics-engine-v2"
+            elif engine_v2_summary.get("applied"):
                 alignment_selected = f"{alignment_selected}+lyrics-engine-v2"
+        elif global_phoneme_candidate_id is not None:
+            # A raw full-track CTC path is unsafe around repeated phrases when
+            # no independent candidate fusion is available. Keep it in the
+            # report, but never publish it unchecked as song geometry.
+            global_phoneme_summary["candidate_state"] = (
+                "diagnostic-only-fusion-disabled")
+            global_phoneme_summary["selected_lines"] = 0
+            engine_v2_summary = {
+                "version": 2,
+                "mode": "off",
+                "applied": False,
+                "baseline": "legacy-cascade",
+                "reason": "global-primary-requires-independent-candidate-fusion",
+            }
         lines, enhanced_input_preservation = preserve_better_enhanced_input(
-            lines, enhanced_input_candidate, stage_vocal_activity,
+            lines, enhanced_input_candidate, vocal_activity,
             minimum_improvement=float(os.getenv(
                 "LRC_ENHANCED_INPUT_MIN_IMPROVEMENT", "0.06")))
+        enter_phase("macro-boundary-refinement")
         sustain_summary = extend_final_word_sustains(
-            lines, stage_vocal_activity, audio=stage_vocal_audio)
-        preliminary_onsets = validate_line_onsets(stage_vocal_audio, lines)
+            lines, vocal_activity, audio=audio, sample_rate=16000)
+        preliminary_onsets = validate_line_onsets(audio, lines)
         onset_refinements = apply_supported_onset_refinements(lines, preliminary_onsets)
         display_duration_summary = stabilize_acoustic_display_durations(lines)
         consensus_summary = reconcile_acoustic_boundaries(lines)
-        all_vocals_selected = selected_candidate.type == "alternative-separator"
         missing_chorus_summary = (
             {"enabled": True, "recovered_lines": 0,
              "reason": "all-vocals-alignment-source-selected"}
             if all_vocals_selected else
             recover_missing_initial_chorus(
-                separated_audio, instrumental_audio, lines, language, device,
+                audio, analysis_accompaniment_audio, lines, language, device,
                 initial_prompt=stable_prompt)
         )
-        # This is intentionally the last timing transformation. Chorus entries
-        # missed by singing ASR must not drift away from their trusted LRC cue
-        # again during a later onset or consensus pass.
+        # This is the last *macro anchor* transformation. Later stages may
+        # still refine local word geometry, but cannot select a different
+        # chorus occurrence without independent sentence/word evidence.
         chorus_anchor_summary = (
             {"enabled": False, "reason": "all-vocals-acoustic-timing-selected",
              "shifted_lines": 0}
             if all_vocals_selected else apply_trusted_chorus_anchors(lines)
         )
-        notify(88, "Überlappende Zeilenübergänge werden gemeinsam akustisch neu geprüft")
+        notify(89, "Überlappende Zeilenübergänge werden gemeinsam akustisch neu geprüft")
         try:
             overlap_reanalysis = realign_overlapping_line_pairs(
                 audio, lines, language, device)
@@ -799,7 +1481,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         ]
         overlap_reanalysis["boundary_consensus"] = post_overlap_consensus
         overlap_reanalysis["display_lane_fallback"] = overlap_display_fallback
-        onset_summary = validate_line_onsets(stage_vocal_audio, lines)
+        onset_summary = validate_line_onsets(audio, lines)
         onset_summary["refinement"] = onset_refinements
         if not alignment_attempts:
             selected_quality = validate(lines, cfg, repaired_lines=repaired_timings)
@@ -810,6 +1492,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 "anchor_tail_repaired_lines": anchor_tail_repairs,
                 **selected_quality["quality"],
             })
+        enter_phase("missing-lyrics-recovery")
         preliminary_completeness = assess_lyric_completeness(
             lines, vocal_activity, stable_ts_summary.get("words", []), len(audio) / 16000
         )
@@ -822,7 +1505,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             "unresolved_regions": [],
         }
         if preliminary_completeness.get("requires_targeted_reanalysis"):
-            notify(89, "Vocal-Ausschläge ohne Text werden in kleinen GPU-Fenstern untersucht")
+            notify(90, "Vocal-Ausschläge ohne Text werden in kleinen GPU-Fenstern untersucht")
             try:
                 gap_reanalysis = recover_vocal_gap_lines(
                     audio, lines, preliminary_completeness["investigation_regions"],
@@ -841,18 +1524,48 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         # Independent late models may return positive but mutually overlapping
         # word intervals. Repair this after every acoustic/model pass, not only
         # after the initial Qwen alignment.
+        enter_phase("late-word-geometry")
         final_activity_repairs = repair_with_vocal_activity(
-            lines, cfg, stage_vocal_activity)
+            lines, cfg, vocal_activity)
         final_geometry_repairs = repair_collapsed_timings(lines, cfg)
         # The late activity/geometry pass may select a backing-vocal occurrence
         # which overlaps the neighbouring lead line. Karaoke uses one display
         # lane, so enforce the invariant after *all* timing models have run.
         final_overlap_fallback = eliminate_remaining_line_overlaps(lines)
-        # No later timing transformation may move a displayed word outside the
-        # exact stem which the editor and Stage expose. Keep this directly
-        # before syllable generation so child bounds inherit the corrected word.
-        stage_vocal_boundaries = constrain_to_stage_vocals(
-            lines, stage_vocal_activity)
+        connector_sustain_summary = reassign_overlong_connector_sustains(
+            lines, audio)
+        late_sustain_summary = extend_final_word_sustains(
+            lines, stage_vocal_activity, audio=stage_release_audio,
+            sample_rate=stage_release_sample_rate)
+        repeated_phrase_summary = refine_repeated_phrase_words(
+            audio, lines, stable_ts_summary.get("words", []), language)
+        enter_phase("editor-boundary-protection")
+        lines, enhanced_input_internal_guard = (
+            preserve_uncorroborated_internal_editor_boundaries(
+                lines, enhanced_input_candidate,
+                boundary_disagreement=float(os.getenv(
+                    "LRC_EDITOR_INTERNAL_BOUNDARY_DISAGREEMENT", "0.14")),
+                maximum_outer_disagreement=float(os.getenv(
+                    "LRC_EDITOR_OUTER_BOUNDARY_DISAGREEMENT", "0.28"))))
+        enter_phase("hard-boundary-precheck")
+        final_overlap_fallback = eliminate_remaining_line_overlaps(lines)
+        # Lane promotion is applied later, in final-hard-constraints. The gate
+        # must nevertheless know which neighbour will legally overlap, so the
+        # already decided lanes are projected read-only.
+        pending_voice_lanes = (planned_voice_lanes(lines, multi_voice_analysis)
+                               if shadow_silent_prefix_recovery else None)
+        pre_verification_stage_vocal_boundaries = constrain_to_stage_vocals(
+            lines, stage_vocal_activity,
+            silent_prefix_recovery=shadow_silent_prefix_recovery,
+            pending_voice_lanes=pending_voice_lanes)
+        stem_contrast_analysis = refine_final_releases_with_stem_contrast(
+            lines, stage_vocal_audio, stage_instrumental_audio, mode="shadow")
+        # Everything above may place or resize words.  Only now reprocess each
+        # complete sentence in its small local audio window, split the forced
+        # IPA path back into words and verify every edge against independent
+        # onset/transition/release evidence.  No later model is allowed to
+        # overwrite these checked boundaries.
+        enter_phase("sentence-word-verification")
         phoneme_ctc_enabled = os.getenv(
             "LRC_PHONEME_CTC_REFINE", "true").strip().lower() in {
                 "1", "true", "yes", "on"
@@ -863,29 +1576,75 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         voicing_track = None
         voicing_summary = {"enabled": False, "reason": "phoneme-refinement-disabled"}
         micro_sustain_summary = {"enabled": False, "reason": "voicing-unavailable"}
-        if phoneme_ctc_enabled:
-            notify(90, "Phoneme, Mikro-Einsätze und Voicing werden lokal analysiert")
+        basic_pitch_summary = {"enabled": False, "reason": "profile-disabled",
+                               "profile": alignment_profile}
+        basic_pitch_enabled = os.getenv(
+            "LRC_BASIC_PITCH_ENABLED",
+            "true" if os.getenv("BASIC_PITCH_URL", "").strip() else "false",
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if basic_pitch_enabled:
+            notify(91, "Basic Pitch analysiert Noten und polyphone Pitch-Ereignisse")
+            basic_pitch_alignment_requested = os.getenv(
+                "LRC_BASIC_PITCH_USE_FOR_ALIGNMENT", "true"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            basic_pitch_summary = analyze_and_refine_line_onsets(
+                lines, audio, analysis_accompaniment_audio,
+                use_for_alignment=(basic_pitch_alignment_requested
+                                   and analysis_accompaniment_audio is not None))
+            basic_pitch_summary["alignment_requested"] = (
+                basic_pitch_alignment_requested)
+            if basic_pitch_alignment_requested and analysis_accompaniment_audio is None:
+                basic_pitch_summary["alignment_suppressed_reason"] = (
+                    "matching-analysis-accompaniment-unavailable")
+        else:
+            basic_pitch_summary = {
+                "enabled": False, "reason": "feature-disabled",
+                "profile": alignment_profile,
+            }
+        pyin_enabled = os.getenv("LRC_PYIN_ENABLED", "true").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        if pyin_enabled:
             try:
-                phoneme_ctc_summary = annotate_phoneme_boundaries(
-                    stage_vocal_audio, lines, language, device,
-                    promotion_minimum_confidence=float(os.getenv(
-                        "LRC_PHONEME_PROMOTION_MIN_CONFIDENCE", "0.50")),
-                    promotion_minimum_evidence=float(os.getenv(
-                        "LRC_PHONEME_PROMOTION_MIN_EVIDENCE", "0.60")),
-                    promotion_maximum_shift=float(os.getenv(
-                        "LRC_PHONEME_PROMOTION_MAX_SHIFT", "0.14")),
-                    micro_boundary_mode=micro_boundary_mode,
-                    micro_search_radius=float(os.getenv(
-                        "LRC_MICRO_BOUNDARY_SEARCH_RADIUS", "0.055")),
-                    micro_minimum_path_improvement=float(os.getenv(
-                        "LRC_MICRO_BOUNDARY_MIN_IMPROVEMENT", "0.08")),
-                    voicing_track=None)
                 voicing_windows = sustain_voicing_intervals(
-                    lines, len(stage_vocal_audio) / 16000)
+                    lines, len(audio) / 16000)
                 voicing_track, voicing_summary = analyze_voicing(
-                    stage_vocal_audio, intervals=voicing_windows)
+                    audio, intervals=voicing_windows)
                 micro_sustain_summary = refine_sustain_releases_with_voicing(
                     lines, voicing_track, mode=micro_boundary_mode)
+            except (RuntimeError, ValueError, OSError) as pyin_error:
+                voicing_summary = {
+                    "enabled": True, "reason": "pyin-analysis-failed",
+                    "error": str(pyin_error)[:1000],
+                }
+        else:
+            voicing_summary = {"enabled": False, "reason": "feature-disabled"}
+        if phoneme_ctc_enabled:
+            notify(91, "Jeder Satz und jede Wortgrenze werden lokal verifiziert")
+            try:
+                # The instrumental stem is sample synchronous with the vocal
+                # stem, so it says how much of a measured step at a word edge
+                # is separator bleed rather than the singer.
+                leakage_reference = (analysis_accompaniment_audio
+                                     if shadow_silent_prefix_recovery else None)
+                with leakage_aware_evidence(leakage_reference):
+                    phoneme_ctc_summary = annotate_phoneme_boundaries(
+                        audio, lines, language, device,
+                        promotion_minimum_confidence=float(os.getenv(
+                            "LRC_PHONEME_PROMOTION_MIN_CONFIDENCE", "0.50")),
+                        promotion_minimum_evidence=float(os.getenv(
+                            "LRC_PHONEME_PROMOTION_MIN_EVIDENCE", "0.60")),
+                        promotion_maximum_shift=float(os.getenv(
+                            "LRC_PHONEME_PROMOTION_MAX_SHIFT", "0.14")),
+                        micro_boundary_mode=micro_boundary_mode,
+                        micro_search_radius=float(os.getenv(
+                            "LRC_MICRO_BOUNDARY_SEARCH_RADIUS", "0.055")),
+                        micro_minimum_path_improvement=float(os.getenv(
+                            "LRC_MICRO_BOUNDARY_MIN_IMPROVEMENT", "0.08")),
+                        voicing_track=voicing_track,
+                        repetition_pairs=timed_repetition_pairs,
+                        stem_contrast_candidates=stem_contrast_analysis.get(
+                            "details", []))
             except (RuntimeError, ValueError, OSError) as phoneme_error:
                 phoneme_ctc_summary = {
                     "enabled": True,
@@ -894,31 +1653,122 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                     "accepted_lines": 0,
                     "accepted_words": 0,
                 }
-        repeated_phrase_summary = refine_repeated_phrase_words(
-            stage_vocal_audio, lines, stable_ts_summary.get("words", []), language)
+        delayed_first_word_editor_tail = _restore_editor_tail_after_delayed_first_word(
+            lines, enhanced_input_candidate)
+        # IPA repairs are bounded, but the final two hard constraints remain
+        # non-negotiable: one display lane and the exact exported vocal stem.
+        # If either has to modify a verified edge, the final audit below marks
+        # that edge as constrained rather than pretending it is still the raw
+        # IPA candidate.
+        enter_phase("final-hard-constraints")
+        post_verification_sustain_summary = extend_final_word_sustains(
+            lines, stage_vocal_activity, audio=stage_release_audio,
+            sample_rate=stage_release_sample_rate)
+        source_boundary_constraints = constrain_final_words_to_source_boundaries(lines)
+        nonlexical_vocalization_summary = constrain_lyrics_before_nonlexical_vocalizations(
+            lines, gap_reanalysis)
+        # Repetition anchors are derived from a small, independent acoustic
+        # window and the canonical lyric count. Candidate fusion and IPA may
+        # refine other words, but must not silently replace these structural
+        # anchors. Manual editor lines are restored afterwards and therefore
+        # remain the ultimate authority.
+        final_repetition_anchor_summary = apply_repetition_anchors(
+            lines, timed_repetition_pairs)
+        final_overlap_fallback = eliminate_remaining_line_overlaps(lines)
+        stage_vocal_boundaries = constrain_to_stage_vocals(
+            lines, stage_vocal_activity,
+            silent_prefix_recovery=shadow_silent_prefix_recovery,
+            pending_voice_lanes=(
+                planned_voice_lanes(lines, multi_voice_analysis)
+                if shadow_silent_prefix_recovery else None))
+        manual_editor_preservation = _restore_manual_editor_lines(
+            lines, enhanced_input_candidate, manual_editor_ranges)
+        manual_editor_preceding_boundaries = (
+            _constrain_preceding_lines_before_manual_editor_starts(lines))
+        manual_editor_following_boundaries = (
+            _constrain_following_lines_after_manual_editor_holds(lines))
+        post_manual_overlap_fallback = eliminate_remaining_line_overlaps(
+            lines,
+            protected_line_indices={
+                int(line_number) - 1
+                for line_number in manual_editor_preservation.get("line_indices", [])
+            })
+        multi_voice_promotion = apply_multiple_singing_voice_proposals(
+            lines, multi_voice_analysis,
+            full_vocals=stage_release_audio,
+            sample_rate=stage_release_sample_rate,
+            voice_output_dir=output_dir)
+        if post_manual_overlap_fallback["adjusted_pairs"]:
+            final_overlap_fallback = {
+                "method": "single-karaoke-lane-fallback-v1",
+                "adjusted_pairs": (
+                    final_overlap_fallback.get("adjusted_pairs", 0)
+                    + post_manual_overlap_fallback["adjusted_pairs"]),
+                "adjustments": [
+                    *final_overlap_fallback.get("adjustments", []),
+                    *post_manual_overlap_fallback["adjustments"],
+                ],
+                "post_manual_restore": post_manual_overlap_fallback,
+            }
+        # Monotonic, non-overlapping geometry can still be physically
+        # impossible. Runs below a human articulation rate are redistributed
+        # over the vocal activity they may legally occupy. This deliberately
+        # runs after lane promotion: MedleyVox both assigns the final lanes and
+        # moves the promoted lines, so an earlier redistribution would compute
+        # its envelope against geometry that is about to change.
+        collapsed_line_repair = {"enabled": False, "reason": "research-shadow-only"}
+        compressed_word_repair = {"enabled": False, "reason": "research-shadow-only"}
+        if shadow_silent_prefix_recovery:
+            collapsed_line_repair = repair_collapsed_lines(
+                lines, stage_vocal_activity, language=cfg.language,
+                audio=stage_vocal_audio)
+            compressed_word_repair = repair_compressed_word_runs(
+                lines, stage_vocal_activity, language=cfg.language,
+                audio=stage_vocal_audio)
+        final_word_boundary_audit = audit_final_word_boundaries(lines)
+        enter_phase("syllable-derivation")
         acoustic_syllables_enabled = os.getenv(
             "LRC_ACOUSTIC_SYLLABLE_REFINE", "true").strip().lower() in {
                 "1", "true", "yes", "on"
             }
-        notify(91, ("Silbengrenzen werden lokal akustisch verfeinert"
+        notify(92, ("Silbengrenzen werden lokal akustisch verfeinert"
                     if acoustic_syllables_enabled else
                     "Silben werden in den Wortfenstern zeitlich eingeordnet"))
         syllable_summary = enrich_lines_with_syllables(
             lines, language,
-            audio=stage_vocal_audio if acoustic_syllables_enabled else None)
+            audio=audio if acoustic_syllables_enabled else None,
+            enforce_minimum_geometry=shadow_silent_prefix_recovery)
+        manual_editor_syllable_preservation = _restore_manual_editor_syllables(
+            lines, enhanced_input_candidate)
+        syllable_summary["manual_editor_preservation"] = (
+            manual_editor_syllable_preservation)
+        delayed_first_word_editor_tail["syllables"] = (
+            _restore_editor_syllable_tail_after_delayed_first_word(
+                lines, enhanced_input_candidate))
+        evidence_fusion_summary = fuse_syllable_evidence(
+            lines, basic_pitch_summary, audio, analysis_accompaniment_audio,
+            mode=os.getenv("LRC_EVIDENCE_FUSION_MODE", "shadow").strip().lower())
+        note_alignment_summary = align_notes_to_syllables(
+            lines, basic_pitch_summary)
+        pyin_evidence_summary = serialize_voicing_evidence(
+            voicing_track, voicing_summary,
+            maximum_points=int(os.getenv("LRC_PYIN_REPORT_MAX_POINTS", "12000")))
         timing_reference_comparison = compare_timing_reference(
             lines, enhanced_input_candidate)
         if separator:
             detected_starts = [float(word["start"]) for line in lines for word in line.words]
             first_vocal_start = min(detected_starts) if detected_starts else None
-            mute_before = max(0.0, first_vocal_start - 0.35) if first_vocal_start is not None else None
+            mute_before = (None if provided_stage_stems else
+                           max(0.0, first_vocal_start - 0.35)
+                           if first_vocal_start is not None else None)
             # Export both halves of the same separator result. The alignment
             # winner may be an original-mix blend, but that is intentionally
             # never exposed as a karaoke stem.
             ffmpeg_to_flac(stage_stems.instrumental, instrumental_out)
             ffmpeg_to_flac(stage_stems.vocals, vocals_out, mute_before=mute_before)
-        notify(90, "Alignment wird geprüft")
+        notify(94, "Alignment wird geprüft")
 
+    enter_phase("validation-and-export")
     summary = validate(lines, cfg, repaired_lines=repaired_timings)
     completeness = assess_lyric_completeness(
         lines, vocal_activity, stable_ts_summary.get("words", []), len(audio) / 16000
@@ -932,7 +1782,13 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
     report = {
         **summary,
         "language": language,
+        "alignment_profile": alignment_profile,
+        "research_shadow_input": research_shadow_input,
+        "collapsed_line_repair": collapsed_line_repair,
+        "compressed_word_repair": compressed_word_repair,
+        "language_reconciliation": language_reconciliation,
         "alignment_device": device,
+        "pipeline_phase_order": phase_trace,
         "input_timing": "plain-lyrics" if untimed_input else "line-synced-lrc",
         "timestamp_calibration": timestamp_calibration,
         "alignment_mode": alignment_selected,
@@ -940,19 +1796,34 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "alignment_selected": alignment_selected,
         "lyrics_engine_v2": engine_v2_summary,
         "enhanced_input_preservation": enhanced_input_preservation,
+        "enhanced_input_internal_guard": enhanced_input_internal_guard,
+        "editor_guidance": editor_guidance_summary,
+        "manual_editor_preservation": manual_editor_preservation,
+        "manual_editor_preceding_boundaries": manual_editor_preceding_boundaries,
+        "manual_editor_following_boundaries": manual_editor_following_boundaries,
+        "delayed_first_word_editor_tail": delayed_first_word_editor_tail,
         "transcript_verification": transcript_verification,
         "asr_prompt": asr_prompt_summary,
         "stable_ts": {**stable_ts_summary, "alignment": stable_alignment},
         "stable_ts_short_windows": stable_ts_short_summary,
         "fragment_recovery": fragment_recovery,
         "repetition_anchors": repetition_anchor_summary,
+        "final_repetition_anchors": final_repetition_anchor_summary,
         "chorus_line_anchors": chorus_anchor_summary,
         "missing_instrumental_chorus": missing_chorus_summary,
+        "stem_leakage_recovery": stem_leakage_summary,
+        "stem_hybridization": stem_hybrid_summary,
         "missing_lyric_reanalysis": gap_reanalysis,
-        "separation": "uvr-karaoke" if separator else "none",
+        "separation": ("role-separated-analysis-and-stage" if separator else
+                       "analysis-original-stage-disabled"),
         "alignment_audio": alignment_audio,
         "alignment_candidate_selection": candidate_selection,
+        "analysis_stem_selection": analysis_stem_selection,
         "stage_stem_selection": stage_stem_selection,
+        "separator_candidates": [
+            *candidate_selection.get("candidates", []),
+            *analysis_bundle.errors,
+        ],
         "output_lrc": lrc_out.name,
         "stems": stem_outputs,
         "syllable_alignment": syllable_summary,
@@ -961,8 +1832,22 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "easyaligner_alignment": easyaligner_summary,
         "sofa_alignment": sofa_summary,
         "phoneme_ctc_alignment": phoneme_ctc_summary,
+        "basic_pitch_evidence": {
+            key: value for key, value in basic_pitch_summary.items()
+            if key not in {"notes", "contour"}
+        },
+        "basic_pitch_analysis": basic_pitch_summary,
+        "pitch_evidence": {
+            "basic_pitch": basic_pitch_summary.get("alignment_confidence", {}),
+            "representation": "independent-musical-evidence",
+        },
+        "global_phoneme_alignment": global_phoneme_summary,
+        "final_word_boundary_audit": final_word_boundary_audit,
         "repeated_phrase_refinement": repeated_phrase_summary,
         "micro_voicing_analysis": voicing_summary,
+        "pyin_evidence": pyin_evidence_summary,
+        "evidence_fusion": evidence_fusion_summary,
+        "note_alignment": note_alignment_summary,
         "micro_sustain_refinement": micro_sustain_summary,
         "timing_reference_comparison": timing_reference_comparison,
         "alignment_consensus": consensus_summary,
@@ -974,7 +1859,17 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             "overlap_fallback": final_overlap_fallback,
         },
         "sustain_refinement": sustain_summary,
+        "connector_sustain_refinement": connector_sustain_summary,
+        "late_sustain_refinement": late_sustain_summary,
+        "post_verification_sustain_refinement": post_verification_sustain_summary,
+        "nonlexical_vocalization_boundaries": nonlexical_vocalization_summary,
         "stage_vocal_boundaries": stage_vocal_boundaries,
+        "pre_verification_stage_vocal_boundaries": (
+            pre_verification_stage_vocal_boundaries),
+        "stem_contrast_analysis": stem_contrast_analysis,
+        "multiple_singing_voices": multi_voice_analysis,
+        "multiple_singing_voice_promotion": multi_voice_promotion,
+        "source_boundary_constraints": source_boundary_constraints,
         "onset_validation": onset_summary,
         "repaired_collapsed_lines": summary["quality"]["geometrically_repaired_lines"],
         "historically_repaired_collapsed_lines": repaired_timings,
@@ -991,6 +1886,12 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             {
                 "timestamp": line.timestamp,
                 "source_timestamp": line.source_timestamp,
+                "source_end_boundary": line.source_end_boundary,
+                "manual_adjusted": line.manual_adjusted,
+                "manual_editor_start": line.manual_editor_start,
+                "manual_editor_end": line.manual_editor_end,
+                "voice_lane": line.voice_lane,
+                "voice_label": line.voice_label,
                 "text": line.text,
                 "status": line.status,
                 "reason": line.reason,
@@ -1001,10 +1902,18 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
     }
     if stem_outputs:
         stems_report_out.write_text(json.dumps({
-            "version": 1,
+            "version": 2,
             "source": audio_path.name,
             "separator_model": stage_separator_model or KARAOKE_MODEL,
             "selection": stage_stem_selection,
+            "roles": {
+                "stage_vocals": stem_outputs["vocals"],
+                "stage_instrumental": stem_outputs["instrumental"],
+                "analysis_vocals": {
+                    "retained": separation_config.keep_candidates,
+                    "selection": analysis_stem_selection,
+                },
+            },
             "format": "flac",
             "sample_aligned": True,
             "first_vocal_start": first_vocal_start,

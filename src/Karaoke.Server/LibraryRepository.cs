@@ -63,6 +63,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 ,hasInstrumental INTEGER NOT NULL DEFAULT 0
                 ,hasVocals INTEGER NOT NULL DEFAULT 0
                 ,libraryCategory TEXT NOT NULL DEFAULT 'KaraokeReady'
+                ,hasSynchronizedLyrics INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS ix_songs_search ON songs(title, artist, album, fileName);
             CREATE INDEX IF NOT EXISTS ix_songs_path ON songs(path);
@@ -157,6 +158,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 var modified = fileInfo.LastWriteTimeUtc.Ticks;
                 var lrcPath = FindLyricsPath(fullPath);
                 var hasUsableLyrics = lrcPath is not null && HasUsableLyrics(lrcPath);
+                var hasSynchronizedLyrics = lrcPath is not null &&
+                    HasSynchronizedLyrics(FindSourceLyricsPath(fullPath, lrcPath));
                 var hasInstrumental = StemExists(fullPath, "instrumental");
                 var hasVocals = StemExists(fullPath, "vocals");
                 var completeProject = hasUsableLyrics && hasInstrumental && hasVocals;
@@ -175,7 +178,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 indexedFiles.TryGetValue(fullPath, out var existing);
                 var lyricsChanged = existing is not null &&
                     (!StringComparer.OrdinalIgnoreCase.Equals(existing.LrcPath, indexedLrcPath) ||
-                     existing.HasLyrics != completeProject);
+                     existing.HasLyrics != completeProject ||
+                     existing.HasSynchronizedLyrics != hasSynchronizedLyrics);
 
                 if (existing is not null && existing.Modified == modified && existing.Size == fileInfo.Length &&
                     existing.HasCover >= 0 && existing.HasInstrumental == hasInstrumental &&
@@ -183,7 +187,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 {
                     if (lyricsChanged)
                     {
-                        await UpdateLyricsAsync(fullPath, indexedLrcPath, category, cancellationToken);
+                        await UpdateLyricsAsync(fullPath, indexedLrcPath, category,
+                            hasSynchronizedLyrics, cancellationToken);
                         IncrementStatus(status => status with { UpdatedFiles = status.UpdatedFiles + 1 });
                     }
                     continue;
@@ -207,6 +212,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                     hasInstrumental,
                     hasVocals,
                     category,
+                    hasSynchronizedLyrics,
                     cancellationToken);
 
                 IncrementStatus(status => existing is null
@@ -233,7 +239,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT path, modified, size, lrcPath, hasLyrics, hasCover,hasInstrumental,hasVocals,libraryCategory FROM songs";
+        command.CommandText = "SELECT path, modified, size, lrcPath, hasLyrics, hasCover,hasInstrumental,hasVocals,libraryCategory,hasSynchronizedLyrics FROM songs";
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var result = new Dictionary<string, IndexedFile>(StringComparer.OrdinalIgnoreCase);
         while (await reader.ReadAsync(cancellationToken))
@@ -245,7 +251,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 reader.GetInt32(4) == 1,
                 reader.GetInt32(5), reader.GetInt32(6) == 1, reader.GetInt32(7) == 1,
                 Enum.TryParse<SongLibraryCategory>(reader.GetString(8), out var category)
-                    ? category : SongLibraryCategory.KaraokeReady);
+                    ? category : SongLibraryCategory.KaraokeReady,
+                reader.GetInt32(9) == 1);
         }
         return result;
     }
@@ -253,22 +260,23 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
     private async Task UpsertAsync(Guid id, string path, string relativePath, string fileName,
         string title, string artist, string album, double duration, string format, long size,
         long modified, string? lrcPath, bool hasCover, bool hasInstrumental, bool hasVocals,
-        SongLibraryCategory category,
+        SongLibraryCategory category, bool hasSynchronizedLyrics,
         CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT INTO songs(id,path,title,artist,album,duration,hasLyrics,modified,relativePath,fileName,audioFormat,size,lrcPath,lastIndexed,searchTitle,searchArtist,searchAlbum,searchFileName,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory)
-            VALUES($id,$path,$title,$artist,$album,$duration,$hasLyrics,$modified,$relativePath,$fileName,$format,$size,$lrcPath,$lastIndexed,$searchTitle,$searchArtist,$searchAlbum,$searchFileName,$hasCover,'InReview',$hasInstrumental,$hasVocals,$category)
+            INSERT INTO songs(id,path,title,artist,album,duration,hasLyrics,modified,relativePath,fileName,audioFormat,size,lrcPath,lastIndexed,searchTitle,searchArtist,searchAlbum,searchFileName,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory,hasSynchronizedLyrics)
+            VALUES($id,$path,$title,$artist,$album,$duration,$hasLyrics,$modified,$relativePath,$fileName,$format,$size,$lrcPath,$lastIndexed,$searchTitle,$searchArtist,$searchAlbum,$searchFileName,$hasCover,'InReview',$hasInstrumental,$hasVocals,$category,$hasSynchronizedLyrics)
             ON CONFLICT(path) DO UPDATE SET
                 title=$title, artist=$artist, album=$album, duration=$duration,
                 hasLyrics=$hasLyrics, modified=$modified, relativePath=$relativePath,
                 fileName=$fileName, audioFormat=$format, size=$size, lrcPath=$lrcPath,
                 lastIndexed=$lastIndexed, searchTitle=$searchTitle, searchArtist=$searchArtist,
                 searchAlbum=$searchAlbum, searchFileName=$searchFileName, hasCover=$hasCover,
-                hasInstrumental=$hasInstrumental, hasVocals=$hasVocals, libraryCategory=$category
+                hasInstrumental=$hasInstrumental, hasVocals=$hasVocals, libraryCategory=$category,
+                hasSynchronizedLyrics=$hasSynchronizedLyrics
             """;
         command.Parameters.AddWithValue("$id", id.ToString());
         command.Parameters.AddWithValue("$path", path);
@@ -292,19 +300,21 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         command.Parameters.AddWithValue("$hasInstrumental", hasInstrumental ? 1 : 0);
         command.Parameters.AddWithValue("$hasVocals", hasVocals ? 1 : 0);
         command.Parameters.AddWithValue("$category", category.ToString());
+        command.Parameters.AddWithValue("$hasSynchronizedLyrics", hasSynchronizedLyrics ? 1 : 0);
         await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private async Task UpdateLyricsAsync(string path, string? lrcPath, SongLibraryCategory category,
-        CancellationToken cancellationToken)
+        bool hasSynchronizedLyrics, CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "UPDATE songs SET hasLyrics=$hasLyrics,lrcPath=$lrcPath,libraryCategory=$category,lastIndexed=$lastIndexed WHERE path=$path";
+        command.CommandText = "UPDATE songs SET hasLyrics=$hasLyrics,lrcPath=$lrcPath,libraryCategory=$category,hasSynchronizedLyrics=$hasSynchronizedLyrics,lastIndexed=$lastIndexed WHERE path=$path";
         command.Parameters.AddWithValue("$hasLyrics", lrcPath is null ? 0 : 1);
         command.Parameters.AddWithValue("$lrcPath", (object?)lrcPath ?? DBNull.Value);
         command.Parameters.AddWithValue("$category", category.ToString());
+        command.Parameters.AddWithValue("$hasSynchronizedLyrics", hasSynchronizedLyrics ? 1 : 0);
         command.Parameters.AddWithValue("$lastIndexed", DateTimeOffset.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$path", path);
         await command.ExecuteNonQueryAsync(cancellationToken);
@@ -363,7 +373,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         var totalCount = Convert.ToInt32(await countCommand.ExecuteScalarAsync(cancellationToken), CultureInfo.InvariantCulture);
 
         var command = connection.CreateCommand();
-        command.CommandText = $"SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory FROM songs WHERE {where} ORDER BY {order} LIMIT $take OFFSET $skip";
+        command.CommandText = $"SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory,hasSynchronizedLyrics FROM songs WHERE {where} ORDER BY {order} LIMIT $take OFFSET $skip";
         command.Parameters.AddWithValue("$take", pageSize);
         command.Parameters.AddWithValue("$skip", (page - 1) * pageSize);
         AddSearchParameters(command, terms, normalizedQuery, includeRankingParameters: terms.Length > 0);
@@ -393,7 +403,7 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        var columns = "id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory";
+        var columns = "id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory,hasSynchronizedLyrics";
         var release = includeUnreleased ? "1=1" : "reviewStatus='Approved'";
         command.CommandText = string.IsNullOrWhiteSpace(term)
             ? $"SELECT {columns} FROM songs WHERE {release} ORDER BY artist,title LIMIT $take OFFSET $skip"
@@ -409,12 +419,32 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         return songs;
     }
 
+    /// <summary>
+    /// Exact normalized identity check used by every import route. Review and
+    /// without-lyrics projects count as imported too; creating another copy
+    /// would make later review/version ownership ambiguous.
+    /// </summary>
+    public async Task<bool> ContainsSongAsync(string title, string artist,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist)) return false;
+        await InitializeAsync(cancellationToken);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM songs WHERE searchTitle=$title AND searchArtist=$artist LIMIT 1)";
+        command.Parameters.AddWithValue("$title", NormalizeSearchText(title));
+        command.Parameters.AddWithValue("$artist", NormalizeSearchText(artist));
+        return Convert.ToInt32(await command.ExecuteScalarAsync(cancellationToken),
+            CultureInfo.InvariantCulture) == 1;
+    }
+
     public async Task<IReadOnlyList<SongDto>> GetNewestAsync(int take, CancellationToken cancellationToken)
     {
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory FROM songs WHERE hasLyrics=1 AND reviewStatus='Approved' ORDER BY lastIndexed DESC LIMIT $take";
+        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory,hasSynchronizedLyrics FROM songs WHERE hasLyrics=1 AND reviewStatus='Approved' ORDER BY lastIndexed DESC LIMIT $take";
         command.Parameters.AddWithValue("$take", Math.Clamp(take, 1, 30));
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         var songs = new List<SongDto>();
@@ -486,6 +516,65 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         }
         changes.Publish("library-changed");
         return true;
+    }
+
+    public async Task<BaseLyricsSourceDto?> ReadBaseLyricsSourceAsync(Guid id,
+        CancellationToken cancellationToken)
+    {
+        var indexed = await SearchByIdAsync(id, cancellationToken);
+        if (indexed.Path is null) return null;
+        var audioPath = ValidateLibraryAudioPath(indexed.Path);
+        var preAlignPath = Path.ChangeExtension(audioPath, ".pre-align.lrc");
+        var runtimePath = FindLyricsPath(audioPath);
+        var sourcePath = File.Exists(preAlignPath) ? preAlignPath : runtimePath;
+        if (sourcePath is null || !File.Exists(sourcePath)) return null;
+        var root = Path.GetFullPath(_options.LibraryPath).TrimEnd(Path.DirectorySeparatorChar);
+        EnsureNoSymbolicPath(root, sourcePath);
+        var isPreAlignmentSource = string.Equals(sourcePath, preAlignPath, StringComparison.Ordinal);
+        return new BaseLyricsSourceDto(
+            await File.ReadAllTextAsync(sourcePath, cancellationToken),
+            isPreAlignmentSource ? "Pre-Align / heruntergeladene oder erkannte Quelle" : "Aktuelle LRC (noch keine Pre-Align-Kopie)",
+            isPreAlignmentSource);
+    }
+
+    public async Task<bool> WriteBaseLyricsSourceAsync(Guid id, string lyrics,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(lyrics)) throw new ArgumentException("Die Base-Lyrics sind leer.");
+        var indexed = await SearchByIdAsync(id, cancellationToken);
+        if (indexed.Path is null) return false;
+        if (indexed.Song?.ReviewStatus != SongReviewStatus.InReview)
+            throw new InvalidOperationException("Base-Lyrics können nur bearbeitet werden, solange der Song in Review ist.");
+        var audioPath = ValidateLibraryAudioPath(indexed.Path);
+        var target = Path.ChangeExtension(audioPath, ".pre-align.lrc");
+        if (File.Exists(target))
+        {
+            var root = Path.GetFullPath(_options.LibraryPath).TrimEnd(Path.DirectorySeparatorChar);
+            EnsureNoSymbolicPath(root, target);
+        }
+        var temporary = target + "." + Guid.NewGuid().ToString("N") + ".partial";
+        try
+        {
+            await File.WriteAllTextAsync(temporary, lyrics.Trim() + Environment.NewLine,
+                new UTF8Encoding(false), cancellationToken);
+            File.Move(temporary, target, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
+        changes.Publish("library-changed");
+        return true;
+    }
+
+    private string ValidateLibraryAudioPath(string indexedPath)
+    {
+        var root = Path.GetFullPath(_options.LibraryPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var audioPath = Path.GetFullPath(indexedPath);
+        if (!audioPath.StartsWith(root, StringComparison.Ordinal))
+            throw new InvalidOperationException("Song liegt außerhalb der konfigurierten Bibliothek.");
+        EnsureNoSymbolicPath(root.TrimEnd(Path.DirectorySeparatorChar), audioPath);
+        return audioPath;
     }
 
     public async Task<SongDto?> SetReviewStatusAsync(Guid id, SongReviewStatus status, CancellationToken cancellationToken)
@@ -713,37 +802,95 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
             if (!document.RootElement.TryGetProperty("details", out var details) || details.ValueKind != JsonValueKind.Array)
                 return lyrics;
 
+            var alignedLines = details.EnumerateArray().ToArray();
             var lines = lyrics.Lines.ToArray();
-            var count = Math.Min(lines.Length, details.GetArrayLength());
-            for (var lineIndex = 0; lineIndex < count; lineIndex++)
+            var alignedLineCursor = 0;
+            for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
             {
-                var detail = details[lineIndex];
+                var words = (lines[lineIndex].Words ?? []).ToArray();
+                // Enhanced LRC uses timestamp-only rows as explicit display
+                // boundaries. LrcParser intentionally retains those rows, but
+                // the alignment report contains singing lines only. Mapping
+                // report rows by array index therefore shifts every line after
+                // the first instrumental boundary and clamps its syllables to
+                // unrelated word windows (often producing 0 ms children).
+                if (words.Length == 0 || string.IsNullOrWhiteSpace(lines[lineIndex].Text))
+                    continue;
+                var normalizedLine = NormalizeAlignmentText(lines[lineIndex].Text);
+                var alignedLineIndex = -1;
+                for (var candidateIndex = alignedLineCursor;
+                     candidateIndex < alignedLines.Length; candidateIndex++)
+                {
+                    var candidate = alignedLines[candidateIndex];
+                    if (!candidate.TryGetProperty("text", out var candidateText) ||
+                        candidateText.ValueKind != JsonValueKind.String)
+                        continue;
+                    if (NormalizeAlignmentText(candidateText.GetString()) != normalizedLine)
+                        continue;
+                    alignedLineIndex = candidateIndex;
+                    break;
+                }
+                if (alignedLineIndex < 0) continue;
+                alignedLineCursor = alignedLineIndex + 1;
+                var detail = alignedLines[alignedLineIndex];
                 if (!detail.TryGetProperty("words", out var alignedWords) || alignedWords.ValueKind != JsonValueKind.Array)
                     continue;
-                var words = (lines[lineIndex].Words ?? []).ToArray();
-                var wordCount = Math.Min(words.Length, alignedWords.GetArrayLength());
-                for (var wordIndex = 0; wordIndex < wordCount; wordIndex++)
+                var alignedWordArray = alignedWords.EnumerateArray().ToArray();
+                var alignedWordCursor = 0;
+                for (var wordIndex = 0; wordIndex < words.Length; wordIndex++)
                 {
-                    var alignedWord = alignedWords[wordIndex];
+                    var normalizedWord = NormalizeAlignmentText(words[wordIndex].Text);
+                    var alignedWordIndex = -1;
+                    for (var candidateIndex = alignedWordCursor;
+                         candidateIndex < alignedWordArray.Length; candidateIndex++)
+                    {
+                        var candidate = alignedWordArray[candidateIndex];
+                        if (!candidate.TryGetProperty("word", out var candidateWord) ||
+                            candidateWord.ValueKind != JsonValueKind.String)
+                            continue;
+                        if (NormalizeAlignmentText(candidateWord.GetString()) != normalizedWord)
+                            continue;
+                        alignedWordIndex = candidateIndex;
+                        break;
+                    }
+                    if (alignedWordIndex < 0) continue;
+                    alignedWordCursor = alignedWordIndex + 1;
+                    var alignedWord = alignedWordArray[alignedWordIndex];
                     if (!alignedWord.TryGetProperty("syllables", out var alignedSyllables) || alignedSyllables.ValueKind != JsonValueKind.Array)
                         continue;
                     var wordStart = words[wordIndex].Start;
                     var wordEnd = words[wordIndex].End ?? wordStart;
-                    var syllables = alignedSyllables.EnumerateArray().Select((syllable, index) =>
+                    var syllables = new List<LyricsSyllableDto>();
+                    var invalidGeometry = wordEnd <= wordStart;
+                    foreach (var syllable in alignedSyllables.EnumerateArray())
                     {
                         var rawStart = TimeSpan.FromSeconds(syllable.GetProperty("start").GetDouble());
                         var rawEnd = TimeSpan.FromSeconds(syllable.GetProperty("end").GetDouble());
                         var start = rawStart < wordStart ? wordStart : rawStart > wordEnd ? wordEnd : rawStart;
                         var end = rawEnd > wordEnd ? wordEnd : rawEnd < start ? start : rawEnd;
-                        return new LyricsSyllableDto(start,
+                        if (end <= start)
+                        {
+                            invalidGeometry = true;
+                            break;
+                        }
+                        syllables.Add(new LyricsSyllableDto(start,
                             syllable.GetProperty("text").GetString() ?? string.Empty,
-                            end, index,
-                            syllable.TryGetProperty("confidence", out var confidence) ? confidence.GetDouble() : 0);
-                    }).ToArray();
+                            end, syllables.Count,
+                            syllable.TryGetProperty("confidence", out var confidence)
+                                ? confidence.GetDouble() : 0));
+                    }
+                    // Never replace a usable word with children that became
+                    // empty through an incompatible/stale report. Keeping the
+                    // word-level karaoke timing is safer than persisting a
+                    // visually collapsed editor hierarchy.
+                    if (invalidGeometry || syllables.Count == 0) continue;
                     var wordConfidence = alignedWord.TryGetProperty("syllable_confidence", out var confidenceElement)
                         ? confidenceElement.GetDouble()
                         : syllables.Select(syllable => syllable.Confidence).DefaultIfEmpty().Average();
-                    words[wordIndex] = words[wordIndex] with { Syllables = syllables, SyllableConfidence = wordConfidence };
+                    words[wordIndex] = words[wordIndex] with
+                    {
+                        Syllables = syllables.ToArray(), SyllableConfidence = wordConfidence
+                    };
                 }
                 lines[lineIndex] = lines[lineIndex] with { Words = words };
             }
@@ -758,6 +905,16 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         {
             return lyrics;
         }
+
+        static string NormalizeAlignmentText(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+            var result = new StringBuilder(value.Length);
+            foreach (var character in value)
+                if (char.IsLetterOrDigit(character))
+                    result.Append(char.ToLowerInvariant(character));
+            return result.ToString();
+        }
     }
 
     private async Task<(SongDto? Song, string? Path)> SearchByIdAsync(Guid id, CancellationToken cancellationToken)
@@ -765,11 +922,11 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         await using var connection = new SqliteConnection(ConnectionString);
         await connection.OpenAsync(cancellationToken);
         var command = connection.CreateCommand();
-        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory,path FROM songs WHERE id=$id";
+        command.CommandText = "SELECT id,title,artist,album,duration,hasLyrics,hasCover,reviewStatus,hasInstrumental,hasVocals,libraryCategory,hasSynchronizedLyrics,path FROM songs WHERE id=$id";
         command.Parameters.AddWithValue("$id", id.ToString());
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         return await reader.ReadAsync(cancellationToken)
-            ? (ReadSong(reader), reader.GetString(11))
+            ? (ReadSong(reader), reader.GetString(12))
             : (null, null);
     }
 
@@ -779,7 +936,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         Enum.TryParse<SongReviewStatus>(reader.GetString(7), out var status) ? status : SongReviewStatus.InReview,
         reader.GetInt32(8) == 1, reader.GetInt32(9) == 1,
         Enum.TryParse<SongLibraryCategory>(reader.GetString(10), out var category)
-            ? category : SongLibraryCategory.KaraokeReady);
+            ? category : SongLibraryCategory.KaraokeReady,
+        reader.GetInt32(11) == 1);
 
     private static async Task MigrateExistingSchemaAsync(SqliteConnection connection, CancellationToken cancellationToken)
     {
@@ -799,7 +957,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
             ["reviewStatus"] = "TEXT NOT NULL DEFAULT 'InReview'",
             ["hasInstrumental"] = "INTEGER NOT NULL DEFAULT 0",
             ["hasVocals"] = "INTEGER NOT NULL DEFAULT 0",
-            ["libraryCategory"] = "TEXT NOT NULL DEFAULT 'KaraokeReady'"
+            ["libraryCategory"] = "TEXT NOT NULL DEFAULT 'KaraokeReady'",
+            ["hasSynchronizedLyrics"] = "INTEGER NOT NULL DEFAULT 0"
         };
         var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var pragma = connection.CreateCommand();
@@ -869,6 +1028,41 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
             ? null
             : Directory.EnumerateFiles(directory, "*.lrc", SearchOption.TopDirectoryOnly)
                 .FirstOrDefault(path => string.Equals(Path.GetFileNameWithoutExtension(path), baseName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string FindSourceLyricsPath(string audioPath, string runtimeLyricsPath)
+    {
+        // The runtime LRC may already be a generated word-synchronized result.
+        // Review effort is better represented by the source that entered the
+        // alignment pipeline, when that immutable clean-room input exists.
+        var preAlignPath = Path.ChangeExtension(audioPath, ".pre-align.lrc");
+        return File.Exists(preAlignPath) ? preAlignPath : runtimeLyricsPath;
+    }
+
+    internal static bool HasSynchronizedLyrics(string lrcPath)
+    {
+        try
+        {
+            foreach (var line in File.ReadLines(lrcPath))
+            {
+                var match = Regex.Match(line,
+                    @"^\s*\[(?:\d{1,3}):(?:[0-5]?\d)(?:[\.:]\d{1,3})?\]\s*(.*)$",
+                    RegexOptions.CultureInvariant);
+                var text = match.Success
+                    ? Regex.Replace(match.Groups[1].Value,
+                        @"<\d{1,3}:\d{1,2}(?:[\.:]\d{1,7})?(?:,\d{1,3}:\d{1,2}(?:[\.:]\d{1,7})?)?>",
+                        string.Empty, RegexOptions.CultureInvariant).Trim()
+                    : string.Empty;
+                if (match.Success && !string.IsNullOrWhiteSpace(text) &&
+                    !LyricsStructureMarker.IsMarker(text))
+                    return true;
+            }
+            return false;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static string? CoverSidecarPath(string audioPath)
@@ -959,7 +1153,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
     }
 
     private sealed record IndexedFile(long Modified, long Size, string? LrcPath, bool HasLyrics, int HasCover,
-        bool HasInstrumental, bool HasVocals, SongLibraryCategory LibraryCategory);
+        bool HasInstrumental, bool HasVocals, SongLibraryCategory LibraryCategory,
+        bool HasSynchronizedLyrics);
     private sealed record WithoutLyricsMarker(string Title, string Artist, string Album, string? SourceUrl,
         Guid WishId, DateTimeOffset AdoptedAt);
 }

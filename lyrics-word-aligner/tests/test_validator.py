@@ -5,11 +5,26 @@ from app.validator import validate
 
 
 class ValidatorTests(unittest.TestCase):
+    def test_qwen_word_at_preroll_edge_is_unverified_and_reduces_coverage(self):
+        line = LrcLine(59.34, "Lichtenhagen NSU", "", words=[
+            {"word": "Lichtenhagen", "start": 59.34, "end": 60.46,
+             "timing_source": "qwen-forced", "window_edge_fallback": True},
+            {"word": "NSU", "start": 61.10, "end": 62.94,
+             "timing_source": "qwen-forced"},
+        ], source_timestamp=59.79)
+
+        result = validate([line], AlignmentConfig())
+
+        self.assertEqual("uncertain", line.status)
+        self.assertIn("Analysefensterrand", line.reason)
+        self.assertEqual(1, result["quality"]["heuristically_placed_words"])
+        self.assertEqual(0.5, result["quality"]["acoustically_aligned_word_coverage"])
+
     def test_adjacent_decoder_frame_words_are_reported_as_compressed_run(self):
         line = LrcLine(1.0, "und einer", "", words=[
-            {"word": "und", "start": 1.0, "end": 1.08,
+            {"word": "und", "start": 1.0, "end": 1.02,
              "timing_source": "qwen-forced"},
-            {"word": "einer", "start": 1.2, "end": 1.28,
+            {"word": "einer", "start": 1.025, "end": 1.05,
              "timing_source": "qwen-forced"},
         ])
 
@@ -18,6 +33,21 @@ class ValidatorTests(unittest.TestCase):
         self.assertEqual(1, result["quality"]["compressed_word_runs"])
         self.assertEqual("uncertain", line.status)
         self.assertIn("komprimiert", line.reason)
+
+    def test_fast_short_words_with_acoustic_gaps_are_not_decoder_collapse(self):
+        line = LrcLine(1.0, "it up and", "", words=[
+            {"word": "it", "start": 1.0, "end": 1.04,
+             "timing_source": "ctc-phoneme-alignment"},
+            {"word": "up", "start": 1.18, "end": 1.22,
+             "timing_source": "ctc-phoneme-alignment"},
+            {"word": "and", "start": 1.31, "end": 1.39,
+             "timing_source": "ctc-phoneme-alignment"},
+        ], source_timestamp=1.0)
+
+        result = validate([line], AlignmentConfig())
+
+        self.assertEqual(0, result["quality"]["compressed_word_runs"])
+        self.assertEqual("ok", line.status)
 
     def test_clean_global_alignment_is_publishable(self):
         lines = [
@@ -152,6 +182,21 @@ class ValidatorTests(unittest.TestCase):
         self.assertFalse(result["quality"]["publishable"])
         self.assertEqual(2, result["quality"]["word_overlap_conflicts"])
         self.assertIn("innerhalb", line.reason)
+
+    def test_independent_voice_lanes_may_overlap(self):
+        lead = LrcLine(10.0, "Lead", "", words=[
+            {"word": "Lead", "start": 10.0, "end": 13.0,
+             "timing_source": "qwen-forced"}], source_timestamp=10.0,
+            voice_lane=0)
+        backing = LrcLine(11.0, "Woho", "", words=[
+            {"word": "Woho", "start": 11.0, "end": 14.0,
+             "timing_source": "medleyvox-backing-vocal-activity"}],
+            source_timestamp=11.0, voice_lane=1)
+
+        result = validate([lead, backing], AlignmentConfig())
+
+        self.assertEqual([], result["line_overlaps"])
+        self.assertNotIn("überlappt", backing.reason or "")
 
 
 if __name__ == "__main__":

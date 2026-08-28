@@ -2,7 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from app.canonical_lyrics import parse_timed_words, transfer_canonical_text
+from app.canonical_lyrics import (parse_timed_words, transfer_canonical_lines,
+                                  transfer_canonical_text)
+from app.models import LrcLine
 
 
 class CanonicalLyricsTests(unittest.TestCase):
@@ -90,3 +92,68 @@ class CanonicalLyricsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UntimedSourceTests(unittest.TestCase):
+    """Plain lyrics have no timing, so the transcript must supply every anchor."""
+
+    ACOUSTIC = [
+        {"word": "Wollen", "start": 10.0, "end": 10.4},
+        {"word": "wir", "start": 10.4, "end": 10.6},
+        {"word": "noch", "start": 10.6, "end": 10.9},
+        {"word": "Auf", "start": 20.0, "end": 20.3},
+        {"word": "den", "start": 20.3, "end": 20.5},
+        {"word": "Dächern", "start": 20.5, "end": 21.0},
+        {"word": "Wollen", "start": 30.0, "end": 30.4},
+        {"word": "wir", "start": 30.4, "end": 30.6},
+        {"word": "noch", "start": 30.6, "end": 30.9},
+    ]
+
+    def _untimed_lines(self):
+        return [LrcLine(0.0, "Wollen wir noch", "", timed_input=False),
+                LrcLine(0.0, "Auf den Dächern", "", timed_input=False),
+                LrcLine(0.0, "Wollen wir noch", "", timed_input=False)]
+
+    def test_lines_are_placed_from_the_transcript_alone(self):
+        lines = self._untimed_lines()
+
+        _headers, placed, report = transfer_canonical_lines(
+            [], lines, self.ACOUSTIC, minimum_coverage=0.5)
+
+        self.assertAlmostEqual(10.0, placed[0].timestamp, delta=0.9)
+        self.assertAlmostEqual(20.0, placed[1].timestamp, delta=0.9)
+        self.assertAlmostEqual(30.0, placed[2].timestamp, delta=0.9)
+        self.assertGreater(report["mapping_coverage"], 0.5)
+
+    def test_repeated_lines_do_not_collapse_onto_one_occurrence(self):
+        lines = self._untimed_lines()
+
+        _headers, placed, _report = transfer_canonical_lines(
+            [], lines, self.ACOUSTIC, minimum_coverage=0.5)
+
+        starts = [line.timestamp for line in placed]
+        self.assertEqual(starts, sorted(starts))
+        self.assertGreater(starts[2] - starts[0], 15.0,
+                           f"Wiederholungen landen zu dicht beieinander: {starts}")
+
+    def test_the_result_is_marked_as_timed_for_later_stages(self):
+        lines = self._untimed_lines()
+
+        _headers, placed, _report = transfer_canonical_lines(
+            [], lines, self.ACOUSTIC, minimum_coverage=0.5)
+
+        self.assertTrue(all(line.timed_input for line in placed))
+        self.assertTrue(all(line.source_timestamp == line.timestamp
+                            for line in placed))
+
+    def test_timed_sources_keep_using_their_own_anchors(self):
+        # With real input timing the local search must stay centred on it.
+        lines = [LrcLine(9.5, "Wollen wir noch", ""),
+                 LrcLine(19.5, "Auf den Dächern", ""),
+                 LrcLine(29.5, "Wollen wir noch", "")]
+
+        _headers, placed, _report = transfer_canonical_lines(
+            [], lines, self.ACOUSTIC, minimum_coverage=0.5)
+
+        self.assertAlmostEqual(10.0, placed[0].timestamp, delta=0.9)
+        self.assertAlmostEqual(30.0, placed[2].timestamp, delta=0.9)

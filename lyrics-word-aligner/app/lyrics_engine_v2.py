@@ -56,6 +56,11 @@ def _release_support(end: float, activity: list[tuple[float, float]]) -> float:
 
 def _source_reliability(word: dict) -> float:
     source = str(word.get("timing_source", ""))
+    if source == "xlsr-espeak-global-primary":
+        # Known canonical text, one monotone full-track CTC path and no LRC/ASR
+        # timing prior. Per-word posterior confidence still controls weak sung
+        # or separator-damaged regions.
+        return 0.96 * max(0.30, float(word.get("ctc_confidence", 0.70)))
     if source.startswith("ctc-"):
         return 0.92 * max(0.35, float(word.get("ctc_confidence", 0.75)))
     if source == "stable-ts-whisper":
@@ -67,8 +72,17 @@ def _source_reliability(word: dict) -> float:
         # blindly trusted, but strong agreement with the Stage vocal activity
         # must be allowed to beat a weaker automatic re-alignment.
         return 0.80
-    if source in {"mms-forced-alignment", "sofa-singing-alignment",
-                  "easyaligner-global"}:
+    if source == "editor-guided-calibration":
+        # This timing is inferred from exact human residuals, but it still has
+        # to win against the final vocal activity before being emitted.
+        return 0.88 * max(0.45, float(word.get(
+            "editor_guidance_confidence", 0.70)))
+    if source == "sofa-singing-alignment":
+        # Section-level SOFA confidence belongs to every emitted word.  A
+        # weak section must not receive the same reliability as a confident
+        # forced alignment merely because all dictionary tokens were emitted.
+        return 0.86 * max(0.20, min(1.0, float(word.get("sofa_confidence", 0.50))))
+    if source in {"mms-forced-alignment", "easyaligner-global"}:
         return 0.86
     if source in {"asr-repetition-anchor", "asr-repetition-activity"}:
         return 0.78
@@ -133,6 +147,31 @@ def _independent_boundary_support(candidates: list[AlignmentCandidate], line_ind
     return len(families), sorted(families)
 
 
+def _boundary_candidate_votes(candidates: list[AlignmentCandidate], line_index: int,
+                              candidate_index: int, *, start_tolerance: float = 0.12,
+                              end_tolerance: float = 0.24) -> int:
+    """Count agreeing candidate scopes without calling them independent models.
+
+    Long-context and short-window Stable-TS share a model family, but agreement
+    between their independently decoded scopes is still useful for rejecting a
+    known window-edge fallback.  The stricter family count remains authoritative
+    for every ordinary high-disagreement decision.
+    """
+    target = candidates[candidate_index].lines[line_index]
+    if not target.words:
+        return 0
+    target_start = float(target.words[0]["start"])
+    target_end = float(target.words[-1]["end"])
+    return sum(
+        bool(candidate.lines[line_index].words)
+        and abs(float(candidate.lines[line_index].words[0]["start"]) - target_start)
+        <= start_tolerance
+        and abs(float(candidate.lines[line_index].words[-1]["end"]) - target_end)
+        <= end_tolerance
+        for candidate in candidates
+    )
+
+
 def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> tuple[float, dict]:
     words = line.words
     if not words:
@@ -155,6 +194,7 @@ def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> t
     onset = float(_onset_support(starts[0], activity))
     release = float(_release_support(ends[-1], activity))
     reliability = float(statistics.mean(_source_reliability(word) for word in words))
+    leading_window_edge_fallback = bool(words[0].get("window_edge_fallback"))
 
     source_timestamp = line.source_timestamp
     source_prior = (math.exp(-abs(starts[0] - float(source_timestamp)) / 0.8)
@@ -169,6 +209,11 @@ def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> t
     score = float(0.27 * activity_coverage + 0.16 * onset + 0.16 * reliability +
                   0.13 * agreement + 0.10 * geometry + 0.07 * source_prior +
                   0.11 * release)
+    if leading_window_edge_fallback:
+        # The timestamp is the search-window boundary, not a measured phoneme
+        # or vocal onset.  A sizeable penalty lets corroborated acoustic
+        # candidates win while the baseline remains available as a fallback.
+        score -= 0.18
     if not monotonic or not positive:
         score *= 0.25
     return score, {
@@ -184,6 +229,7 @@ def _score_line(line, activity: list[tuple[float, float]], consensus: dict) -> t
         "lrc_prior": round(source_prior, 4),
         "start": round(starts[0], 3),
         "end": round(ends[-1], 3),
+        "leading_window_edge_fallback": leading_window_edge_fallback,
     }
 
 
@@ -236,8 +282,24 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
                 candidate.lines[line_index], vocal_activity, consensus[line_index])
             support, families = _independent_boundary_support(
                 candidates, line_index, candidate_index)
+            boundary_votes = _boundary_candidate_votes(
+                candidates, line_index, candidate_index)
+            corroborated_scope_edge = (
+                detail.get("leading_window_edge_fallback", False)
+                and candidate.family == "full-transcript-stable-ts"
+                and boundary_votes >= 2
+            )
+            if corroborated_scope_edge:
+                # The forced aligner still emitted timestamp zero relative to
+                # its local window, but two independently decoded transcript
+                # scopes placed that window at the same song boundary. Restore
+                # the penalty only for this explicitly corroborated scaffold.
+                score += 0.18
+                detail = {**detail, "score": round(score, 4)}
             row.append((score, {**detail, "independent_boundary_support": support,
-                                "supporting_families": families}))
+                                "supporting_families": families,
+                                "boundary_candidate_votes": boundary_votes,
+                                "corroborated_scope_edge": corroborated_scope_edge}))
         baseline_score = row[baseline_index][0]
         baseline_detail = row[baseline_index][1]
         high_disagreement = (consensus[line_index]["start_spread_ms"] > 180 or
@@ -250,18 +312,31 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
                 and detail.get("onset_support", 0.0) >=
                 baseline_detail.get("onset_support", 0.0) + 0.20
             )
+            edge_fallback_rescue = (
+                high_disagreement
+                and baseline_detail.get("leading_window_edge_fallback", False)
+                and (not detail.get("leading_window_edge_fallback", False)
+                     or detail.get("corroborated_scope_edge", False))
+                and detail.get("boundary_candidate_votes", 0) >= 2
+                and detail.get("onset_support", 0.0) >= 0.80
+                and detail.get("onset_support", 0.0) >=
+                baseline_detail.get("onset_support", 0.0) + 0.10
+            )
             disagreement_supported = (
                 not high_disagreement
                 or detail["independent_boundary_support"] >= 2
                 or strong_acoustic_rescue
+                or edge_fallback_rescue
             )
             reliability_supported = (
                 detail.get("model_reliability", 0.0) >=
                 baseline_detail.get("model_reliability", 0.0) - 0.12
                 or strong_acoustic_rescue
+                or edge_fallback_rescue
             )
             eligible = bool(candidate_index == baseline_index or
                             ((score >= baseline_score + minimum_line_improvement or
+                              edge_fallback_rescue or
                               not baseline_detail.get("valid", False))
                              and disagreement_supported
                              and reliability_supported))
@@ -272,6 +347,7 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
                              {**detail, "eligible": eligible,
                               "high_disagreement": high_disagreement,
                               "strong_acoustic_rescue": strong_acoustic_rescue,
+                              "edge_fallback_rescue": edge_fallback_rescue,
                               "disagreement_supported": disagreement_supported,
                               "reliability_supported": reliability_supported}))
         scores.append(adjusted)
@@ -302,6 +378,60 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
 
     selected_lines = [deepcopy(candidates[candidate_index].lines[line_index])
                       for line_index, candidate_index in enumerate(selected)]
+    leading_boundary_rescues: dict[int, dict] = {}
+    for line_index, candidate_index in enumerate(selected):
+        detail = scores[line_index][candidate_index][1]
+        if detail.get("edge_fallback_rescue") and selected_lines[line_index].words:
+            first_word = selected_lines[line_index].words[0]
+            first_word.pop("window_edge_fallback", None)
+            first_word["window_edge_fallback_resolved"] = True
+            first_word["window_edge_rescue"] = "corroborated-transcript-scopes"
+            continue
+        # A globally selected baseline may retain a false leading edge because
+        # replacing its whole line would currently overlap the next provisional
+        # candidate.  When a competing line has overwhelming acoustic onset
+        # support, move only the first word's start. Its end and every later
+        # boundary stay untouched, so this cannot create a new seam collision.
+        if (candidate_index != baseline_index or not selected_lines[line_index].words
+                or not detail.get("leading_window_edge_fallback", False)):
+            continue
+        first_word = selected_lines[line_index].words[0]
+        current_start = float(first_word["start"])
+        current_end = float(first_word["end"])
+        previous_end = (float(selected_lines[line_index - 1].words[-1]["end"])
+                        if line_index > 0 and selected_lines[line_index - 1].words
+                        else 0.0)
+        alternatives = []
+        for alternative_index, candidate in enumerate(candidates):
+            if alternative_index == baseline_index or not candidate.lines[line_index].words:
+                continue
+            alternative_detail = scores[line_index][alternative_index][1]
+            alternative_start = float(candidate.lines[line_index].words[0]["start"])
+            if (not alternative_detail.get("strong_acoustic_rescue", False)
+                    or alternative_start < current_start + 0.18
+                    or alternative_start >= current_end - 0.04
+                    or alternative_start < previous_end - 0.001):
+                continue
+            alternatives.append((
+                alternative_detail.get("onset_support", 0.0),
+                alternative_detail.get("score", 0.0),
+                alternative_start, alternative_index,
+            ))
+        if not alternatives:
+            continue
+        _onset, _score, rescued_start, rescue_index = max(alternatives)
+        first_word["start"] = round(rescued_start, 3)
+        first_word.pop("window_edge_fallback", None)
+        first_word["window_edge_fallback_resolved"] = True
+        first_word["window_edge_rescue"] = "boundary-only-acoustic-onset"
+        selected_lines[line_index].timestamp = round(rescued_start, 3)
+        leading_boundary_rescues[line_index] = {
+            "candidate": candidates[rescue_index].id,
+            "from": round(current_start, 3),
+            "to": round(rescued_start, 3),
+            "preserved_word_end": round(current_end, 3),
+            "method": "boundary-only-acoustic-onset",
+        }
     baseline_lines = deepcopy(candidates[baseline_index].lines)
     line_reports = []
     for line_index, candidate_index in enumerate(selected):
@@ -315,6 +445,7 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
             "selected": candidates[candidate_index].id,
             "baseline": baseline_id,
             "changed": candidate_index != baseline_index,
+            "leading_boundary_rescue": leading_boundary_rescues.get(line_index),
             "start_spread_ms": consensus[line_index]["start_spread_ms"],
             "end_spread_ms": consensus[line_index]["end_spread_ms"],
             "needs_review": (consensus[line_index]["start_spread_ms"] > 180 or
@@ -326,12 +457,13 @@ def fuse_alignment_candidates(candidates: list[AlignmentCandidate],
         "version": 2,
         "method": "immutable-multi-candidate-viterbi-v1",
         "mode": mode,
-        "applied": mode == "select" and changed > 0,
+        "applied": mode == "select" and (changed > 0 or bool(leading_boundary_rescues)),
         "baseline": baseline_id,
         "candidates": [{"id": item.id, "description": item.description,
                         "family": item.family} for item in candidates],
         "minimum_line_improvement": minimum_line_improvement,
         "selected_nonbaseline_lines": changed,
+        "leading_boundary_rescues": len(leading_boundary_rescues),
         "review_lines": sum(item["needs_review"] for item in line_reports),
         "lines": line_reports,
     }
@@ -481,3 +613,152 @@ def preserve_better_enhanced_input(generated: list, source: AlignmentCandidate |
         "preserved_blocks": preserved_blocks,
         "lines": preserved,
     }
+
+
+PRECISE_INTERNAL_BOUNDARY_SOURCES = {
+    "ctc-phoneme-alignment",
+    "ctc-context-alignment",
+    "ctc-section-alignment",
+    "mms-forced-alignment",
+    "sofa-singing-alignment",
+    "easyaligner-global",
+    "ipa-collapsed-run-repair",
+    "ipa-vocal-hole-repair",
+    "ipa-delayed-phrase-repair",
+    "ipa-reduced-connector-repair",
+    "ipa-clipped-final-phrase-repair",
+    "verified-local-ipa-interval",
+}
+
+
+def preserve_uncorroborated_internal_editor_boundaries(
+        generated: list, source: AlignmentCandidate | None, *,
+        boundary_disagreement: float = 0.14,
+        maximum_outer_disagreement: float = 0.28) -> tuple[list, dict]:
+    """Prevent a coarse recogniser from degrading an editor word layout.
+
+    Variant 1.2 starts with a complete, word-timed editor document.  A new
+    acoustic candidate may improve it, but line-level activity coverage alone
+    cannot decide whether an internal pause belongs to the left word, the
+    right word, or neither.  Preserve the editor layout when outer line edges
+    still agree but an internal edge moves materially without a precise,
+    independently constrained word aligner supporting both sides.
+
+    A large onset shift is intentionally left to candidate selection because
+    it can represent a genuinely misplaced editor line. A large final release
+    is different: sustain analysis may change only that edge and must not make
+    unrelated earlier word boundaries lose their protection. If the release
+    is independently precise, retain it on top of the restored editor prefix;
+    otherwise restore the complete editor line.
+    """
+    report = {
+        "enabled": source is not None,
+        "method": "corroborated-internal-editor-boundary-guard-v1",
+        "preserved_lines": 0,
+        "boundary_disagreement_ms": round(boundary_disagreement * 1000),
+        "maximum_outer_disagreement_ms": round(maximum_outer_disagreement * 1000),
+        "lines": [],
+    }
+    if source is None or len(source.lines) != len(generated):
+        report["enabled"] = False
+        report["reason"] = "no-compatible-enhanced-input"
+        return generated, report
+    try:
+        _compatible([capture_candidate("generated", "generated", generated, "automatic"),
+                     source])
+    except ValueError:
+        report["enabled"] = False
+        report["reason"] = "canonical-text-changed"
+        return generated, report
+
+    result = deepcopy(generated)
+    for line_index, (current, editor) in enumerate(zip(generated, source.lines)):
+        if len(current.words) < 2 or len(current.words) != len(editor.words):
+            continue
+        if [normalize_words(word.get("word", "")) for word in current.words] != [
+                normalize_words(word.get("word", "")) for word in editor.words]:
+            continue
+        current_start, current_end = (float(current.words[0]["start"]),
+                                      float(current.words[-1]["end"]))
+        editor_start, editor_end = (float(editor.words[0]["start"]),
+                                    float(editor.words[-1]["end"]))
+        if abs(current_start - editor_start) > maximum_outer_disagreement:
+            continue
+        outer_end_disagrees = abs(current_end - editor_end) > maximum_outer_disagreement
+
+        changed_edges = []
+        corroborated = True
+        for edge in range(len(current.words) - 1):
+            left, right = current.words[edge], current.words[edge + 1]
+            editor_left, editor_right = editor.words[edge], editor.words[edge + 1]
+            end_delta = abs(float(left["end"]) - float(editor_left["end"]))
+            start_delta = abs(float(right["start"]) - float(editor_right["start"]))
+            if max(end_delta, start_delta) < boundary_disagreement:
+                continue
+            left_precise = _has_precise_internal_boundary(left, edge="end")
+            right_precise = _has_precise_internal_boundary(right, edge="start")
+            # Only the side which actually moved needs independent proof.  A
+            # precise measured release used to be discarded merely because
+            # the unchanged following onset had no redundant model vote.
+            edge_corroborated = (
+                (end_delta < boundary_disagreement or left_precise)
+                and (start_delta < boundary_disagreement or right_precise)
+            )
+            corroborated = corroborated and edge_corroborated
+            changed_edges.append({
+                "after_word": edge + 1,
+                "left": left.get("word", ""),
+                "right": right.get("word", ""),
+                "end_delta_ms": round(end_delta * 1000, 1),
+                "start_delta_ms": round(start_delta * 1000, 1),
+                "left_precise": left_precise,
+                "right_precise": right_precise,
+            })
+        if not changed_edges or corroborated:
+            continue
+        restored = deepcopy(editor)
+        preserved_precise_release = False
+        if outer_end_disagrees and _has_precise_internal_boundary(
+                current.words[-1], edge="end"):
+            restored.words[-1]["end"] = current_end
+            for key, value in current.words[-1].items():
+                if key.startswith(("sustain_", "phoneme_end_", "pyin_release_")):
+                    restored.words[-1][key] = deepcopy(value)
+            preserved_precise_release = True
+        restored.timestamp = float(restored.words[0]["start"])
+        result[line_index] = restored
+        report["preserved_lines"] += 1
+        report["lines"].append({
+            "line": line_index + 1,
+            "text": current.text,
+            "reason": "internal-boundary-change-without-independent-word-proof",
+            "outer_end_disagreement_ms": round(abs(current_end - editor_end) * 1000, 1),
+            "preserved_precise_generated_release": preserved_precise_release,
+            "changed_edges": changed_edges,
+        })
+    return result, report
+
+
+def _has_precise_internal_boundary(word: dict, *, edge: str) -> bool:
+    source = str(word.get("timing_source", ""))
+    if source in PRECISE_INTERNAL_BOUNDARY_SOURCES:
+        return True
+    if source == "stable-repetition-acoustic-onset":
+        return bool(word.get("repeated_phrase_periodicity_verified"))
+    if edge == "start":
+        evidence = word.get("phoneme_start_evidence")
+        return bool(isinstance(evidence, dict)
+                    and evidence.get("supported")
+                    and float(evidence.get("score", 0.0)) >= 0.68
+                    and float(word.get("phoneme_confidence", 0.0)) >= 0.55)
+    # Pitch alone is not an independent word-identity vote: separator residue
+    # can remain tonal.  A precise end needs a word/phone model as well.
+    phoneme_proof = bool(word.get("phoneme_end_evidence", {}).get("supported")
+                         and float(word.get("phoneme_confidence", 0.0)) >= 0.55)
+    tonal_release = word.get("sustain_tonal_release")
+    measured_release = bool(
+        tonal_release is not None
+        and float(word.get("sustain_release_confidence", 0.0)) >= 0.80
+        and abs(float(word.get("end", 0.0)) - float(tonal_release)) <= 0.045
+    )
+    return phoneme_proof or measured_release

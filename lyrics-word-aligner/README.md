@@ -24,10 +24,31 @@ prevents overlapping LRC windows from assigning repeated text to the same
 audio region. For long tracks or limited GPU memory, timed LRC input
 automatically falls back to line windows.
 
-Optional source separation isolates controllable karaoke vocals and
-instrumental audio. `Qwen3-ForcedAligner-0.6B` supplies the primary acoustic
-word boundaries. Qwen ASR, Stable-TS/Whisper, vocal activity, and optional
-candidate stems provide independent evidence for difficult passages.
+Source separation has two explicit roles. General BS-/Mel-RoFormer candidates
+produce an all-vocals **analysis stem** for ASR, alignment, Basic Pitch and
+pYIN. A separately configured Karaoke RoFormer produces the immutable
+**Stage vocal/instrumental pair** used for playback and export. An analysis
+winner can never replace or hybridize the Stage pair. Separator models are
+loaded sequentially and released before Qwen/Whisper, preserving the validated
+8 GiB execution model.
+
+`Qwen3-ForcedAligner-0.6B` supplies the primary acoustic word boundaries. Qwen
+ASR, Stable-TS/Whisper, CTC phonemes, vocal activity, spectral attacks, Basic
+Pitch and pYIN provide typed independent evidence. Basic Pitch can confirm an
+existing word or syllable boundary but cannot create lyrics or infer singer
+identity. Melismas remain multiple notes on one syllable; missing pitch never
+penalizes screams, shouts, rap or spoken vocals.
+
+```dotenv
+LRC_ANALYSIS_SEPARATOR_ENABLED=true
+LRC_ANALYSIS_SEPARATOR_MODELS=model_bs_roformer_ep_317_sdr_12.9755.ckpt,model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt
+LRC_STAGE_SEPARATOR_MODEL=mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt
+LRC_ORIGINAL_MIX_BLEND_MODE=fallback # off, candidate, fallback
+LRC_BASIC_PITCH_ENABLED=true
+LRC_BASIC_PITCH_USE_FOR_ALIGNMENT=true
+LRC_EVIDENCE_FUSION_MODE=shadow      # select after corpus review
+LRC_PYIN_ENABLED=true
+```
 
 Core alignment settings:
 
@@ -40,11 +61,21 @@ LRC_SECTION_MAX_DURATION=45
 LRC_SECTION_CANDIDATE_SECONDS=18,30,45
 ```
 
+The editor also exposes a **reference-guided realignment** profile for songs
+that already contain reliable manual corrections. Exact manual lines remain
+immutable. Their measured start/end residuals calibrate only nearby untouched
+lines, while outliers are rejected and the resulting candidate still has to
+beat the normal alignment against the final vocal stem. The influence radius
+and largest accepted calibration shift are configurable with
+`LRC_EDITOR_GUIDANCE_MAX_DISTANCE` (45 seconds) and
+`LRC_EDITOR_GUIDANCE_MAX_SHIFT` (1.5 seconds).
+
 ### Lyrics Engine v2
 
 Engine v2 treats transcript recognition, word placement, and sung-word release
 as separate problems. It keeps every alignment path immutable and compares:
 
+- an anchor-free global XLSR/eSpeak phoneme path in the research profile;
 - canonical LRCLIB text in local forced-alignment windows;
 - canonical text projected onto a long-context Stable-TS transcript;
 - the same projection using short, overlapping 12-second windows;
@@ -63,7 +94,7 @@ measurably beat the historical path and have sufficient independent acoustic
 support. `shadow` records the complete decision report in `*.alignment.json`
 without changing output, while `off` retains the legacy engine. Regardless of
 the mode, the final Stage-vocal boundary, monotonic word geometry, and
-single-lane overlap gates remain mandatory.
+within-lane overlap gates remain mandatory.
 
 The design follows the same separation of concerns as
 [WhisperX](https://github.com/m-bain/whisperX) (VAD, transcription, then forced
@@ -94,6 +125,45 @@ disabled unless `LRC_EXPERIMENTAL_ANCHOR_CONTEXT=true` is set.
 The image itself contains no songs, lyrics, stems, model weights, or service
 credentials. Model files are downloaded lazily into the mounted `models`
 directory when a job first needs them.
+
+### Concurrent singing voices (MedleyVox)
+
+The optional MedleyVox adapter examines short windows around non-lexical
+backing-vocal phrases such as `woho`/`lalala`, plus lines already assigned to a
+secondary vocal lane in the editor. It separates the finalized vocal stem into
+two anonymous voice candidates using GPU-bounded 3-second overlap-add chunks.
+`shadow` mode writes two diagnostic FLAC files and report evidence without
+changing lyrics. `promote` additionally moves only an explicit non-lexical
+backing phrase to voice lane 2 when one separated acoustic component is both
+strong and unambiguous. Ordinary words and manually reviewed lines are never
+promoted by this heuristic. The persisted editor revision retains the two
+candidate stems and the evidence used for every accepted or rejected proposal.
+
+Separator outputs are anonymous and may otherwise swap between disjoint song
+windows. Neon Stage keeps them attached to a stable singer identity with a
+compact timbre fingerprint (MFCC distribution, spectral shape and median F0).
+Voice-lane corrections saved by the editor become per-song reference anchors
+on the next run. A two-thirds majority and a clear energy ratio are required;
+ambiguous simultaneous singing remains review material rather than being
+silently assigned to the wrong singer.
+
+```dotenv
+LRC_MEDLEYVOX_ENABLED=true
+LRC_MEDLEYVOX_MODE=promote
+LRC_MEDLEYVOX_MAX_WINDOW_SECONDS=12
+LRC_MEDLEYVOX_MAX_WINDOWS=12
+LRC_MEDLEYVOX_CHUNK_SECONDS=3
+LRC_MEDLEYVOX_CHUNK_OVERLAP_SECONDS=1
+LRC_MEDLEYVOX_PROMOTION_MIN_SCORE=0.42
+LRC_MEDLEYVOX_PROMOTION_MIN_MARGIN=0.08
+```
+
+Only the pinned `multi_singing_librispeech/vocals.pth` checkpoint (about
+233 MB) is downloaded, not the complete model repository. The official
+MedleyVox research repository does not publish pretrained weights, so this
+adapter uses the independently published `Cyru5/MedleyVox` checkpoint. It is
+CC-BY-4.0 licensed; its exact revision and attribution are recorded in every
+report and in the root `THIRD_PARTY_NOTICES.md`.
 
 ## Configuration
 
@@ -235,6 +305,36 @@ the command line:
 ```bash
 ./scripts/linux/recognize-song-lyrics.sh --audio '/library/Artist - Title.mp3'
 ```
+
+## Alignment quality funnel
+
+The regular aligner follows a strict broad-to-local order. Every generated
+alignment report records the executed order under `pipeline_phase_order`; the
+worker fails fast if a future code change enters these phases out of order.
+
+1. prepare and select recognition audio;
+2. collect independent Qwen and Stable-TS transcript evidence;
+3. create the primary forced word alignment;
+4. refine uncertain regions with CTC, MMS, EasyAligner, SOFA, and Stable-TS;
+5. finalize the exact vocal/instrumental stem pair exposed to the editor and
+   Stage, including locally recovered separator leakage;
+6. score timing candidates against that final Stage vocal stem;
+7. resolve macro onsets, chorus anchors, overlaps, and missing lyric regions;
+8. apply late word geometry, sustain, and repetition rules;
+9. preserve a human editor boundary unless an independent word model proves a
+   materially different edge;
+10. reprocess every sentence in a bounded IPA/CTC window and verify every word
+    with independent onset, spectral-transition, or release evidence;
+11. apply explicit source/non-lexical boundaries, enforce the final single-lane
+    and exact-Stage-stem constraints, then run a read-only word-boundary audit;
+12. derive syllable timing strictly inside the immutable word windows;
+13. validate and export.
+
+The detailed per-word result is available as `final_word_boundary_audit`.
+`verified` means the final persisted edge still matches the sentence-local
+phonetic and acoustic proof. `hard-constrained` means an explicit LRC boundary,
+non-lexical vocalization, single-lane rule, or exact Stage stem safely overruled
+the raw model edge. Remaining `unverified` words stay visible for review.
 
 ## Test without source separation
 
@@ -385,6 +485,15 @@ an earlier sustain estimate already exists. Exact frame-center timebase data,
 micro-path decisions, rejected candidates, and movements against the immutable
 Enhanced-LRC input are written to `*.alignment.json`.
 
+The `research-shadow` profile is a clean-room comparison path. It retains only
+the immutable source text, line order, and optional rough line cues from the
+pre-align file. Before any model runs, it deletes enhanced word timestamps,
+manual line ranges, editor syllables, hold/effect metadata, and all manual
+authority flags. The resulting alignment is therefore independent from saved
+editor corrections and is stored as a separate loadable version by the server.
+The report records this guarantee under `alignment_profile` and
+`research_shadow_input`, including the number of discarded timing records.
+
 Two or more adjacent words which have collapsed to 90 ms or less are treated
 as one local repair problem. They are expanded from the IPA path only when the
 complete replacement lies between stable neighbouring anchors and at least
@@ -437,6 +546,40 @@ threshold. Human-readable version reports expose the same decisions and make
 clear that movement from the input is a diagnostic measurement, not by itself
 proof of better timing.
 
+### Anchor-free global phoneme primary hypothesis
+
+The `research-shadow` profile can use
+`facebook/wav2vec2-xlsr-53-espeak-cv-ft` as its primary geometry source for
+plain lyrics and LRC files whose line timestamps are not trustworthy. eSpeak
+converts the known canonical words to IPA. XLSR calculates frame-level phone
+posteriors in bounded, overlapping GPU chunks, and a single monotone CTC path
+then places the complete phoneme sequence on the full track. Chunk context is
+discarded before concatenation, so neither a chunk seam nor an input timestamp
+becomes an artificial lyric anchor.
+
+This path uses only lyric text and line order; it explicitly reports
+`uses_input_timestamps: false`. Qwen, Stable-TS, local CTC and vocal activity
+remain independent competitors and downstream validators. Variant 1.2 and
+manual editor versions are not changed by this experimental architecture.
+
+```dotenv
+LRC_GLOBAL_PHONEME_MODE=primary   # primary, shadow, or off
+LRC_GLOBAL_PHONEME_CHUNK_SECONDS=24
+LRC_GLOBAL_PHONEME_CONTEXT_SECONDS=1.2
+```
+
+`primary` makes the global path a selectable, placement-capable Engine-v2
+hypothesis in a research-shadow run. It deliberately does **not** make the raw
+one-pass path the unconditional safety baseline: repeated verses and choruses
+can be mapped to the wrong occurrence while retaining plausible-looking CTC
+geometry. The established cascade remains the fallback, and the global path
+wins a line only when independent candidate families or stronger acoustic
+evidence support it. `shadow` computes diagnostics without making it
+selectable, and `off` skips it. Disabling Engine v2 also keeps the global path
+diagnostic-only because its safety gate would otherwise be absent. Long vowel
+releases are still finalized later against the exact Stage vocal stem; the CTC
+token span alone is not treated as a sung sustain.
+
 ## Supported alignment languages
 
 `de`, `en`, `fr`, `es`, `it`, `pt`, `ru`, `zh`, `yue`, `ja`, `ko`
@@ -449,6 +592,62 @@ Open `http://127.0.0.1:8081/` after startup. The interface supports:
 - pairing files by equal base name, for example `Demo.mp3` + `Demo.lrc`;
 - per-job progress;
 - downloading the enhanced LRC and JSON review report.
+
+## Basic Pitch A/B prototype
+
+The optional `basic-pitch` Compose service is an isolated CPU inference
+sidecar. Start the regular stack with `docker compose up -d`; the aligner calls
+the sidecar internally at `http://basic-pitch:8090`. Port `8091` is exposed on
+the host for diagnostics and can be changed with `BASIC_PITCH_PORT`.
+
+In the Lyrics Editor choose the alignment action and then **Spotify Basic
+Pitch A/B prototype**. For the whole library the server selects at most five
+songs and rejects every document with UltraStar timing heritage. Each song
+produces two independent review versions:
+
+- `basic-pitch-ab-control`: the existing standard path (A);
+- `basic-pitch-ab-treatment`: B, derived directly from A without rerunning a
+  stochastic ASR or forced-alignment model.
+
+Basic Pitch does not replace lyric or phoneme alignment. The treatment uses
+the decoded notes plus the model's frame-level vocal-onset peaks. It proposes
+nearby line starts and final-note releases, always requiring an independently
+measured vocal boundary which the instrumental stem cannot explain. At least
+six consistent onset anchors spanning one minute can additionally establish a
+robust linear timing drift; only matching, independently accepted lines may be
+shifted as complete phrases. The JSON report records accepted and rejected
+onsets, releases and drift diagnostics under `basic_pitch_evidence`; both
+generated versions remain in review until auditioned and explicitly released.
+An adaptive vocal range derived from robust decoded-note percentiles rejects
+remote raw-onset harmonics without assuming a fixed male or female range.
+For raw pitch onsets, the treatment searches up to 120 ms earlier for a
+leakage-independent sibilant/plosive boundary so a word can start at its
+leading consonant rather than at the later voiced vowel. Repeated exact lyric
+lines also receive relative-pitch DTW fingerprints, group confidence and
+outlier lines for chorus-placement review.
+
+Existing internal word and syllable boundaries receive additional pitch-onset
+diagnostics. They remain in `shadow` mode by default because a melodic note
+change may be a melisma rather than a new lyric unit. Even in `select` mode a
+boundary moves only when the pitch event is close to the existing boundary and
+an independently measured vocal attack is not explained by the instrumental
+stem. A sufficiently close event is recorded as `confirmed-existing` and can
+later feed an editor confidence overlay without changing timing. Enable
+mutation explicitly with `BASIC_PITCH_INTERNAL_WORD_MODE=select`
+or `BASIC_PITCH_SYLLABLE_MODE=select` after auditioning a representative A/B
+set.
+
+The report also contains a compact `pitch_timeline` of MIDI note events mapped
+to lyric lines. The desktop editor renders these events as a magenta, read-only
+note overlay on the vocal waveform. `word_pitch_evidence` additionally records
+voiced coverage, dominant MIDI pitch, pitch span and sustained-note evidence
+for each covered word; `alignment_confidence` aggregates independent evidence
+per line and marks large shifts or repetition outliers for review. These values
+are suitable for editor visualization, melody comparison and future segmentation
+work. They are deliberately labelled as quantized note data,
+not a continuous F0 track: production-quality vocal pitch shifting will later
+need a dedicated voiced/unvoiced F0 estimator and a formant-aware audio
+processor; Basic Pitch can provide its musical note targets and segment map.
 
 ## CUDA troubleshooting
 

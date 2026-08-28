@@ -1,0 +1,89 @@
+<Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.SettingsWindow" Title="Einstellungen"
+        Width="800" Height="700" MinWidth="650" MinHeight="560"
+        Background="#0D1016" WindowStartupLocation="CenterOwner">
+  <Grid RowDefinitions="Auto,*,Auto" Margin="24">
+    <StackPanel Spacing="4">
+      <TextBlock Text="NEON STAGE · EINSTELLUNGEN" Foreground="#DFFF28" FontSize="22" FontWeight="Bold" />
+      <TextBlock Text="Server, Bibliothek und externe Dienste zentral konfigurieren"
+                 Foreground="#8993A6" />
+    </StackPanel>
+
+    <TabControl Grid.Row="1" Margin="0,20,0,16">
+      <TabItem Header="Allgemein">
+        <ScrollViewer><StackPanel Margin="18" Spacing="14">
+          <TextBlock Text="BIBLIOTHEK" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <TextBlock Text="Pfad zur lokalen Karaoke-Bibliothek" Foreground="#AAB2C1" />
+          <TextBox x:Name="LibraryPathBox" Watermark="/pfad/zur/bibliothek" />
+          <Border Padding="12" CornerRadius="7" Background="#171D28">
+            <TextBlock Text="Eine Pfadänderung startet die Neuindizierung auf dem Server. Audiodateien werden dabei nicht verschoben."
+                       Foreground="#AAB2C1" TextWrapping="Wrap" />
+          </Border>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Verbindung &amp; URLs">
+        <ScrollViewer><StackPanel Margin="18" Spacing="14">
+          <TextBlock Text="VERBUNDENER SERVER" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <TextBox x:Name="ServerUrlBox" IsReadOnly="True" />
+          <TextBlock Text="Die Editor-Adresse wird beim Start über NEONSTAGE_SERVER_URL bzw. KARAOKE_SERVER festgelegt. Anbieter-URLs können unten geändert werden."
+                     Foreground="#AAB2C1" TextWrapping="Wrap" />
+          <Border x:Name="TransportWarning" Padding="12" CornerRadius="7" Background="#2A1F12"
+                  BorderBrush="#735025" BorderThickness="1" IsVisible="False">
+            <TextBlock Text="Zugangsdaten können über eine entfernte Serveradresse nur per HTTPS gespeichert werden. Nutze auf demselben Rechner eine Loopback-Adresse."
+                       Foreground="#FFB45E" TextWrapping="Wrap" />
+          </Border>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Lyrics-Quellen">
+        <ScrollViewer><StackPanel Margin="18" Spacing="13">
+          <CheckBox x:Name="UsdbEnabledBox" Content="USDB als Lyrics-Quelle aktivieren" FontWeight="SemiBold" />
+          <StackPanel>
+            <TextBlock Text="USDB.EU · FALLBACK-URL" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="UsdbBaseUrlBox" />
+          </StackPanel>
+          <Separator Margin="0,5" />
+          <TextBlock Text="USDB.ANIMUX.DE · BEVORZUGTE QUELLE" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <CheckBox x:Name="AnimuxEnabledBox" Content="Authentifizierten Animux-Download bevorzugen" />
+          <StackPanel>
+            <TextBlock Text="BASIS-URL" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="AnimuxBaseUrlBox" />
+          </StackPanel>
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+            <StackPanel>
+              <TextBlock Text="BENUTZERNAME" Foreground="#8993A6" FontSize="10" />
+              <TextBox x:Name="AnimuxUsernameBox" />
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+              <TextBlock Text="PASSWORT" Foreground="#8993A6" FontSize="10" />
+              <TextBox x:Name="AnimuxPasswordBox" PasswordChar="●"
+                       Watermark="Leer lassen = gespeichertes Passwort behalten" />
+            </StackPanel>
+          </Grid>
+          <CheckBox x:Name="ClearAnimuxCredentialsBox" Content="Gespeicherte Animux-Anmeldedaten löschen" />
+          <Button Content="Animux-Verbindung testen" Click="TestAnimuxClick" HorizontalAlignment="Left" />
+          <TextBlock x:Name="UsdbStatusText" Foreground="#45E6D0" FontFamily="monospace" TextWrapping="Wrap" />
+        </StackPanel></ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Downloads">
+        <StackPanel Margin="18" Spacing="14">
+          <TextBlock Text="DOWNLOAD-PROVIDER" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <TextBlock Text="Qobuz-Katalog, Kaufdownload-Zugang und Audioqualität werden in einem eigenen geschützten Bereich verwaltet."
+                     Foreground="#AAB2C1" TextWrapping="Wrap" />
+          <Button Content="Qobuz konfigurieren …" Click="OpenQobuzClick" HorizontalAlignment="Left" />
+        </StackPanel>
+      </TabItem>
+    </TabControl>
+
+    <Grid Grid.Row="2" ColumnDefinitions="*,Auto">
+      <TextBlock x:Name="StatusText" Foreground="#45E6D0" TextWrapping="Wrap" VerticalAlignment="Center" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <Button Content="Abbrechen" Click="CancelClick" />
+        <Button x:Name="SaveButton" Content="Einstellungen speichern" Click="SaveClick"
+                Background="#DFFF28" Foreground="#11151C" />
+      </StackPanel>
+    </Grid>
+  </Grid>
+</Window>
