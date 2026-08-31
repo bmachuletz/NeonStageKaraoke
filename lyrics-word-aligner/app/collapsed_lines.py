@@ -463,6 +463,9 @@ def repair_compressed_word_runs(
         words = list(getattr(line, "words", []) or [])
         if not words or bool(getattr(line, "manual_adjusted", False)):
             continue
+        if any(word.get("stage_vocal_silent_prefix_original_start") is not None
+               for word in words):
+            continue
         counts = [max(1, _pronunciation_syllable_count(
             str(word.get("word", "")), language)) for word in words]
         compressed = [

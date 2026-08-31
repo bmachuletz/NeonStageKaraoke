@@ -10,14 +10,17 @@ namespace Karaoke.Editor.Core;
 public sealed class StageLyricsPreview
 {
     private readonly StagePresentationEngine _engine;
+    public const string MusicalHighlightEnvironmentVariable = "NEONSTAGE_MUSICAL_HIGHLIGHT";
 
     public StageLyricsPreview(LyricsEditorDocument document, bool perceptualLeadEnabled = false,
-        bool karaokeTimingEnabled = false)
+        bool karaokeTimingEnabled = false, bool musicalHighlightEnabled = false)
     {
         _engine = new StagePresentationEngine(document.Lines.Select(MapLine).ToArray(),
             perceptualLeadEnabled && !document.UsesUltraStarTiming
                 ? StagePresentationEngine.PerceptualHighlightLeadSeconds : 0,
-            karaokeTimingEnabled && !document.UsesUltraStarTiming);
+            karaokeTimingEnabled && !document.UsesUltraStarTiming,
+            null,
+            musicalHighlightEnabled ? KaraokeHighlightTimelineOptions.Default : null);
     }
 
     public StagePreviewFrame Evaluate(TimeSpan position)
@@ -45,8 +48,12 @@ public sealed class StageLyricsPreview
                         syllable.End.TotalSeconds,
                         syllable.Text,
                         syllable.Confidence ?? 0,
-                        syllable.KaraokeTimingLocked)).ToArray(),
-                word.Confidence ?? 0,
+                        syllable.KaraokeTimingLocked,
+                        syllable.Notes.Select(note => new StagePresentationNote(
+                            note.Start.TotalSeconds, note.End.TotalSeconds, note.Midi, note.Amplitude)).ToArray()))
+                    .ToArray(),
+                word.Confidence ?? (word.Children.Any(child =>
+                    child.Type == LyricSegmentType.Syllable && child.Notes.Count > 0) ? 1 : 0),
                 word.KaraokeTimingLocked))
             .ToArray();
         return new StagePresentationLine(
@@ -60,6 +67,10 @@ public sealed class StageLyricsPreview
             line.VoiceLabel ?? string.Empty,
             line.KaraokeTimingLocked);
     }
+
+    public static bool MusicalHighlightEnvironmentEnabled() =>
+        Environment.GetEnvironmentVariable(MusicalHighlightEnvironmentVariable)?.Trim().ToLowerInvariant()
+        is not "0" or "false" or "no" or "off";
 }
 
 public sealed record StagePreviewFrame(IReadOnlyList<StagePreviewLine> Lines, bool ShowEntryCue,

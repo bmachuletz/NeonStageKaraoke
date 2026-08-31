@@ -131,6 +131,16 @@ def polyphony_summary(notes: list[dict]) -> dict:
     }
 
 
+def prediction_settings() -> dict:
+    minimum_note_length_ms = float(
+        os.getenv("BASIC_PITCH_MINIMUM_NOTE_LENGTH_MS", "70"))
+    return {
+        "onset_threshold": float(os.getenv("BASIC_PITCH_ONSET_THRESHOLD", "0.45")),
+        "frame_threshold": float(os.getenv("BASIC_PITCH_FRAME_THRESHOLD", "0.25")),
+        "minimum_note_length": minimum_note_length_ms / 1000.0,
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "basic-pitch-evidence"}
@@ -148,7 +158,8 @@ async def analyze(audio: UploadFile = File(...)) -> dict:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as stream:
             stream.write(payload)
             temporary = stream.name
-        raw, _, events = predict(temporary, model())
+        settings = prediction_settings()
+        raw, _, events = predict(temporary, model(), **settings)
         contour = contour_peaks(raw)
         notes = []
         for event in events:
@@ -174,6 +185,7 @@ async def analyze(audio: UploadFile = File(...)) -> dict:
             "schema_version": 2,
             "model": "spotify/basic-pitch-0.4.0",
             "device": "cpu",
+            "prediction_settings": settings,
             "notes": notes,
             "onsets": onset_peaks(raw),
             "contour": contour,

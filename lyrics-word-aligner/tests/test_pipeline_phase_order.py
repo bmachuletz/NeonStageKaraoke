@@ -290,10 +290,20 @@ class PipelinePhaseOrderTests(unittest.TestCase):
     def test_stage_stem_decision_is_not_confused_with_alignment_audio(self):
         source = inspect.getsource(run)
         self.assertIn(
-            '"reason": "provided-library-stems-locked" if provided_stage_stems',
+            '"provided-library-stems-locked" if provided_stage_stems',
             source)
-        self.assertIn('else "stage-purpose-is-fixed"', source)
-        self.assertNotIn("select_stage_stem_candidate(", source)
+        self.assertIn('"awaiting-separator-candidate-evaluation"', source)
+        self.assertIn('baseline_id="configured-stage-separator"', source)
+        self.assertLess(source.index("build_analysis_candidates("),
+                        source.index("select_stage_stem_candidate("))
+
+    def test_provided_stage_vocals_are_loaded_before_candidate_list_exists(self):
+        source = inspect.getsource(run)
+        self.assertNotIn("stage_vocal_audio = candidates", source)
+        provided_vocals_load = source.index(
+            'stage_stems.vocals, temp_dir / "provided-stage-vocals-16k.wav"')
+        candidate_list = source.index("candidates = analysis_bundle.candidates")
+        self.assertLess(provided_vocals_load, candidate_list)
 
     def test_medleyvox_is_diagnostic_and_runs_after_final_stage_stem(self):
         source = inspect.getsource(run)

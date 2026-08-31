@@ -35,7 +35,17 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str,
             baseline = {}
     selected_analysis = baseline.get("analysis_stem_selection", {})
     selected_model = str(selected_analysis.get("model") or "").strip()
-    if selected_model:
+    if selected_model and selected_analysis.get("separator") == "provided":
+        notify(25, "Der bereitgestellte Analysis-Stem wird deterministisch geladen")
+        vocals_wav = ffmpeg_to_mono16k(
+            provided_vocals, output_dir / "basic-pitch-vocals-16k.wav")
+        instrumental_wav = ffmpeg_to_mono16k(
+            provided_instrumental,
+            output_dir / "basic-pitch-instrumental-16k.wav")
+        vocal_audio, instrumental_audio = (
+            load_audio(vocals_wav), load_audio(instrumental_wav))
+        analysis_source = "provided-selected-analysis-stem"
+    elif selected_model:
         notify(25, "Der Analysis-Stem der Kontrollversion wird deterministisch rekonstruiert")
         pair = separate_stems(
             audio_path, output_dir / "basic-pitch-analysis-separated",

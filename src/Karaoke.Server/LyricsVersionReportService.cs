@@ -174,6 +174,25 @@ internal sealed class LyricsVersionReportService(
             AddStringMetric(text, analysisStem, "reason", german ? "Auswahlgrund" : "Selection reason");
             AddDoubleMetric(text, analysisStem, "candidate_score",
                 german ? "Kandidatenbewertung" : "Candidate score");
+            if (TryObject(analysisStem, "a_b_summary", out var abSummary))
+            {
+                AddStringMetric(text, abSummary, "ranking_method",
+                    german ? "A/B-Ranking" : "A/B ranking");
+                if (TryArray(abSummary, "evaluation", out var evaluations))
+                {
+                    foreach (var candidate in evaluations.EnumerateArray())
+                    {
+                        var model = String(candidate, "model");
+                        var candidateScore = Number(candidate, "score");
+                        var recall = FormatOptionalPercent(candidate, "vocal_recall");
+                        var pauseLeak = FormatOptionalPercent(candidate, "pause_leak");
+                        var ambiguity = FormatOptionalPercent(candidate, "singer_ambiguity");
+                        Bullet(text, german
+                            ? $"A/B „{model}“: Score {candidateScore:0.####}, Vocal-Recall {recall}, Pause-Leak {pauseLeak}, Singer-Ambiguity {ambiguity}."
+                            : $"A/B “{model}”: score {candidateScore:0.####}, vocal recall {recall}, pause leak {pauseLeak}, singer ambiguity {ambiguity}.");
+                    }
+                }
+            }
         }
         if (TryObject(technical, "stage_stem_selection", out var stageStem))
         {
@@ -212,6 +231,13 @@ internal sealed class LyricsVersionReportService(
                 german ? "Übernommene Phraseneinsätze" : "Applied phrase onsets");
             AddIntegerMetric(text, basicPitch, "applied_releases",
                 german ? "Übernommene Ausklänge" : "Applied releases");
+            if (TryObject(basicPitch, "onset_consensus", out var onsetConsensus))
+            {
+                AddStringMetric(text, onsetConsensus, "method",
+                    german ? "Onset-Konsensus" : "Onset consensus");
+                AddIntegerMetric(text, onsetConsensus, "onset_count",
+                    german ? "Unabhängige Vocal-Envelope-Onsets" : "Independent vocal-envelope onsets");
+            }
             AddStringMetric(text, basicPitch, "internal_word_mode",
                 german ? "Innere Wortgrenzen" : "Internal word boundaries");
             AddIntegerMetric(text, basicPitch, "supported_internal_boundaries",
@@ -463,6 +489,11 @@ internal sealed class LyricsVersionReportService(
             AddIntegerMetric(text, inner, property, label);
     }
 
+    private static string FormatOptionalPercent(JsonElement source, string property) =>
+        TryDouble(source, property, out var value)
+            ? value.ToString("P1", CultureInfo.InvariantCulture)
+            : "–";
+
     private static bool TryObject(JsonElement source, string property, out JsonElement value)
     {
         value = default;
@@ -510,7 +541,8 @@ internal sealed class LyricsVersionReportService(
     private static string Status(LyricsVersionStatus status, bool german) => german ? status switch
     {
         LyricsVersionStatus.Generated => "Generiert", LyricsVersionStatus.NeedsReview => "Prüfung nötig",
-        LyricsVersionStatus.InReview => "In Prüfung", LyricsVersionStatus.Reviewed => "Geprüft",
+        LyricsVersionStatus.InReview => "In Prüfung",
+        LyricsVersionStatus.ReviewOverlaps => "In Prüfung – Überlappungen", LyricsVersionStatus.Reviewed => "Geprüft",
         LyricsVersionStatus.Approved => "Freigegeben", LyricsVersionStatus.Published => "Veröffentlicht",
         LyricsVersionStatus.Rejected => "Abgelehnt", LyricsVersionStatus.Superseded => "Archiviert",
         _ => status.ToString()

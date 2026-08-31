@@ -23,6 +23,7 @@ class StemRoleTests(unittest.TestCase):
             config = SeparationConfig(
                 analysis_enabled=False,
                 analysis_models=(),
+                a_b_models=(),
                 stage_model="stage.ckpt",
                 original_mix_mode="off",
                 original_mix_ratio=0.15,
@@ -41,12 +42,16 @@ class StemRoleTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "LRC_ANALYSIS_SEPARATOR_ENABLED": "true",
             "LRC_ANALYSIS_SEPARATOR_MODELS": "analysis-a.ckpt,analysis-b.ckpt",
+            "LRC_SEPARATOR_A_B_MODELS": "analysis-b.ckpt,ab-candidate.ckpt",
             "LRC_STAGE_SEPARATOR_MODEL": "stage.ckpt",
             "LRC_ORIGINAL_MIX_BLEND_MODE": "candidate",
             "LRC_ORIGINAL_MIX_BLEND_RATIO": ".12",
         }, clear=True):
             config = SeparationConfig.from_environment()
-        self.assertEqual(("analysis-a.ckpt", "analysis-b.ckpt"), config.analysis_models)
+        self.assertEqual(
+            ("analysis-a.ckpt", "analysis-b.ckpt", "ab-candidate.ckpt"),
+            config.analysis_models)
+        self.assertEqual(("ab-candidate.ckpt",), config.a_b_models)
         self.assertEqual("stage.ckpt", config.stage_model)
         self.assertEqual("candidate", config.original_mix_mode)
         self.assertNotEqual(StemPurpose.ANALYSIS, StemPurpose.STAGE)
@@ -57,7 +62,7 @@ class StemRoleTests(unittest.TestCase):
                          separator_family("model_mel_band_roformer_x.ckpt"))
 
     def test_optional_analysis_separator_failure_keeps_stage_pair_untouched(self):
-        config = SeparationConfig(True, ("broken.ckpt", "good.ckpt"),
+        config = SeparationConfig(True, ("broken.ckpt", "good.ckpt"), (),
                                   "stage.ckpt", "off", .15, False)
         stage = StemPaths(Path("stage-vocals.wav"), Path("stage-instrumental.wav"))
         good = StemPaths(Path("analysis-vocals.wav"), Path("analysis-rest.wav"))

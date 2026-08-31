@@ -29,16 +29,22 @@ public sealed class StagePresentationEngine
     private const int MinVisualRowUnits = 14;
 
     private readonly List<StagePresentationLine> _lines;
+    private readonly Dictionary<StagePresentationWord, KaraokeHighlightTimeline> _highlightTimelines =
+        new Dictionary<StagePresentationWord, KaraokeHighlightTimeline>();
+    private readonly KaraokeHighlightTimelineOptions _highlightOptions;
     private readonly List<Section> _sections = new List<Section>();
     private readonly double _highlightLeadSeconds;
     private readonly bool _karaokeTimingEnabled;
 
     public StagePresentationEngine(IReadOnlyList<StagePresentationLine> lines, double highlightLeadSeconds = 0,
-        bool karaokeTimingEnabled = false, IReadOnlyList<double>? beatTimes = null)
+        bool karaokeTimingEnabled = false, IReadOnlyList<double>? beatTimes = null,
+        KaraokeHighlightTimelineOptions? highlightOptions = null)
     {
         _highlightLeadSeconds = Math.Max(0, Math.Min(.25, highlightLeadSeconds));
         _karaokeTimingEnabled = karaokeTimingEnabled;
+        _highlightOptions = highlightOptions ?? KaraokeHighlightTimelineOptions.Default;
         _lines = Normalize(karaokeTimingEnabled ? ProjectKaraokeTiming(lines, beatTimes) : lines);
+        BuildHighlightTimelines();
         BuildSections();
     }
 
@@ -77,7 +83,7 @@ public sealed class StagePresentationEngine
                 }
                 var syllables = ProjectSyllables(word.Syllables, start, end, grid);
                 words.Add(new StagePresentationWord(start, end, word.Text, syllables, word.SyllableConfidence,
-                    word.KaraokeTimingLocked));
+                    word.KaraokeTimingLocked, word.Notes));
                 previousEnd = end;
             }
             var vocalStart = words[0].Start;
@@ -111,7 +117,7 @@ public sealed class StagePresentationEngine
                 end = Math.Max(start + .02, Math.Min(end, wordEnd));
             }
             result.Add(new StagePresentationSyllable(start, end, item.Text, item.Confidence,
-                item.KaraokeTimingLocked));
+                item.KaraokeTimingLocked, item.Notes));
             previousEnd = end;
         }
         return result;
@@ -289,12 +295,12 @@ public sealed class StagePresentationEngine
                         break;
                     }
                     syllables.Add(new StagePresentationSyllable(start, end, syllable.Text, syllable.Confidence,
-                        syllable.KaraokeTimingLocked));
+                        syllable.KaraokeTimingLocked, syllable.Notes));
                     previousSyllableEnd = end;
                 }
                 if (!validSyllables) syllables.Clear();
                 words.Add(new StagePresentationWord(word.Start, word.End, word.Text, syllables,
-                    word.SyllableConfidence, word.KaraokeTimingLocked));
+                    word.SyllableConfidence, word.KaraokeTimingLocked, word.Notes));
                 previousWordEnd = word.End;
             }
             if (!validWords) words.Clear();
@@ -311,6 +317,20 @@ public sealed class StagePresentationEngine
         result.Sort((left, right) => left.Start.CompareTo(right.Start));
         return result;
     }
+
+    private void BuildHighlightTimelines()
+    {
+        for (var lineIndex = 0; lineIndex < _lines.Count; lineIndex++)
+        {
+            var line = _lines[lineIndex];
+            for (var wordIndex = 0; wordIndex < line.Words.Count; wordIndex++)
+            {
+                var timeline = KaraokeHighlightTimeline.Create(line.Words[wordIndex], _highlightOptions);
+                if (timeline is not null) _highlightTimelines[line.Words[wordIndex]] = timeline;
+                if (timeline is not null) _highlightTimelines[line.Words[wordIndex]] = timeline;
+            }
+        }
+}
 
     private void BuildSections()
     {
@@ -529,7 +549,7 @@ public sealed class StagePresentationEngine
         return false;
     }
 
-    private static double LineProgress(WrappedLine line, double position, double baseLead,
+    private double LineProgress(WrappedLine line, double position, double baseLead,
         bool karaokeTimingEnabled)
     {
         if (line.Words.Count == 0) return Clamp((position - line.Start) / Math.Max(.05, line.End - line.Start));
@@ -541,7 +561,10 @@ public sealed class StagePresentationEngine
         {
             var word = line.Words[index];
             var lead = karaokeTimingEnabled ? KaraokeLead(line, index, baseLead) : 0;
-            var progress = WordProgress(word, position + lead);
+            var timeline = HighlightTimeline(word);
+            var progress = timeline is not null
+                ? timeline.Evaluate(position + lead)
+                : WordProgress(word, position + lead);
             completed += Math.Max(1, word.Text.Length) * progress;
             if (progress < 1) break;
             if (index + 1 < line.Words.Count) completed += 1;
@@ -595,6 +618,37 @@ public sealed class StagePresentationEngine
             if (position < syllable.End) break;
         }
         return completed / Math.Max(1, total);
+    }
+
+    private KaraokeHighlightTimeline? HighlightTimeline(StagePresentationWord word) =>
+        _highlightTimelines.TryGetValue(word, out var timeline) && timeline.HasMusicalBoundary
+            ? timeline : null;
+
+    private static double LinearWordProgress(StagePresentationWord word, double position) =>
+        Clamp((position - word.Start) / Math.Max(.02, word.End - word.Start));
+
+    public static string DescribeHighlightTimelines(IReadOnlyList<StagePresentationLine> lines,
+        KaraokeHighlightTimelineOptions? options = null)
+    {
+        var settings = options ?? KaraokeHighlightTimelineOptions.Default;
+        var result = new List<string> { $"HighlightTimelineVersion={KaraokeHighlightTimeline.Version}" };
+        for (var lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+        {
+            var line = lines[lineIndex];
+            for (var wordIndex = 0; wordIndex < line.Words.Count; wordIndex++)
+            {
+                var word = line.Words[wordIndex];
+                var timeline = KaraokeHighlightTimeline.Create(word, settings);
+                if (timeline is null) continue;
+                var notes = string.Join(", ", word.Notes
+                    .Select(note => $"{note.Start:0.000}-{note.End:0.000}/{note.Midi}"));
+                result.Add($"LINE {lineIndex + 1} WORD {wordIndex + 1} '{word.Text}' NOTES [{notes}] :: " +
+                           string.Join(" ", timeline.Segments.Select(segment =>
+                               $"{segment.Type}:{segment.StartTime:0.000}-{segment.EndTime:0.000}/" +
+                               $"{segment.StartTextProgress:0.###}->{segment.EndTextProgress:0.###}")));
+            }
+        }
+        return string.Join("\n", result);
     }
 
     private static double SingingPace(WrappedLine line, double position)
@@ -719,11 +773,13 @@ public sealed class StagePresentationWord
 {
     public StagePresentationWord(double start, double end, string text,
         IReadOnlyList<StagePresentationSyllable> syllables, double syllableConfidence,
-        bool karaokeTimingLocked = false)
+        bool karaokeTimingLocked = false, IReadOnlyList<StagePresentationNote>? notes = null)
     {
         Start = start; End = end; Text = text ?? ""; Syllables = syllables ?? Array.Empty<StagePresentationSyllable>();
         SyllableConfidence = syllableConfidence;
         KaraokeTimingLocked = karaokeTimingLocked;
+        Notes = notes ?? (syllables ?? Array.Empty<StagePresentationSyllable>())
+            .SelectMany(syllable => syllable.Notes).OrderBy(note => note.Start).ToArray();
     }
     public double Start { get; }
     public double End { get; }
@@ -731,21 +787,226 @@ public sealed class StagePresentationWord
     public IReadOnlyList<StagePresentationSyllable> Syllables { get; }
     public double SyllableConfidence { get; }
     public bool KaraokeTimingLocked { get; }
+    public IReadOnlyList<StagePresentationNote> Notes { get; }
 }
 
 public sealed class StagePresentationSyllable
 {
     public StagePresentationSyllable(double start, double end, string text, double confidence,
-        bool karaokeTimingLocked = false)
+        bool karaokeTimingLocked = false, IReadOnlyList<StagePresentationNote>? notes = null)
     {
         Start = start; End = end; Text = text ?? ""; Confidence = confidence;
         KaraokeTimingLocked = karaokeTimingLocked;
+        Notes = notes ?? Array.Empty<StagePresentationNote>();
     }
     public double Start { get; }
     public double End { get; }
     public string Text { get; }
     public double Confidence { get; }
     public bool KaraokeTimingLocked { get; }
+    public IReadOnlyList<StagePresentationNote> Notes { get; }
 }
 
+public sealed class StagePresentationNote
+{
+    public StagePresentationNote(double start, double end, int midi, double confidence)
+    {
+        Start = start; End = end; Midi = midi; Confidence = confidence;
+    }
+    public double Start { get; }
+    public double End { get; }
+    public int Midi { get; }
+    public double Confidence { get; }
+}
+
+public enum KaraokeHighlightSegmentType { Advance, Hold, Snap }
+
+public sealed class KaraokeHighlightSegment
+{
+    public KaraokeHighlightSegment(KaraokeHighlightSegmentType type, double startTime, double endTime,
+        double startTextProgress, double endTextProgress)
+    {
+        Type = type; StartTime = startTime; EndTime = endTime;
+        StartTextProgress = startTextProgress; EndTextProgress = endTextProgress;
+    }
+    public KaraokeHighlightSegmentType Type { get; }
+    public double StartTime { get; }
+    public double EndTime { get; }
+    public double StartTextProgress { get; }
+    public double EndTextProgress { get; }
+}
+
+public sealed class KaraokeHighlightTimelineOptions
+{
+    public const int CurrentVersion = 1;
+
+    public double MinimumPauseDurationSeconds { get; init; } = .055;
+    public double LegatoGapToleranceSeconds { get; init; } = .035;
+    public double MinimumAttackDistanceSeconds { get; init; } = .045;
+    public double MinimumVoicedDurationSeconds { get; init; } = .05;
+    public double MinimumNoteConfidence { get; init; } = .35;
+    public double MinimumPitchChangeSemitones { get; init; } = 2;
+    public double MaximumNoteOffsetSeconds { get; init; } = .08;
+    public int TimelineVersion { get; init; } = CurrentVersion;
+
+    public static KaraokeHighlightTimelineOptions Default { get; } = new();
+}
+
+public sealed class KaraokeHighlightTimeline
+{
+    public const int Version = 1;
+
+    private readonly KaraokeHighlightSegment[] _segments;
+
+    private KaraokeHighlightTimeline(KaraokeHighlightSegment[] segments) => _segments = segments;
+
+    public IReadOnlyList<KaraokeHighlightSegment> Segments => _segments;
+
+    public bool HasMusicalBoundary => _segments.Any(segment =>
+        segment.Type is KaraokeHighlightSegmentType.Hold or KaraokeHighlightSegmentType.Snap);
+
+    public static KaraokeHighlightTimeline? Create(StagePresentationWord word,
+        KaraokeHighlightTimelineOptions options)
+    {
+        if (word is null || options is null || word.End <= word.Start ||
+            options.TimelineVersion != KaraokeHighlightTimelineOptions.CurrentVersion) return null;
+
+        var units = WordUnits(word);
+        if (units.Length == 0 || word.Syllables.Count == 0) return null;
+
+        var candidateBoundaries = new List<double> { word.Start };
+        for (var index = 1; index < word.Syllables.Count; index++)
+            candidateBoundaries.Add(word.Syllables[index].Start);
+        candidateBoundaries.Add(word.End);
+
+        foreach (var note in word.Notes)
+        {
+            if (note.End <= note.Start || note.Confidence < options.MinimumNoteConfidence) continue;
+            if (note.Start < word.Start - options.MaximumNoteOffsetSeconds ||
+                note.Start > word.End + options.MaximumNoteOffsetSeconds) continue;
+            var offset = Math.Clamp(note.Start, word.Start, word.End);
+            if (offset > word.Start && offset < word.End &&
+                candidateBoundaries.All(candidate => Math.Abs(candidate - offset) >=
+                    options.MinimumAttackDistanceSeconds))
+                candidateBoundaries.Add(offset);
+        }
+
+        candidateBoundaries = candidateBoundaries
+            .Where(time => time > word.Start && time < word.End)
+            .Distinct()
+            .OrderBy(time => time)
+            .ToList();
+        if (candidateBoundaries.Count == 0) return null;
+
+        var boundaries = new List<double> { word.Start };
+        var previous = word.Start;
+        foreach (var candidate in candidateBoundaries)
+        {
+            var supportedBySyllable = word.Syllables.Any(syllable =>
+                Math.Abs(syllable.Start - candidate) <= .003);
+            var nearbyNotes = word.Notes.Where(note => note.Confidence >= options.MinimumNoteConfidence &&
+                                                       Math.Abs(note.Start - candidate) <=
+                                                       options.MaximumNoteOffsetSeconds).ToArray();
+            var pitchChange = nearbyNotes.Any(note => word.Notes.Any(prior =>
+                prior.End <= note.Start + .002 &&
+                Math.Abs(note.Midi - prior.Midi) >= options.MinimumPitchChangeSemitones));
+            var attack = nearbyNotes.Length > 0;
+            var accepted = supportedBySyllable || attack || pitchChange;
+            if (!accepted || candidate - previous < options.MinimumAttackDistanceSeconds) continue;
+            var nextSyllable = word.Syllables.LastOrDefault(syllable => syllable.Start <= previous + .003);
+            if (nextSyllable is not null && candidate > nextSyllable.End)
+            {
+                var maximum = nextSyllable.End - previous;
+                if (maximum < options.MinimumVoicedDurationSeconds) continue;
+            }
+            boundaries.Add(candidate);
+            previous = candidate;
+        }
+        if (boundaries.Count == 1) return null;
+        boundaries.Add(word.End);
+
+        var notes = word.Notes
+            .Where(note => note.Confidence >= options.MinimumNoteConfidence &&
+                           note.End > note.Start && note.End > word.Start && note.Start < word.End)
+            .OrderBy(note => note.Start).ToArray();
+        if (notes.Length == 0) return null;
+        var segments = new List<KaraokeHighlightSegment>();
+        for (var index = 0; index < boundaries.Count - 1; index++)
+        {
+            var start = boundaries[index];
+            var end = boundaries[index + 1];
+            var active = notes.FirstOrDefault(note =>
+                Math.Max(start, note.Start) < Math.Min(end, note.End));
+            var audibleEnd = active is null ? end : Math.Min(end, active.End);
+            if (active is null) audibleEnd = end;
+            if (audibleEnd <= start) audibleEnd = start;
+            var duration = end - start;
+            if (duration <= 0) continue;
+
+            var startProgress = ProgressAt(units, start, word);
+            var audibleProgress = ProgressAt(units, audibleEnd, word);
+            var endProgress = ProgressAt(units, end, word);
+            if (audibleEnd < end - options.MinimumPauseDurationSeconds)
+            {
+                if (audibleEnd - start >= options.MinimumVoicedDurationSeconds &&
+                    end - audibleEnd >= options.MinimumPauseDurationSeconds)
+                {
+                    segments.Add(new(KaraokeHighlightSegmentType.Advance, start, audibleEnd,
+                        startProgress, audibleProgress));
+                    segments.Add(new(KaraokeHighlightSegmentType.Hold, audibleEnd, end,
+                        audibleProgress, audibleProgress));
+                    segments.Add(new(KaraokeHighlightSegmentType.Snap, end, end,
+                        audibleProgress, endProgress));
+                }
+            }
+            else if (startProgress < endProgress)
+            {
+                segments.Add(new(KaraokeHighlightSegmentType.Advance, start, end, startProgress, endProgress));
+            }
+        }
+        if (segments.Count == 0) return null;
+        return new(segments.ToArray());
+    }
+
+    public double Evaluate(double position)
+    {
+        for (var index = 0; index < _segments.Length; index++)
+        {
+            var segment = _segments[index];
+            if (position < segment.StartTime || position < segment.EndTime)
+            {
+                if (segment.Type != KaraokeHighlightSegmentType.Advance) return segment.EndTextProgress;
+                var duration = segment.EndTime - segment.StartTime;
+                var factor = duration <= 0 ? 1 : Math.Max(0, Math.Min(1,
+                    (position - segment.StartTime) / duration));
+                return segment.StartTextProgress +
+                       factor * (segment.EndTextProgress - segment.StartTextProgress);
+            }
+        }
+        return _segments[^1].EndTextProgress;
+    }
+
+    private static double ProgressAt(int[] units, double time, StagePresentationWord word)
+    {
+        if (word.End <= word.Start) return 0;
+        var factor = Math.Max(0, Math.Min(1, (time - word.Start) / (word.End - word.Start)));
+        return units[units.Length - 1] * factor;
+    }
+
+    private static int[] WordUnits(StagePresentationWord word)
+    {
+        var result = new List<int>();
+        var previousSyllableEnd = word.Start;
+        foreach (var syllable in word.Syllables)
+        {
+            var start = Math.Max(word.Start, syllable.Start);
+            var end = Math.Min(word.End, syllable.End);
+            if (end <= start) continue;
+            if (start > previousSyllableEnd + .003) result.Add(0);
+            result.Add(Math.Max(1, syllable.Text.Length));
+            previousSyllableEnd = end;
+        }
+        return result.ToArray();
+    }
+}
 }

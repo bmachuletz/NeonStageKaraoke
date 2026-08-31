@@ -48,6 +48,9 @@
               <MenuItem Header="Ausgewählte Songs neu alignen" Click="RealignSongClick" />
               <MenuItem Header="Gesamte Bibliothek neu alignen …" Click="RealignAllSongsClick" />
               <Separator />
+              <MenuItem Header="Basic-Pitch ausführen" Click="BasicPitchOnlyClick"
+                        ToolTip.Tip="Analysiert den geladenen Song-Stand mit Basic Pitch, ohne ASR oder Forced Alignment neu auszuführen. Das Ergebnis wird als Review-Stand gespeichert." />
+              <Separator />
               <MenuItem Header="Globalen Lyrics-Versatz anwenden …" Click="GlobalLyricsOffsetClick" />
             </MenuFlyout></Button.Flyout>
           </Button>
@@ -111,7 +114,7 @@
       <Grid Grid.Column="1" RowDefinitions="250,*,64">
         <Border Background="#08040F" BorderBrush="#2A303B" BorderThickness="0,0,0,1">
           <Grid RowDefinitions="28,*">
-            <Grid ColumnDefinitions="*,Auto,Auto" Margin="10,0">
+            <Grid ColumnDefinitions="*,Auto,Auto,Auto" Margin="10,0">
               <TextBlock Text="UNITY-STAGE LIVE-VORSCHAU" Foreground="#8993A6" FontSize="10"
                          VerticalAlignment="Center" />
               <CheckBox Grid.Column="1" Content="Wahrnehmungs-Vorlauf · 80 ms"
@@ -119,16 +122,22 @@
                         IsEnabled="{Binding KaraokeTimingAvailable}"
                         FontSize="10" Foreground="#B8C0D0"
                         ToolTip.Tip="Nur die sichtbare Wortfüllung läuft 80 ms voraus. Audio und gespeicherte Lyrics bleiben unverändert." />
-              <CheckBox Grid.Column="2" Content="Karaoke-Timing · Beat-Vorschau"
+              <CheckBox Grid.Column="2" Content="Beat-Raster"
                         IsChecked="{Binding KaraokeTimingEnabled}" VerticalAlignment="Center"
                         IsEnabled="{Binding KaraokeTimingAvailable}"
                         Margin="14,0,0,0" FontSize="10" Foreground="#DFFF28"
-                        ToolTip.Tip="{Binding KaraokeTimingDescription}" />
+                        ToolTip.Tip="Richtet Wort- und Silbengrenzen für die Bühnenansicht nahe am Beat-Raster aus. Danach läuft die Füllung klassisch linear; gespeicherte Lyrics bleiben unverändert." />
+              <CheckBox Grid.Column="3" Content="Musikalischer Füllverlauf"
+                        IsChecked="{Binding MusicalHighlightEnabled}" VerticalAlignment="Center"
+                        IsEnabled="{Binding KaraokeTimingAvailable}"
+                        Margin="14,0,0,0" FontSize="10" Foreground="#DFFF28"
+                        ToolTip.Tip="Steuert die Füllgeschwindigkeit mit Basic-Pitch-Noten: singen läuft weiter, klare Pausen halten, neue Einsätze springen. Ohne belastbare Noten bleibt das lineare Highlight." />
             </Grid>
             <local:StageLyricsPreviewControl Grid.Row="1" Document="{Binding TimingPreviewDocument}" Position="{Binding Playhead}"
                                              Revision="{Binding PreviewRevision}"
-                                             PerceptualLeadEnabled="{Binding PerceptualLeadEnabled}"
-                                             KaraokeTimingEnabled="{Binding KaraokeTimingEnabled}" />
+            PerceptualLeadEnabled="{Binding PerceptualLeadEnabled}"
+                                             KaraokeTimingEnabled="{Binding KaraokeTimingEnabled}"
+                                             MusicalHighlightEnabled="{Binding MusicalHighlightEnabled}" />
           </Grid>
         </Border>
         <local:EditorTimelineControl Grid.Row="1" x:Name="Timeline" Document="{Binding TimingPreviewDocument}" Waveform="{Binding Waveform}"

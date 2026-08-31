@@ -15,6 +15,14 @@ DEFAULT_ANALYSIS_SEPARATOR_MODELS = (
 )
 
 
+def _csv_models(name: str, default: str) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(
+        item.strip()
+        for item in os.getenv(name, default).split(",")
+        if item.strip()
+    ))
+
+
 def enabled(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
@@ -57,6 +65,7 @@ class StemArtifact:
 class SeparationConfig:
     analysis_enabled: bool
     analysis_models: tuple[str, ...]
+    a_b_models: tuple[str, ...]
     stage_model: str
     original_mix_mode: str
     original_mix_ratio: float
@@ -64,13 +73,14 @@ class SeparationConfig:
 
     @classmethod
     def from_environment(cls) -> "SeparationConfig":
-        raw_models = os.getenv(
+        models = _csv_models(
             "LRC_ANALYSIS_SEPARATOR_MODELS",
             ",".join(DEFAULT_ANALYSIS_SEPARATOR_MODELS),
         )
-        models = tuple(dict.fromkeys(
-            item.strip() for item in raw_models.split(",") if item.strip()
-        ))
+        configured_a_b_models = _csv_models("LRC_SEPARATOR_A_B_MODELS", "")
+        a_b_models = tuple(
+            model for model in configured_a_b_models if model not in models
+        )
         mode = os.getenv("LRC_ORIGINAL_MIX_BLEND_MODE", "fallback").strip().lower()
         if mode not in {"off", "candidate", "fallback"}:
             raise ValueError(
@@ -81,7 +91,8 @@ class SeparationConfig:
                 "LRC_ORIGINAL_MIX_BLEND_RATIO muss zwischen 0 und 1 liegen")
         config = cls(
             analysis_enabled=enabled("LRC_ANALYSIS_SEPARATOR_ENABLED", True),
-            analysis_models=models,
+            analysis_models=tuple(dict.fromkeys((*models, *a_b_models))),
+            a_b_models=a_b_models,
             stage_model=os.getenv(
                 "LRC_STAGE_SEPARATOR_MODEL",
                 os.getenv("UVR_MODEL", DEFAULT_STAGE_SEPARATOR_MODEL),

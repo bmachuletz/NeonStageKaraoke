@@ -546,6 +546,80 @@ Assert(exactPresentation.Evaluate(.86).Lines[0].Progress == 0 &&
        karaokePresentation.Evaluate(.86).Lines[0].Progress > 0 &&
        karaokePresentation.Evaluate(.86).ShowEntryCue == exactPresentation.Evaluate(.86).ShowEntryCue,
     "Das adaptive Karaoke-Timing bereitet einen Phraseneinsatz früher vor, ohne Einsatzsignal oder kanonische Zeit zu verschieben.");
+
+var sustainedWord = new StagePresentationWord(10, 11, "Haaaaallo",
+    [
+        new StagePresentationSyllable(10, 10.3, "Haa", .9, false,
+            [new StagePresentationNote(10, 11, 67, .9)]),
+        new StagePresentationSyllable(10.3, 11, "aaallo", .9)
+    ], .9);
+var sustainedTimeline = KaraokeHighlightTimeline.Create(sustainedWord, KaraokeHighlightTimelineOptions.Default);
+Assert(sustainedTimeline?.Segments.All(segment => segment.Type == KaraokeHighlightSegmentType.Advance) == true,
+    "Ein durchgehender Ton bleibt ohne HOLD/SNAP kontinuierlich.");
+
+var separatedWord = new StagePresentationWord(12, 13.2, "Hallo",
+    [
+        new StagePresentationSyllable(12, 12.25, "Hal", .9, false,
+            [new StagePresentationNote(12, 12.25, 67, .9)]),
+        new StagePresentationSyllable(12.5, 13.2, "lo", .9, false,
+            [new StagePresentationNote(12.5, 13.2, 69, .9)])
+    ], .9);
+var separatedTimeline = KaraokeHighlightTimeline.Create(separatedWord, KaraokeHighlightTimelineOptions.Default);
+var separatedTypes = separatedTimeline?.Segments.Select(segment => segment.Type).ToArray();
+Assert(separatedTypes is not null &&
+       separatedTypes.SequenceEqual(new[]
+       {
+           KaraokeHighlightSegmentType.Advance, KaraokeHighlightSegmentType.Hold,
+           KaraokeHighlightSegmentType.Snap, KaraokeHighlightSegmentType.Advance
+       }),
+    "Eine klare Gesangspause erzeugt ADVANCE, HOLD, SNAP und danach wieder ADVANCE.");
+Assert(separatedTimeline is not null &&
+       separatedTimeline.Evaluate(12.4) == separatedTimeline.Evaluate(12.25),
+    "Während einer erkannten Pause bleibt der sichtbare Fortschritt stehen.");
+
+var tinyGapWord = new StagePresentationWord(15, 15.55, "Hallo",
+    [
+        new StagePresentationSyllable(15, 15.25, "Hal", .9, false,
+            [new StagePresentationNote(15, 15.25, 67, .9)]),
+        new StagePresentationSyllable(15.29, 15.55, "lo", .9, false,
+            [new StagePresentationNote(15.29, 15.55, 69, .9)])
+    ], .9);
+var tinyGapTimeline = KaraokeHighlightTimeline.Create(tinyGapWord, KaraokeHighlightTimelineOptions.Default);
+Assert(tinyGapTimeline?.Segments.All(segment => segment.Type == KaraokeHighlightSegmentType.Advance) == true,
+    "Ein nur 40 ms langes Decoderloch wird als Legato behandelt.");
+
+var melismaWord = new StagePresentationWord(17, 18.2, "Loooooove",
+    [new StagePresentationSyllable(17, 18.2, "Loooooove", .9, false,
+         [new StagePresentationNote(17, 17.5, 67, .9),
+          new StagePresentationNote(17.55, 18.2, 70, .9)])], .9);
+var melismaTimeline = KaraokeHighlightTimeline.Create(melismaWord, KaraokeHighlightTimelineOptions.Default);
+Assert(melismaWord.Syllables.Count == 1 && melismaTimeline is not null,
+    "Mehrere Noten in einer Silbe erzeugen keine sprachliche Zusatzsilbe.");
+
+var outlierWord = new StagePresentationWord(20, 20.7, "Hallo",
+    [
+        new StagePresentationSyllable(20, 20.25, "Hal", .9, false,
+            [new StagePresentationNote(20, 20.25, 67, .9)]),
+        new StagePresentationSyllable(20.25, 20.7, "lo", .9, false,
+            [new StagePresentationNote(20.25, 20.7, 69, .9),
+             new StagePresentationNote(20.33, 20.34, 72, .2)])
+    ], .9);
+Assert(KaraokeHighlightTimeline.Create(outlierWord, KaraokeHighlightTimelineOptions.Default)?.Segments.All(
+        segment => segment.Type == KaraokeHighlightSegmentType.Advance) == true,
+    "Einzelne niedrigkonfidente Onset-Ausreißer zerstören die Timeline nicht.");
+Assert(KaraokeHighlightTimeline.Create(
+        new StagePresentationWord(22, 23, "Oh", [], .9), KaraokeHighlightTimelineOptions.Default) is null,
+    "Ohne Silben und Pitch-Daten greift der bestehende lineare Fallback.");
+
+var legatoWord = new StagePresentationWord(25, 26.2, "believe",
+    [
+        new StagePresentationSyllable(25, 25.4, "be", .9, false,
+            [new StagePresentationNote(25, 26.2, 67, .9)]),
+        new StagePresentationSyllable(25.4, 26.2, "lieve", .9)
+    ], .9);
+Assert(KaraokeHighlightTimeline.Create(legatoWord, KaraokeHighlightTimelineOptions.Default)?.Segments.All(
+        segment => segment.Type == KaraokeHighlightSegmentType.Advance) == true,
+    "Eine linguistische Silbengrenze allein erzeugt keinen künstlichen Stopp.");
 var sharedDuet = sharedPresentation.Evaluate(1.75);
 Assert(sharedDuet.Lines.Count == 2 && sharedDuet.Lines[0].VoiceLane == 0 &&
        sharedDuet.Lines[1].VoiceLane == 1 && sharedDuet.Lines[0].StageEffect == "Pulse",

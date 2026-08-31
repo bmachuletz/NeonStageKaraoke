@@ -11,11 +11,56 @@ from app.basic_pitch_evidence import (analyze_and_refine_line_onsets,
                                       _pitch_timeline, _refine_internal_word_boundaries,
                                       _robust_vocal_pitch_range,
                                       _refine_syllable_boundaries,
-                                      _repetition_fingerprints, _word_pitch_evidence)
+                                      _repetition_fingerprints, _word_pitch_evidence,
+                                      separation_quality_report, vocal_onset_consensus)
 from app.boundary_evidence import LeakageReference
 
 
 class BasicPitchEvidenceTests(unittest.TestCase):
+    def test_vocal_onset_consensus_detects_independent_energy_attack(self):
+        audio = np.zeros(16000, dtype=np.float32)
+        audio[5020:5200] = np.linspace(.02, .8, 180, dtype=np.float32)
+        audio[5200:7000] = np.linspace(.8, .4, 1800, dtype=np.float32)
+
+        result = vocal_onset_consensus(audio)
+
+        self.assertTrue(result["enabled"])
+        self.assertGreaterEqual(result["onset_count"], 1)
+        self.assertGreaterEqual(result["onsets"][0]["energy_ratio"], 1.6)
+        self.assertGreaterEqual(result["onsets"][0]["delta_db"], 3.0)
+
+    def test_separation_quality_reports_vocal_recall_and_pause_leak(self):
+        audio = np.zeros(16000, dtype=np.float32)
+        audio[4000:8000] = .5
+        instrumental = np.full(16000, .2, dtype=np.float32)
+        line = SimpleNamespace(words=[
+            {"start": .25, "end": .5}, {"start": .5, "end": .75}])
+
+        result = separation_quality_report(audio, instrumental, [line])
+
+        self.assertEqual(1.0, result["vocal_recall"])
+        self.assertLess(result["instrumental_leak_in_vocal_pauses"], 1.0)
+
+    def test_separation_quality_reports_levels_coverage_and_leakage(self):
+        lines = [SimpleNamespace(words=[
+            {"start": 0.0, "end": 1.0},
+            {"start": 1.0, "end": 2.0},
+        ])]
+        vocals = np.zeros(32000, dtype=np.float32)
+        vocals[:16000] = .25
+        instrumental = np.full(32000, .01, dtype=np.float32)
+
+        report = separation_quality_report(
+            vocals, instrumental, lines,
+            pitch_diagnostics={"eligible": True, "quality": .7})
+
+        self.assertEqual(1, report["lyric_window_count"])
+        self.assertEqual(1.0, report["lyric_window_coverage"])
+        self.assertGreater(report["vocal_rms"], report["instrumental_rms"])
+        self.assertGreater(report["contrast_db"], 0)
+        self.assertEqual(.7, report["basic_pitch"]["quality"])
+        self.assertGreaterEqual(report["leakage_suspicion"], 0)
+
     def test_unpitched_candidate_receives_no_separator_score_or_penalty(self):
         with patch.dict(os.environ, {"BASIC_PITCH_URL": "http://basic-pitch:8090"}), \
              patch("app.basic_pitch_evidence._request_evidence", return_value={
@@ -34,7 +79,10 @@ class BasicPitchEvidenceTests(unittest.TestCase):
              patch("app.basic_pitch_evidence._request_evidence", return_value={
                  "notes": notes, "onsets": [], "service": "spotify/basic-pitch-0.4.0"}), \
              patch("app.basic_pitch_evidence.banded_boundary_step",
-                   return_value={"independent_db": 4.2}):
+                   return_value={"independent_db": 4.2}), \
+             patch("app.basic_pitch_evidence.vocal_onset_consensus", return_value={
+                 "enabled": True,
+                 "onsets": [{"time": .91, "energy_ratio": 2.4, "delta_db": 5.5}]}):
             report = analyze_and_refine_line_onsets(
                 lines, np.zeros(48000, dtype=np.float32),
                 np.zeros(48000, dtype=np.float32))
@@ -43,6 +91,50 @@ class BasicPitchEvidenceTests(unittest.TestCase):
         self.assertEqual(.91, lines[0].words[0]["start"])
         self.assertEqual(1.6, lines[0].words[1]["start"])
         self.assertEqual(64, lines[0].words[0]["basic_pitch_pitch"])
+
+    def test_strong_independent_onset_overrides_missing_consensus(self):
+        lines = [SimpleNamespace(timestamp=1.0, words=[
+            {"word": "Hello", "start": 1.0, "end": 1.5},
+        ])]
+        notes = [{"start": .91, "end": 1.4, "pitch": 64, "amplitude": .8}]
+        with patch.dict(os.environ, {
+            "BASIC_PITCH_URL": "http://basic-pitch:8090",
+            "LRC_ONSET_CONSENSUS_STRONG_INDEPENDENT_DB": "12",
+        }), patch("app.basic_pitch_evidence._request_evidence", return_value={
+            "notes": notes, "onsets": [], "service": "spotify/basic-pitch-0.4.0"}), \
+             patch("app.basic_pitch_evidence.banded_boundary_step",
+                   return_value={"independent_db": 12.4, "bands": {"voicing": {}}}), \
+             patch("app.basic_pitch_evidence.vocal_onset_consensus", return_value={
+                 "enabled": True, "onsets": []}):
+            report = analyze_and_refine_line_onsets(
+                lines, np.zeros(48000, dtype=np.float32),
+                np.zeros(48000, dtype=np.float32))
+
+        self.assertEqual(1, report["applied"])
+        self.assertEqual(.91, lines[0].words[0]["start"])
+        self.assertTrue(report["details"][0]["independent_support"][
+            "strong_independent_fallback"])
+
+    def test_weak_independent_onset_still_requires_consensus(self):
+        lines = [SimpleNamespace(timestamp=1.0, words=[
+            {"word": "Hello", "start": 1.0, "end": 1.5},
+        ])]
+        notes = [{"start": .91, "end": 1.4, "pitch": 64, "amplitude": .8}]
+        with patch.dict(os.environ, {
+            "BASIC_PITCH_URL": "http://basic-pitch:8090",
+            "LRC_ONSET_CONSENSUS_STRONG_INDEPENDENT_DB": "12",
+        }), patch("app.basic_pitch_evidence._request_evidence", return_value={
+            "notes": notes, "onsets": [], "service": "spotify/basic-pitch-0.4.0"}), \
+             patch("app.basic_pitch_evidence.banded_boundary_step",
+                   return_value={"independent_db": 3.1, "bands": {"voicing": {}}}), \
+             patch("app.basic_pitch_evidence.vocal_onset_consensus", return_value={
+                 "enabled": True, "onsets": []}):
+            report = analyze_and_refine_line_onsets(
+                lines, np.zeros(48000, dtype=np.float32),
+                np.zeros(48000, dtype=np.float32))
+
+        self.assertEqual(0, report["applied"])
+        self.assertEqual(1.0, lines[0].words[0]["start"])
 
     def test_instrumental_correlated_note_is_diagnostic_only(self):
         lines = [SimpleNamespace(timestamp=1.0, words=[
@@ -74,7 +166,10 @@ class BasicPitchEvidenceTests(unittest.TestCase):
         with patch.dict(os.environ, {"BASIC_PITCH_URL": "http://basic-pitch:8090"}), \
              patch("app.basic_pitch_evidence._request_evidence", return_value=evidence), \
              patch("app.basic_pitch_evidence.banded_boundary_step",
-                   return_value={"independent_db": 4.0}):
+                   return_value={"independent_db": 4.0}), \
+             patch("app.basic_pitch_evidence.vocal_onset_consensus", return_value={
+                 "enabled": True,
+                 "onsets": [{"time": .92, "energy_ratio": 2.2, "delta_db": 4.8}]}):
             report = analyze_and_refine_line_onsets(
                 lines, np.zeros(32000, dtype=np.float32),
                 np.zeros(32000, dtype=np.float32))

@@ -5,18 +5,27 @@ import subprocess
 import sys
 import tempfile
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from .alignment_profiles import ALIGNMENT_PROFILES
 from .vocal_start import detect_first_vocal
 
-app = FastAPI(title="Lyrics Word Aligner", version="0.2.0")
 OUTPUT_ROOT = Path("/data/output")
-OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 STATIC_ROOT = Path(__file__).parent / "static"
 _LOCK = threading.Lock()
 _PROCESS_LOCK = threading.Lock()
+
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
+    _recover_interrupted_jobs()
+    yield
+
+
+app = FastAPI(title="Lyrics Word Aligner", version="0.2.0", lifespan=_lifespan)
 
 
 def _status_path(job_dir: Path) -> Path:
@@ -37,6 +46,37 @@ def _write_status(job_dir: Path, **changes) -> dict:
         tmp.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
         return current
+
+
+def _recover_interrupted_jobs() -> dict:
+    recovered: list[str] = []
+    checked = 0
+    for job_dir in OUTPUT_ROOT.iterdir():
+        if not job_dir.is_dir():
+            continue
+        checked += 1
+        path = _status_path(job_dir)
+        if not path.is_file():
+            continue
+        try:
+            status = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if status.get("state") not in {"queued", "processing"}:
+            continue
+        _write_status(
+            job_dir,
+            state="failed",
+            percent=100,
+            message="Der Job wurde durch einen Aligner-Neustart unterbrochen und muss erneut gestartet werden.",
+            error="aligner-service-restart",
+            interrupted_state=status.get("state"),
+            interrupted_percent=status.get("percent"),
+            interrupted_message=status.get("message"),
+            recovery="startup-recovery-v1",
+        )
+        recovered.append(job_dir.name)
+    return {"checked": checked, "recovered": len(recovered), "jobs": recovered}
 
 
 def _process_job(job_id: str, audio_path: Path, lrc_path: Path, language: str,

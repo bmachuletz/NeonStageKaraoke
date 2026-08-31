@@ -1,5 +1,79 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
+import numpy as np
+
+from .boundary_evidence import banded_boundary_step
+
+
+def _onset_score(vocal: np.ndarray, timestamp: float) -> float:
+    evidence = banded_boundary_step(vocal, timestamp, sample_rate=16000)
+    if not evidence:
+        return -999.0
+    return abs(float(evidence.get("independent_db", 0.0)))
+
+
+def _snap_to_vocal_onset(vocal: np.ndarray, timestamp: float, *,
+                         search_radius: float = .075,
+                         minimum_move: float = .015) -> float:
+    candidates = np.arange(timestamp - search_radius,
+                           timestamp + search_radius + .001, .005)
+    if not len(candidates):
+        return timestamp
+    best = min(
+        (float(candidate) for candidate in candidates
+         if _onset_score(vocal, candidate) >= 6.0),
+        key=lambda candidate: abs(candidate - timestamp),
+        default=timestamp)
+    return best if abs(best - timestamp) >= minimum_move else timestamp
+
+
+def _vocal_onset_peaks(vocal: np.ndarray, start: float, end: float,
+                       *, threshold_db: float = 95.0,
+                       minimum_separation: float = .08) -> list[tuple[float, float]]:
+    times = np.arange(start, end + .001, .005)
+    scores = [_onset_score(vocal, float(time)) for time in times]
+    peaks: list[tuple[float, float]] = []
+    for index in range(1, len(times) - 1):
+        time, score = float(times[index]), scores[index]
+        if (score < threshold_db
+                or score < scores[index - 1]
+                or score < scores[index + 1]):
+            continue
+        if peaks and time - peaks[-1][0] < minimum_separation:
+            if score > peaks[-1][1]:
+                peaks[-1] = (time, score)
+        else:
+            peaks.append((time, score))
+    return peaks
+
+
+def _ordered_vocal_onsets(peaks: list[tuple[float, float]],
+                          centers: list[float]) -> list[float]:
+    """Assign one increasing onset peak to each expected word onset."""
+    times = [peak[0] for peak in peaks]
+
+    @lru_cache(maxsize=None)
+    def solve(word_index: int, peak_index: int) -> tuple[float, tuple[int, ...]]:
+        if word_index == len(centers):
+            return 0.0, ()
+        if peak_index == len(times):
+            return float("inf"), ()
+        skip_cost, skip_path = solve(word_index, peak_index + 1)
+        take_cost, take_path = solve(word_index + 1, peak_index + 1)
+        take_cost += (times[peak_index] - centers[word_index]) ** 2
+        if take_cost < skip_cost:
+            return take_cost, (peak_index,) + take_path
+        return skip_cost, skip_path
+
+    _, selected = solve(0, 0)
+    return [times[index] for index in selected]
+
+
+def _clamp(value: float, lower: float, upper: float) -> float:
+    return min(max(value, lower), max(lower, upper))
+
 
 def _overlap(start: float, end: float, region: tuple[float, float]) -> float:
     return max(0.0, min(end, region[1]) - max(start, region[0]))
@@ -39,6 +113,73 @@ def _silent_leading_words(words: list, island_start: float) -> int:
     return count
 
 
+def _reflow_after_silent_prefix(line, target: float, *,
+                                 proposed_release: float | None = None,
+                                 vocal_audio: np.ndarray | None = None,
+                                 minimum_word: float = .03) -> bool:
+    """Reflow a line while keeping each word's relative timing evidence.
+
+    The old timestamps already contain the relative word timing from ASR.  They
+    are first moved coherently to the measured line onset; only then is each
+    resulting boundary allowed to snap to local vocal evidence.  Snapping from
+    the unshifted position would reproduce the fixed +400 ms translation that
+    was wrong in the Madsen regression case.
+    """
+    if not line.words:
+        return False
+    final_release = min(float(line.words[-1]["end"]),
+                        proposed_release
+                        if proposed_release is not None else float("inf"))
+    first_start = float(line.words[0]["start"])
+    last_end = float(line.words[-1]["end"])
+    shift = target - first_start
+    translated_release = last_end + shift
+    source_span = last_end - first_start
+    if final_release < target or source_span <= 0:
+        return False
+    scale = ((final_release - target) / source_span
+             if translated_release > final_release else 1.0)
+    if scale <= 0 or final_release - target < minimum_word * len(line.words):
+        return False
+
+    centers = [target + (float(word["start"]) - first_start) * scale
+               for word in line.words]
+    if vocal_audio is not None:
+        raw_starts = _ordered_vocal_onsets(
+            _vocal_onset_peaks(vocal_audio, target, final_release), centers)
+    else:
+        raw_starts = centers
+    if len(raw_starts) != len(line.words):
+        raw_starts = centers
+    raw_starts = [_clamp(start, target, final_release - minimum_word)
+                  for start in raw_starts]
+
+    starts: list[float] = []
+    previous_start = target - minimum_word
+    for word in line.words:
+        start = max(raw_starts[len(starts)], previous_start + minimum_word)
+        starts.append(_clamp(start, target, final_release - minimum_word))
+        previous_start = starts[-1]
+
+    placements: list[tuple[float, float]] = []
+    for index, (word, start) in enumerate(zip(line.words, starts)):
+        next_start = starts[index + 1] if index + 1 < len(starts) else final_release
+        duration = max(minimum_word, float(word["end"]) - float(word["start"]))
+        end = min(final_release, start + duration, next_start)
+        placements.append((start, max(start + minimum_word, end)))
+
+    for word, (start, end) in zip(line.words, placements):
+        old_start = float(word["start"])
+        old_end = float(word["end"])
+        word["stage_vocal_silent_prefix_original_start"] = round(old_start, 3)
+        word["stage_vocal_silent_prefix_original_end"] = round(old_end, 3)
+        word["start"] = round(start, 3)
+        word["end"] = round(end, 3)
+        word["stage_vocal_silent_prefix_shift_ms"] = round((start - old_start) * 1000, 1)
+    line.timestamp = round(float(line.words[0]["start"]), 3)
+    return True
+
+
 def _recover_silently_placed_line(
         lines: list, line_index: int, line, regions: list[tuple[float, float]], *,
         previous_end: float,
@@ -49,6 +190,7 @@ def _recover_silently_placed_line(
         minimum_island: float = 0.18,
         minimum_preceding_gap: float = 0.35,
         lane_separation: float = 0.04,
+        vocal_audio: np.ndarray | None = None,
         pending_voice_lanes: dict[int, int] | None = None) -> dict | None:
     """Translate a line whose leading words lie entirely in measured silence.
 
@@ -112,7 +254,28 @@ def _recover_silently_placed_line(
         return rejected("collides-with-next-line-in-lane")
     if (next_lane_start is not None
             and last_end + shift > next_lane_start - lane_separation):
-        return rejected("shifted-line-overruns-next-line-in-lane")
+        if not _reflow_after_silent_prefix(
+                line, target,
+                proposed_release=min(last_end, next_region[1]),
+                vocal_audio=vocal_audio):
+            return rejected("shifted-line-overruns-next-line-in-lane")
+        return {
+            **detail,
+            "status": "corrected",
+            "correction": "release-preserving-reflow",
+            "retained_release": round(last_end, 3),
+            "source": "stage-vocal-silent-leading-run-v1",
+        }
+    if vocal_audio is not None:
+        if not _reflow_after_silent_prefix(line, target, vocal_audio=vocal_audio):
+            return rejected("release-preserving-reflow-failed")
+        return {
+            **detail,
+            "status": "corrected",
+            "correction": "release-preserving-reflow",
+            "retained_release": round(last_end, 3),
+            "source": "stage-vocal-silent-leading-run-v1",
+        }
     if not any(_overlap(last_start + shift, last_end + shift, region) > 0
                for region in regions):
         return rejected("shifted-release-outside-activity")
@@ -138,6 +301,7 @@ def _recover_silently_placed_line(
 def constrain_to_stage_vocals(
         lines: list,
         activity: list[tuple[float, float]], *,
+        vocal_audio: np.ndarray | None = None,
         release_tolerance: float = 0.12,
         release_padding: float = 0.04,
         onset_search: float = 1.5,
@@ -303,6 +467,7 @@ def constrain_to_stage_vocals(
                 previous_end=previous_end,
                 onset_search=onset_search,
                 minimum_onset_conflict=minimum_onset_conflict,
+                vocal_audio=vocal_audio,
                 pending_voice_lanes=pending_voice_lanes)
             if recovery is not None:
                 if recovery["status"] == "corrected":

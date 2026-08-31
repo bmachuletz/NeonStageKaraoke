@@ -191,6 +191,7 @@ def select_alignment_candidate(
                                 "score": round(score, 4), **parts,
                                 "pitch_quality_diagnostics": result.get(
                                     "pitch_quality_diagnostics"),
+                                "separation_quality": result.get("separation_quality"),
                                 "metadata": candidate.metadata})
             evaluated.append((candidate, result, score))
         except Exception as error:  # Optional candidates may fail independently.
@@ -246,6 +247,24 @@ def select_stage_stem_candidate(
         for item in diagnostics.get("candidates", [])
         if item.get("status") == "success" and item.get("id") in candidate_ids
     }
+
+    def enterprise_rank(item: dict) -> tuple[float, dict]:
+        score = float(item["score"])
+        quality = item.get("separation_quality") or {}
+        recall = quality.get("vocal_recall")
+        leak = quality.get("instrumental_leak_in_vocal_pauses")
+        penalties = 0.0
+        if recall is not None:
+            penalties += max(0.0, .92 - float(recall)) * .10
+        if leak is not None:
+            penalties += min(.10, float(leak) * .10)
+        return score - penalties, {
+            "alignment_score": round(score, 4),
+            "separation_penalty": round(penalties, 4),
+            "vocal_recall": recall,
+            "instrumental_leak_in_vocal_pauses": leak,
+        }
+
     baseline = successful.get(baseline_id)
     baseline_score = float(baseline["score"]) if baseline is not None else None
     alternatives = [item for key, item in successful.items() if key != baseline_id]
@@ -258,9 +277,11 @@ def select_stage_stem_candidate(
             "minimum_improvement": minimum_improvement,
         }
 
-    winner = max(alternatives, key=lambda item: float(item["score"]))
-    winner_score = float(winner["score"])
-    if baseline_score is None or winner_score >= baseline_score + minimum_improvement:
+    winner = max(alternatives, key=lambda item: enterprise_rank(item)[0])
+    winner_score = enterprise_rank(winner)[0]
+    baseline_ranked_score = enterprise_rank(baseline)[0] if baseline is not None else None
+    if (baseline_ranked_score is None
+            or winner_score >= baseline_ranked_score + minimum_improvement):
         selected = str(winner["id"])
         reason = ("baseline-evaluation-failed" if baseline_score is None
                   else "separator-clearly-better")
@@ -272,6 +293,14 @@ def select_stage_stem_candidate(
         "selected_candidate": selected,
         "reason": reason,
         "baseline_score": baseline_score,
-        "alternative_score": winner_score,
+        "baseline_enterprise_score": (round(baseline_ranked_score, 4)
+                                       if baseline_ranked_score is not None else None),
+        "alternative_score": float(winner["score"]),
+        "alternative_enterprise_score": round(winner_score, 4),
+        "ranking": {
+            "method": "asr-plus-separation-quality-v1",
+            "baseline": enterprise_rank(baseline)[1] if baseline is not None else None,
+            "winner": enterprise_rank(winner)[1],
+        },
         "minimum_improvement": minimum_improvement,
     }

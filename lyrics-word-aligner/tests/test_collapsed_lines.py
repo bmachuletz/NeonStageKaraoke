@@ -343,6 +343,21 @@ class CompressedWordRepairTests(unittest.TestCase):
         self.assertEqual(before[0], ordinary.words)
         self.assertEqual(before[1], manual.words)
 
+    def test_release_preserving_silent_prefix_reflow_is_not_redispatched(self):
+        item = line("Na gut dann nicht", 44.23, 48.98)
+        timings = [(44.63, 44.685), (44.685, 44.767),
+                   (44.767, 44.877), (44.877, 45.015)]
+        for word, (start, end) in zip(item.words, timings):
+            word["start"], word["end"] = start, end
+            word["stage_vocal_silent_prefix_original_start"] = 44.23
+        before = [dict(word) for word in item.words]
+
+        report = repair_compressed_word_runs(
+            [item], [(44.63, 45.10)], language="de")
+
+        self.assertEqual(0, report["repaired_runs"])
+        self.assertEqual(before, item.words)
+
 
 if __name__ == "__main__":
     unittest.main()

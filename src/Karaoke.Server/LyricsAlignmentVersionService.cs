@@ -64,8 +64,7 @@ internal sealed class LyricsAlignmentVersionService(
             await RestoreManualEditorStateAsync(document, alignmentPath, cancellationToken);
         var timingConflicts = TimelineEditing.ValidateLineSequence(document);
         if (timingConflicts.Count > 0)
-            throw new InvalidDataException(
-                $"Die wiederhergestellte Editor-Hierarchie ist nicht konfliktfrei: {timingConflicts[0]}");
+            status = LyricsVersionStatus.ReviewOverlaps;
         var reportJson = await PersistAlignmentArtifactsAsync(
             songId, alignmentPath, analysisRunId, cancellationToken);
         AlignmentPitchEvidence.AttachToSyllables(
@@ -73,6 +72,7 @@ internal sealed class LyricsAlignmentVersionService(
         var json = JsonSerializer.Serialize(document, JsonOptions);
         var version = await versions.CreateAsync(songId,
             new CreateLyricsVersionRequest(json, analysisRunId, status,
+                AllowTimingConflicts: timingConflicts.Count > 0,
                 PreserveExistingDrafts: preserveExistingDrafts, AlignmentReportJson: reportJson),
             cancellationToken);
         changes.Publish("lyrics-version-changed");

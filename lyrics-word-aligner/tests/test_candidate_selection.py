@@ -85,6 +85,26 @@ def test_stage_stems_use_better_real_separator_but_not_alignment_blend():
     assert result["reason"] == "separator-clearly-better"
 
 
+def test_stage_stem_ranking_penalizes_vocal_recall_and_pause_leak():
+    diagnostics = {
+        "candidates": [
+            {"id": "existing-pipeline", "status": "success", "score": .80,
+             "separation_quality": {"vocal_recall": 1.0,
+                                    "instrumental_leak_in_vocal_pauses": 0.0}},
+            {"id": "alternative-separator", "status": "success", "score": .82,
+             "separation_quality": {"vocal_recall": .70,
+                                    "instrumental_leak_in_vocal_pauses": .8}},
+        ]
+    }
+    selected, result = select_stage_stem_candidate(
+        {"existing-pipeline", "alternative-separator"}, diagnostics,
+        minimum_improvement=.05)
+    assert selected == "existing-pipeline"
+    assert result["ranking"]["method"] == "asr-plus-separation-quality-v1"
+    assert result["ranking"]["baseline"]["separation_penalty"] == 0.0
+    assert result["ranking"]["winner"]["separation_penalty"] > 0.0
+
+
 def test_stage_stems_keep_baseline_when_separator_gain_is_too_small():
     diagnostics = {
         "candidates": [

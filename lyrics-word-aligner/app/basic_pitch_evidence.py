@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import os
 import re
 import urllib.error
@@ -46,8 +47,246 @@ def candidate_pitch_quality(vocal_audio, *, sample_rate: int = 16000) -> dict:
     confidences = [float(note.get("confidence", note.get("amplitude", 0)))
                    for note in evidence["notes"]]
     quality = float(np.median(confidences)) if confidences else 0.0
-    return {"eligible": True, "quality": round(quality, 4),
-            "tonal_ratio": round(tonal_ratio, 4), "note_events": len(intervals)}
+    polyphonic_seconds = float(evidence.get("polyphony", {}).get(
+        "polyphonic_seconds", 0.0))
+    polyphonic_ratio = min(1.0, polyphonic_seconds / duration)
+    singer_ambiguity = min(1.0, polyphonic_ratio * 2.0)
+    lead_ratio = 1.0 - singer_ambiguity
+    lead_weighted_quality = quality * lead_ratio
+    return {
+        "eligible": True,
+        "quality": round(quality, 4),
+        "tonal_ratio": round(tonal_ratio, 4),
+        "note_events": len(intervals),
+        "singer_context": {
+            "method": "polyphony-ambiguity-v1",
+            "polyphonic_seconds": round(polyphonic_seconds, 3),
+            "polyphonic_ratio": round(polyphonic_ratio, 4),
+            "singer_ambiguity": round(singer_ambiguity, 4),
+            "estimated_lead_ratio": round(lead_ratio, 4),
+            "lead_weighted_quality": round(lead_weighted_quality, 4),
+            "identity_assignment": "not-performed",
+        },
+    }
+
+
+def vocal_onset_consensus(vocal_audio, *, sample_rate: int = 16000) -> dict:
+    """Build an independent, pitch-agnostic onset voice from the vocal stem.
+
+    The detector intentionally uses no Basic-Pitch output. A candidate is a
+    short-term energy rise whose local vocal energy is clearly above the
+    preceding valley. This gives Basic-Pitch a second evidence family instead
+    of reinforcing its own prediction.
+    """
+    signal = np.asarray(vocal_audio, dtype=np.float32)
+    if signal.ndim > 1:
+        signal = signal.mean(axis=1)
+    summary = {
+        "method": "vocal-envelope-onset-consensus-v1",
+        "enabled": signal.size >= sample_rate,
+        "onsets": [],
+    }
+    if not summary["enabled"]:
+        summary["reason"] = "vocal-stem-unavailable-or-too-short"
+        return summary
+
+    hop = max(1, int(round(sample_rate * .01)))
+    window = max(hop, int(round(sample_rate * .03)))
+    frame_count = max(1, signal.size // hop)
+    energies = np.empty(frame_count, dtype=np.float32)
+    for frame in range(frame_count):
+        start = frame * hop
+        energies[frame] = float(np.sqrt(np.mean(
+            np.square(signal[start:min(signal.size, start + window)]) + 1e-12)))
+
+    threshold_ratio = float(os.getenv(
+        "LRC_ONSET_CONSENSUS_ENERGY_RATIO", "1.6"))
+    minimum_delta_db = float(os.getenv(
+        "LRC_ONSET_CONSENSUS_MIN_DELTA_DB", "3.0"))
+    valley_seconds = float(os.getenv("LRC_ONSET_CONSENSUS_VALLEY_SECONDS", ".035"))
+    attack_seconds = float(os.getenv("LRC_ONSET_CONSENSUS_ATTACK_SECONDS", ".025"))
+    minimum_distance = float(os.getenv(
+        "LRC_ONSET_CONSENSUS_MIN_DISTANCE_SECONDS", ".04"))
+    valley_frames = max(1, int(round(valley_seconds / .01)))
+    attack_frames = max(1, int(round(attack_seconds / .01)))
+    minimum_frames = max(1, int(round(minimum_distance / .01)))
+
+    candidates: list[tuple[int, float, float]] = []
+    for frame in range(valley_frames, frame_count - attack_frames):
+        valley = float(np.median(energies[frame - valley_frames:frame]))
+        attack = float(np.max(energies[frame:frame + attack_frames]))
+        if valley <= 1e-6:
+            continue
+        ratio = attack / valley
+        delta_db = 20.0 * math.log10(attack + 1e-12) - 20.0 * math.log10(valley)
+        if ratio >= threshold_ratio and delta_db >= minimum_delta_db:
+            local = frame + int(np.argmax(energies[frame:frame + attack_frames]))
+            candidates.append((local, ratio, delta_db))
+
+    selected: list[tuple[int, float, float]] = []
+    for candidate in candidates:
+        if selected and candidate[0] - selected[-1][0] < minimum_frames:
+            if candidate[1] > selected[-1][1]:
+                selected[-1] = candidate
+            continue
+        selected.append(candidate)
+
+    summary.update({
+        "onsets": [{
+            "time": round(frame * .01, 3),
+            "energy_ratio": round(ratio, 3),
+            "delta_db": round(delta_db, 2),
+        } for frame, ratio, delta_db in selected],
+        "onset_count": len(selected),
+        "parameters": {
+            "energy_ratio": threshold_ratio,
+            "minimum_delta_db": minimum_delta_db,
+            "valley_seconds": valley_seconds,
+            "attack_seconds": attack_seconds,
+            "minimum_distance_seconds": minimum_distance,
+        },
+    })
+    return summary
+
+
+def _onset_consensus_support(candidate_time: float, consensus: dict) -> dict:
+    """Score nearby independent onsets; proximity and strength both matter."""
+    tolerance = float(os.getenv("LRC_ONSET_CONSENSUS_TOLERANCE_SECONDS", ".065"))
+    minimum_ratio = float(os.getenv("LRC_ONSET_CONSENSUS_MIN_ENERGY_RATIO", "1.6"))
+    minimum_delta_db = float(os.getenv(
+        "LRC_ONSET_CONSENSUS_MIN_DELTA_DB", "3.0"))
+    matches = [onset for onset in consensus.get("onsets", [])
+               if abs(float(onset.get("time", -999)) - candidate_time) <= tolerance]
+    if not matches:
+        return {
+            "supported": False,
+            "family": "vocal-envelope",
+            "reason": "no-nearby-onset",
+        }
+    best = max(matches, key=lambda onset: float(onset.get("energy_ratio", 0)))
+    supported = (float(best.get("energy_ratio", 0)) >= minimum_ratio
+                 and float(best.get("delta_db", 0)) >= minimum_delta_db)
+    return {
+        "supported": supported,
+        "family": "vocal-envelope",
+        "time": best.get("time"),
+        "delta_ms": round((float(best.get("time", candidate_time))
+                           - candidate_time) * 1000, 1),
+        "energy_ratio": best.get("energy_ratio"),
+        "delta_db": best.get("delta_db"),
+        **({} if supported else {"reason": "onset-too-weak"}),
+    }
+
+
+def _independent_boundary_strength(candidate_time: float, vocal_audio,
+                                   reference: LeakageReference | None,
+                                   sample_rate: int) -> dict:
+    evidence = banded_boundary_step(
+        vocal_audio, candidate_time, reference=reference, sample_rate=sample_rate)
+    return evidence or {}
+
+
+def separation_quality_report(vocals, instrumental, lines=None, *,
+                              sample_rate: int = 16000,
+                              pitch_diagnostics: dict | None = None) -> dict:
+    """Measure a complementary stem pair without mutating timing.
+
+    The metrics are deliberately simple and stable across songs: RMS levels,
+    vocal dominance, lyric-window coverage, and a leakage suspicion score.
+    Basic-Pitch diagnostics are attached when available so ASR and tonal
+    winners can be inspected independently.
+    """
+    vocal_signal = np.asarray(vocals, dtype=np.float32)
+    instrumental_signal = np.asarray(instrumental, dtype=np.float32)
+    if vocal_signal.ndim > 1:
+        vocal_signal = vocal_signal.mean(axis=1)
+    if instrumental_signal.ndim > 1:
+        instrumental_signal = instrumental_signal.mean(axis=1)
+    length = min(len(vocal_signal), len(instrumental_signal))
+    vocal_signal = vocal_signal[:length]
+    instrumental_signal = instrumental_signal[:length]
+    duration = max(.001, length / sample_rate)
+    vocal_rms = float(np.sqrt(np.mean(np.square(vocal_signal)) + 1e-12))
+    instrumental_rms = float(np.sqrt(
+        np.mean(np.square(instrumental_signal)) + 1e-12))
+    contrast_db = (20.0 * math.log10(vocal_rms + 1e-12)
+                   - 20.0 * math.log10(instrumental_rms + 1e-12))
+
+    lyric_windows = 0
+    covered_windows = 0
+    vocal_recall_windows = 0
+    vocal_pause_frames = 0
+    leaked_pause_frames = 0
+    vocal_energy_threshold = max(1e-5, vocal_rms * .10)
+    for line in lines or []:
+        words = getattr(line, "words", None) or []
+        if not words:
+            continue
+        start = max(0.0, float(words[0]["start"]))
+        end = min(duration, float(words[-1]["end"]))
+        if end <= start:
+            continue
+        lyric_windows += 1
+        first = max(0, int(start * sample_rate))
+        last = min(length, max(first + 1, int(end * sample_rate)))
+        local_rms = float(np.sqrt(
+            np.mean(np.square(vocal_signal[first:last])) + 1e-12))
+        covered_windows += int(local_rms >= vocal_energy_threshold)
+        vocal_recall_windows += int(local_rms >= vocal_rms * .25)
+
+    lyric_mask = np.zeros(length, dtype=bool)
+    for line in lines or []:
+        words = getattr(line, "words", None) or []
+        if not words:
+            continue
+        first = max(0, int(float(words[0]["start"]) * sample_rate))
+        last = min(length, int(float(words[-1]["end"]) * sample_rate))
+        if last > first:
+            lyric_mask[first:last] = True
+    pause_mask = ~lyric_mask
+    pause_samples = int(np.sum(pause_mask))
+    pause_frames = 0
+    if pause_samples:
+        frame = max(1, int(sample_rate * .04))
+        pause_frames = pause_samples // frame
+        starts = np.flatnonzero(pause_mask)
+        if len(starts):
+            pause_indices = starts[::frame][:pause_frames]
+            leak_threshold = instrumental_rms * .35
+            leaked_pause_frames = 0
+            for indices in pause_indices:
+                stop = min(length, int(indices) + frame)
+                if stop <= indices:
+                    continue
+                local_rms = float(np.sqrt(np.mean(
+                    np.square(vocal_signal[indices:stop]) + 1e-12)))
+                leaked_pause_frames += int(local_rms > leak_threshold)
+
+    coverage = (covered_windows / lyric_windows) if lyric_windows else None
+    vocal_recall = (vocal_recall_windows / lyric_windows) if lyric_windows else None
+    pause_leak_ratio = (leaked_pause_frames / pause_frames) if pause_frames else None
+    leakage_suspicion = 0.0
+    if instrumental_rms > 0:
+        leakage_suspicion = min(1.0, max(0.0, (vocal_rms / instrumental_rms) / 6.0))
+    if contrast_db < -6:
+        leakage_suspicion = max(leakage_suspicion, .65)
+
+    return {
+        "method": "complementary-stem-quality-v1",
+        "duration_seconds": round(duration, 3),
+        "vocal_rms": round(vocal_rms, 6),
+        "instrumental_rms": round(instrumental_rms, 6),
+        "contrast_db": round(contrast_db, 2),
+        "lyric_window_count": lyric_windows,
+        "lyric_window_coverage": (round(coverage, 4)
+                                   if coverage is not None else None),
+        "vocal_recall": (round(vocal_recall, 4)
+                         if vocal_recall is not None else None),
+        "instrumental_leak_in_vocal_pauses": (round(pause_leak_ratio, 4)
+                                               if pause_leak_ratio is not None else None),
+        "basic_pitch": pitch_diagnostics or {"eligible": False, "reason": "not-evaluated"},
+        "leakage_suspicion": round(leakage_suspicion, 4),
+    }
 
 
 def analyze_and_refine_line_onsets(lines: list, vocal_audio, instrumental_audio,
@@ -85,6 +324,13 @@ def analyze_and_refine_line_onsets(lines: list, vocal_audio, instrumental_audio,
 
     reference = (LeakageReference(np.asarray(instrumental_audio, dtype=np.float32), sample_rate)
                  if instrumental_audio is not None else None)
+    consensus_enabled = os.getenv(
+        "LRC_ONSET_CONSENSUS_ENABLED", "true").strip().lower() in {
+            "1", "true", "yes", "on"}
+    consensus = (vocal_onset_consensus(vocal_audio, sample_rate=sample_rate)
+                 if consensus_enabled else
+                 {"enabled": False, "reason": "feature-disabled", "onsets": []})
+    summary["onset_consensus"] = consensus
     summary["leakage_reference_available"] = reference is not None
     maximum_shift = float(os.getenv("BASIC_PITCH_MAX_ONSET_SHIFT", "0.18"))
     minimum_shift = float(os.getenv("BASIC_PITCH_MIN_ONSET_SHIFT", "0.045"))
@@ -139,12 +385,29 @@ def analyze_and_refine_line_onsets(lines: list, vocal_audio, instrumental_audio,
         accepted = (use_for_alignment and independent >= minimum_evidence
                     and target >= previous_end - 0.01
                     and float(first["end"]) - target >= 0.03)
+        consensus_support = _onset_consensus_support(target, consensus)
+        fallback = _independent_boundary_strength(
+            target, vocal_audio, reference, sample_rate)
+        fallback_strength = float(fallback.get("independent_db", 0))
+        strong_fallback = fallback_strength >= float(os.getenv(
+            "LRC_ONSET_CONSENSUS_STRONG_INDEPENDENT_DB", "12"))
+        if accepted and consensus_enabled and consensus.get("enabled"):
+            accepted = (consensus_support.get("supported", False)
+                        or strong_fallback)
+            if strong_fallback and not consensus_support.get("supported", False):
+                consensus_support = {
+                    **consensus_support,
+                    "supported": True,
+                    "strong_independent_fallback": True,
+                    "fallback_independent_db": round(fallback_strength, 2),
+                }
         detail = {
             "kind": "onset", "line": index + 1, "old": round(current, 3),
             "candidate": round(target, 3), "shift_ms": round(shift * 1000, 1),
             "pitch": candidate.get("pitch"), "confidence": candidate["confidence"],
             "candidate_source": candidate["source"],
             "independent_db": round(independent, 2), "accepted": accepted,
+            "independent_support": consensus_support,
         }
         summary["details"].append(detail)
         decisions.append((index, target, shift, candidate, detail))

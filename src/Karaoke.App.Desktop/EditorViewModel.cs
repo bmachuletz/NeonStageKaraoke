@@ -53,6 +53,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private long _previewRevision;
     private bool _perceptualLeadEnabled = true;
     private bool _karaokeTimingEnabled = true;
+    private bool _musicalHighlightEnabled = StageLyricsPreview.MusicalHighlightEnvironmentEnabled();
     private long _timelineRevision;
     private TimeSpan? _loopStart;
     private TimeSpan? _loopEnd;
@@ -314,13 +315,22 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(CanDeleteSegment));
         }
     }
+    public bool MusicalHighlightEnabled
+    {
+        get => _musicalHighlightEnabled;
+        set
+        {
+            if (!Set(ref _musicalHighlightEnabled, value)) return;
+            PreviewRevision++;
+        }
+    }
     public bool KaraokeTimingAvailable => Document is not null && !Document.UsesUltraStarTiming;
     public bool KaraokeTimingActive => KaraokeTimingEnabled && KaraokeTimingAvailable;
     public string KaraokeTimingDescription => Document?.UsesUltraStarTiming == true
         ? Localized("UltraStar-Timing geschützt · keine Umrechnung",
             "UltraStar timing protected · no conversion")
-        : Localized("Beat-/Wahrnehmungsgeometrie als Vorschau · gespeicherte Zeiten bleiben unverändert",
-            "Beat/perception geometry preview · stored timing remains unchanged");
+        : Localized("Visuelles Beat-Raster · gespeicherte Zeiten bleiben unverändert",
+            "Visual beat grid · stored timing remains unchanged");
     public long TimelineRevision { get => _timelineRevision; private set => Set(ref _timelineRevision, value); }
     public TimeSpan? LoopStart { get => _loopStart; private set => Set(ref _loopStart, value); }
     public TimeSpan? LoopEnd { get => _loopEnd; private set => Set(ref _loopEnd, value); }
@@ -963,6 +973,65 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    public async Task StartBasicPitchOnlyAsync(CancellationToken cancellationToken = default)
+    {
+        if (SelectedSong is not { } song)
+        {
+            Status = Localized("Bitte zuerst einen Song auswählen.",
+                "Please select a song first.");
+            return;
+        }
+        if (Document?.UsesUltraStarTiming == true)
+        {
+            Status = Localized(
+                "Basic Pitch ist für Songs mit UltraStar-Timing-Herkunft ausgeschlossen.",
+                "Basic Pitch excludes songs with UltraStar timing heritage.");
+            AppendConsole(Status);
+            return;
+        }
+        if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
+        {
+            AppendConsole(Localized(
+                "Der aktuelle Editor-Stand konnte nicht als Basic-Pitch-Basis gespeichert werden.",
+                "The current editor version could not be saved as the Basic Pitch basis."));
+            return;
+        }
+
+        ConsoleVisible = true;
+        _audio.Stop();
+        AppendConsole($"> Basic Pitch: {song.Title} · {song.Artist}");
+        AppendConsole(Localized(
+            "  Eigenständige Analyse des geladenen Stands · kein ASR-/Forced-Alignment-Neustart",
+            "  Standalone analysis of the loaded version · no ASR or forced-alignment rerun"));
+        try
+        {
+            using var response = await _http.PostAsJsonAsync(
+                $"/api/admin/songs/{song.Id}/basic-pitch",
+                new SongBasicPitchRequest(_serverVersionId), cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            {
+                AppendConsole(Localized(
+                    "Es läuft bereits eine GPU-Analyse. Es wird kein zweiter Auftrag gestartet.",
+                    "A GPU analysis is already running. No second job was started."));
+                return;
+            }
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+            _handledRealignmentJob = null;
+            Status = Localized(
+                $"Eigenständige Basic-Pitch-Analyse für {song.Title} läuft im Hintergrund …",
+                $"Standalone Basic Pitch analysis for {song.Title} is running in the background …");
+            await RefreshRealignmentStatusAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            Status = Localized(
+                "Basic-Pitch-Auftrag konnte nicht gestartet werden: " + exception.Message,
+                "Could not start Basic Pitch job: " + exception.Message);
+            AppendConsole(Status);
+        }
+    }
+
     public async Task StartSelectedSongsRealignmentAsync(IReadOnlyList<SongDto> songs,
         AlignmentVariantChoice choice, CancellationToken cancellationToken = default)
     {
@@ -1222,7 +1291,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (status?.JobId is null) return;
             if (status.IsRunning)
             {
-                JobState = $"SONG ALIGNMENT · {status.Percent}% · {status.Message}";
+                JobState = $"AUDIO ANALYSE · {status.Percent}% · {status.Message}";
                 Status = status.Message;
             }
             foreach (var line in status.RecentOutput)
@@ -1231,7 +1300,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             _handledRealignmentJob = status.JobId;
             if (status.ExitCode != 0)
             {
-                Status = "GPU-Neuausrichtung fehlgeschlagen. Details stehen in der Konsole.";
+                Status = Localized(
+                    "GPU-Analyse fehlgeschlagen. Details stehen in der Konsole.",
+                    "GPU analysis failed. See the console for details.");
                 return;
             }
             await ReloadSongsAsync(cancellationToken);
@@ -1250,7 +1321,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 {
                     _realignedSongsPendingReview.Add(songId);
                     await RefreshLyricsVersionsAsync(cancellationToken, reportErrors: false);
-                    Status = "GPU-Neuausrichtung abgeschlossen. Vergleichsvarianten stehen unter Lyrics-Versionen bereit; der aktuelle Arbeitsstand blieb geladen.";
+                    Status = Localized(
+                        "GPU-Analyse abgeschlossen. Das Ergebnis steht unter Lyrics-Versionen bereit; der aktuelle Arbeitsstand blieb geladen.",
+                        "GPU analysis complete. The result is available under lyrics versions; the current working version remains loaded.");
                     AppendConsole(Status);
                 }
                 else
@@ -1259,7 +1332,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             else
             {
                 await ReloadSongsAsync(cancellationToken);
-                Status = "GPU-Neuausrichtung der Bibliothek abgeschlossen. Neue Ergebnisse stehen im Review bereit.";
+                Status = Localized(
+                    "GPU-Analyse der Bibliothek abgeschlossen. Neue Ergebnisse stehen im Review bereit.",
+                    "GPU library analysis complete. New results are ready for review.");
                 AppendConsole(Status);
             }
         }
@@ -2780,7 +2855,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 
     private static bool CanContinueAsWorkingVersion(LyricsVersionStatus status) => status is
         LyricsVersionStatus.Generated or LyricsVersionStatus.NeedsReview or
-        LyricsVersionStatus.InReview or LyricsVersionStatus.Reviewed or
+        LyricsVersionStatus.InReview or LyricsVersionStatus.ReviewOverlaps or LyricsVersionStatus.Reviewed or
         LyricsVersionStatus.Approved;
 
     private void ApplySongFilter()
@@ -2846,6 +2921,7 @@ public sealed record EditorLyricsVersionItem(LyricsVersionSummaryDto Version, bo
         LyricsVersionStatus.Generated => EditorLocale.German ? "Generiert" : "Generated",
         LyricsVersionStatus.NeedsReview => EditorLocale.German ? "Prüfung nötig" : "Needs review",
         LyricsVersionStatus.InReview => EditorLocale.German ? "In Prüfung" : "In review",
+        LyricsVersionStatus.ReviewOverlaps => EditorLocale.German ? "In Prüfung – Überlappungen" : "In review – overlaps",
         LyricsVersionStatus.Reviewed => EditorLocale.German ? "Geprüft" : "Reviewed",
         LyricsVersionStatus.Approved => EditorLocale.German ? "Freigegeben" : "Approved",
         LyricsVersionStatus.Published => EditorLocale.German ? "Veröffentlicht" : "Published",

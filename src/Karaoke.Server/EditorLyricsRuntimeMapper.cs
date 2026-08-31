@@ -6,7 +6,8 @@ namespace Karaoke.Server;
 
 internal static class EditorLyricsRuntimeMapper
 {
-    public static LyricsDto Map(LyricsDto fallback, string documentJson)
+    public static LyricsDto Map(LyricsDto fallback, string documentJson,
+        MusicalHighlightSettingsDto? musicalHighlight = null)
     {
         using var document = JsonDocument.Parse(documentJson);
         if (!document.RootElement.TryGetProperty("lines", out var sourceLines) || sourceLines.ValueKind != JsonValueKind.Array)
@@ -19,7 +20,7 @@ internal static class EditorLyricsRuntimeMapper
                 var syllables = Children(word, "Syllable").Select((syllable, syllableIndex) =>
                     new LyricsSyllableDto(Time(syllable, "start"), Text(syllable), TimeOrNull(syllable, "end"),
                         syllableIndex, Number(syllable, "confidence"),
-                        Boolean(syllable, "karaokeTimingLocked"))).ToArray();
+                        Boolean(syllable, "karaokeTimingLocked"), Notes(syllable))).ToArray();
                 return new LyricsWordDto(Time(word, "start"), Text(word), TimeOrNull(word, "end"), wordIndex,
                     syllables.Length == 0 ? null : syllables, Number(word, "confidence"),
                     Boolean(word, "karaokeTimingLocked"));
@@ -43,7 +44,10 @@ internal static class EditorLyricsRuntimeMapper
         return lines.Length == 0 ? fallback : fallback with
         {
             Lines = lines,
-            HasUltraStarTimingHeritage = fallback.HasUltraStarTimingHeritage || ultraStarHeritage
+            HasUltraStarTimingHeritage = fallback.HasUltraStarTimingHeritage || ultraStarHeritage,
+            MusicalHighlight = musicalHighlight is { Enabled: true } && !ultraStarHeritage
+                ? new(true, musicalHighlight.TimelineVersion)
+                : new(false, musicalHighlight?.TimelineVersion ?? 1)
         };
     }
 
@@ -81,6 +85,21 @@ internal static class EditorLyricsRuntimeMapper
     private static double Number(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var parsed)
             ? parsed : 0;
+
+    private static IReadOnlyList<LyricsNoteEvidenceDto>? Notes(JsonElement syllable)
+    {
+        if (!syllable.TryGetProperty("notes", out var source) || source.ValueKind != JsonValueKind.Array ||
+            source.GetArrayLength() == 0) return null;
+        var result = new List<LyricsNoteEvidenceDto>();
+        foreach (var note in source.EnumerateArray())
+        {
+            var start = TimeOrNull(note, "start");
+            var end = TimeOrNull(note, "end");
+            if (start is null || end is null || end <= start) continue;
+            result.Add(new(start.Value, end.Value, (int)Number(note, "midi"), Number(note, "confidence")));
+        }
+        return result.Count == 0 ? null : result;
+    }
 
     private static bool Boolean(JsonElement element, string property) =>
         element.TryGetProperty(property, out var value) && value.ValueKind is JsonValueKind.True;

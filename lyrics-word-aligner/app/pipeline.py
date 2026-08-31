@@ -16,9 +16,11 @@ from .audio import (ffmpeg_to_flac, ffmpeg_to_mono16k, load_audio,
                     load_native_audio)
 from .asr_prompt import build_asr_prompt
 from .basic_pitch_evidence import (analyze_and_refine_line_onsets,
-                                   candidate_pitch_quality)
+                                   candidate_pitch_quality,
+                                   separation_quality_report)
 from .analysis_stems import build_analysis_candidates
 from .candidate_selection import (AudioAlignmentCandidate, CandidateSelectionConfig,
+                                  select_stage_stem_candidate,
                                   select_alignment_candidate,
                                   timed_anchor_alignment_quality)
 from .canonical_lyrics import transfer_canonical_lines
@@ -42,6 +44,7 @@ from .micro_boundaries import (analyze_voicing, compare_timing_reference,
                                serialize_voicing_evidence,
                                sustain_voicing_intervals,
                                refine_sustain_releases_with_voicing)
+from .line_transitions import analyze_line_transitions
 from .vocal_boundaries import constrain_to_stage_vocals
 from .collapsed_lines import repair_collapsed_lines, repair_compressed_word_runs
 from .boundary_evidence import leakage_aware_evidence
@@ -560,6 +563,23 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
     if provided_stage_stems and not separator:
         raise ValueError("Vorhandene Stems erfordern aktivierte Separation/Stem-Verarbeitung.")
     notify = progress or _noop
+    runtime_device = {
+        "requested": device,
+        "cuda_available": False,
+        "warning": None,
+    }
+    if device == "cuda":
+        try:
+            import torch
+            runtime_device["cuda_available"] = torch.cuda.is_available()
+        except (ImportError, RuntimeError):
+            runtime_device["cuda_available"] = False
+        if not runtime_device["cuda_available"]:
+            runtime_device["warning"] = (
+                "CUDA wurde angefordert, ist aber nicht verfügbar. "
+                "Separation und Modelle laufen im langsamen CPU-Fallback."
+            )
+            notify(3, runtime_device["warning"])
     phase_trace: list[str] = []
 
     def enter_phase(name: str) -> None:
@@ -662,24 +682,39 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
     }
     stem_outputs: dict[str, str] = {}
     stage_stem_selection: dict = {"enabled": False, "reason": "separator-disabled"}
+    stage_stem_quality: dict | None = None
     analysis_stem_selection: dict = {"enabled": False, "reason": "separator-disabled"}
+    line_transition_analysis: dict = {
+        "method": "joint-line-transition-v1",
+        "version": 1,
+        "enabled": False,
+        "reason": "pipeline-terminated-before-hard-boundary-precheck",
+    }
     stage_separator_model: str | None = None
     separation_config = SeparationConfig.from_environment()
     with tempfile.TemporaryDirectory(prefix="lyrics-align-") as temp:
         temp_dir = Path(temp)
         analysis_accompaniment_audio = None
         stage_instrumental_audio = None
+        stage_vocal_audio = None
         if separator:
             if provided_stage_stems:
                 notify(12, "Gespeicherte Bibliotheksspuren werden als feste Audioreferenz geladen")
                 stage_stems = StemPaths(Path(provided_vocals), Path(provided_instrumental))
                 stage_separator_model = "provided-library-stems"
+                stage_vocal_audio = load_audio(ffmpeg_to_mono16k(
+                    stage_stems.vocals, temp_dir / "provided-stage-vocals-16k.wav"))
             else:
                 notify(12, "Stage-Vocals und Instrumental werden getrennt")
                 stage_stems = separate_stems(
                     audio_path, temp_dir / "stage-separated",
                     model_name=separation_config.stage_model)
                 stage_separator_model = separation_config.stage_model
+                stage_vocal_audio = load_audio(ffmpeg_to_mono16k(
+                    stage_stems.vocals, temp_dir / "stage-baseline-vocals-16k.wav"))
+                stage_instrumental_audio = load_audio(ffmpeg_to_mono16k(
+                    stage_stems.instrumental,
+                    temp_dir / "stage-baseline-instrumental-16k.wav"))
             vocals_out = output_dir / f"{stem}.vocals.flac"
             instrumental_out = output_dir / f"{stem}.instrumental.flac"
             stem_outputs = {
@@ -690,8 +725,8 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                 "enabled": True,
                 "selected_candidate": "provided-stage-stems" if provided_stage_stems
                                       else "configured-stage-separator",
-                "reason": "provided-library-stems-locked" if provided_stage_stems
-                          else "stage-purpose-is-fixed",
+                "reason": ("provided-library-stems-locked" if provided_stage_stems
+                           else "awaiting-separator-candidate-evaluation"),
                 "purpose": "stage",
                 "separator": ("provided" if provided_stage_stems
                               else separator_family(stage_separator_model)),
@@ -712,6 +747,32 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             minimum_rms_ratio=float(os.getenv("LRC_MIN_VOCAL_MIX_RMS_RATIO", "0.05")),
         )
         candidates = analysis_bundle.candidates
+        if separator and not provided_stage_stems:
+            candidates.insert(0, AudioAlignmentCandidate(
+                "configured-stage-separator",
+                f"Stage-Baseline · {separator_family(separation_config.stage_model)}",
+                stage_vocal_audio,
+                "stage-vocal-separator",
+                legacy=True,
+                metadata={
+                    "purpose": "stage",
+                    "model": separation_config.stage_model,
+                    "separator": separator_family(separation_config.stage_model),
+                },
+            ))
+        elif provided_stage_stems:
+            candidates.insert(0, AudioAlignmentCandidate(
+                "provided-stage-stems",
+                "Bibliotheks-Stems",
+                stage_vocal_audio,
+                "provided-stage-vocals",
+                legacy=True,
+                metadata={
+                    "purpose": "stage",
+                    "model": "provided-library-stems",
+                    "separator": "provided",
+                },
+            ))
         mix_audio = analysis_bundle.mix_audio
         audio = candidates[0].audio
         alignment_audio = {
@@ -736,12 +797,25 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                     result["alignment_quality"] = timed_anchor_alignment_quality(
                         lines, detect_vocal_activity(candidate.audio))
                     if os.getenv(
-                            "LRC_BASIC_PITCH_USE_FOR_SEPARATOR_SCORE", "false"
+                            "LRC_BASIC_PITCH_USE_FOR_SEPARATOR_SCORE", "true"
                             ).strip().lower() in {"1", "true", "yes", "on"}:
                         pitch = candidate_pitch_quality(candidate.audio)
                         result["pitch_quality_diagnostics"] = pitch
                         if pitch.get("eligible"):
                             result["pitch_quality"] = pitch["quality"]
+                    accompaniment = (
+                        load_audio(ffmpeg_to_mono16k(
+                            stage_stems.instrumental,
+                            temp_dir / "provided-stage-instrumental-16k.wav"))
+                        if candidate.id == "provided-stage-stems"
+                        else stage_instrumental_audio
+                        if candidate.id == "configured-stage-separator"
+                        else analysis_bundle.accompaniment_audio.get(candidate.id)
+                    )
+                    if accompaniment is not None:
+                        result["separation_quality"] = separation_quality_report(
+                            candidate.audio, accompaniment, lines,
+                            pitch_diagnostics=result.get("pitch_quality_diagnostics"))
                     return result
 
                 selected_candidate, selected_candidate_transcript, candidate_selection = (
@@ -765,6 +839,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
                                        for candidate in candidates
                                    ]}
         selected_score = candidate_selection.get("selected_candidate_score")
+        candidates_by_id = {candidate.id: candidate for candidate in candidates}
         analysis_stem_selection = {
             "enabled": effective_separation_config.analysis_enabled,
             "selected_candidate": selected_candidate.id,
@@ -778,22 +853,154 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             "candidate_count": len(candidates),
             "generation_errors": analysis_bundle.errors,
         }
-        analysis_accompaniment_audio = analysis_bundle.accompaniment_audio.get(
-            selected_candidate.id)
+        if separation_config.a_b_models:
+            analysis_stem_selection["a_b_models"] = list(separation_config.a_b_models)
+            analysis_stem_selection["a_b_summary"] = {
+                "enabled": True,
+                "models": list(separation_config.a_b_models),
+                "ranking_method": "asr-plus-separation-quality-v1",
+                "successful_models": [
+                    item.get("metadata", {}).get("model")
+                    for item in candidate_selection.get("candidates", [])
+                    if item.get("status") == "success"
+                    and item.get("metadata", {}).get("model")
+                    in separation_config.a_b_models
+                ],
+                "failed_models": [item.get("metadata", {}).get("model")
+                                  for item in candidate_selection.get("candidates", [])
+                                  if item.get("status") == "failed"
+                                  and item.get("metadata", {}).get("model")
+                                  in separation_config.a_b_models],
+                "evaluation": [
+                    {
+                        "model": item.get("metadata", {}).get("model"),
+                        "id": item.get("id"),
+                        "score": item.get("score"),
+                        "vocal_recall": (
+                            item.get("separation_quality", {}).get("vocal_recall")),
+                        "pause_leak": (
+                            item.get("separation_quality", {})
+                            .get("instrumental_leak_in_vocal_pauses")),
+                        "singer_ambiguity": (
+                            item.get("pitch_quality_diagnostics", {})
+                            .get("singer_context", {}).get("singer_ambiguity")),
+                    }
+                    for item in candidate_selection.get("candidates", [])
+                    if item.get("metadata", {}).get("model") in separation_config.a_b_models
+                ],
+            }
+        analysis_accompaniment_audio = (
+            load_audio(ffmpeg_to_mono16k(
+                stage_stems.instrumental,
+                temp_dir / "provided-stage-instrumental-16k.wav"))
+            if selected_candidate.id == "provided-stage-stems"
+            else stage_instrumental_audio
+            if selected_candidate.id == "configured-stage-separator"
+            else analysis_bundle.accompaniment_audio.get(selected_candidate.id)
+        )
         if analysis_accompaniment_audio is None:
             analysis_stem_selection["accompaniment_reference"] = "unavailable-for-mix-candidate"
         else:
             analysis_stem_selection["accompaniment_reference"] = "matching-analysis-pair"
 
-        if separator:
-            stage_vocal_wav = ffmpeg_to_mono16k(
-                stage_stems.vocals, temp_dir / "stage-vocals-16k.wav")
-            stage_vocal_audio = load_audio(stage_vocal_wav)
-            stage_instrumental_wav = ffmpeg_to_mono16k(
-                stage_stems.instrumental, temp_dir / "stage-instrumental-16k.wav")
-            stage_instrumental_audio = load_audio(stage_instrumental_wav)
-        else:
+        if (separator and not provided_stage_stems
+                and effective_separation_config.analysis_enabled):
+            stage_candidate_ids = {"configured-stage-separator", *analysis_bundle.pairs.keys()}
+            successful_candidates = {
+                item["id"] for item in candidate_selection.get("candidates", [])
+                if item.get("status") == "success"
+            }
+            successful_stage_candidates = stage_candidate_ids & successful_candidates
+            if len(successful_stage_candidates) >= 2:
+                notify(53, "Stage-Stem wird aus den erfolgreichen Separator-Kandidaten gewählt")
+                stage_winner, stage_stem_selection = select_stage_stem_candidate(
+                    stage_candidate_ids,
+                    candidate_selection,
+                    baseline_id="configured-stage-separator",
+                    minimum_improvement=float(os.getenv(
+                        "LRC_STAGE_STEM_MIN_IMPROVEMENT", "0.05")))
+                stage_stem_selection.update({
+                    "purpose": "stage",
+                    "baseline_model": separation_config.stage_model,
+                })
+                stage_stem_selection["candidate_score"] = next(
+                    float(item["score"])
+                    for item in candidate_selection.get("candidates", [])
+                    if item.get("id") == stage_winner and item.get("status") == "success"
+                )
+                if stage_winner != "configured-stage-separator":
+                    stage_stems = analysis_bundle.pairs[stage_winner]
+                    winner_candidate = candidates_by_id[stage_winner]
+                    stage_stem_selection["model"] = winner_candidate.metadata.get("model")
+                    stage_stem_selection["separator"] = winner_candidate.metadata.get("separator")
+                    stage_stem_selection["candidate_id"] = stage_winner
+                stage_quality_sources = {
+                    "configured-stage-separator": (
+                        stage_vocal_audio, stage_instrumental_audio),
+                    **{candidate_id: (
+                        candidates_by_id[candidate_id].audio,
+                        analysis_bundle.accompaniment_audio[candidate_id])
+                       for candidate_id in analysis_bundle.pairs},
+                }
+                stage_quality = {
+                    candidate_id: separation_quality_report(
+                        vocals, instrumental, lines,
+                        pitch_diagnostics=next((
+                            item.get("pitch_quality_diagnostics")
+                            for item in candidate_selection.get("candidates", [])
+                            if item.get("id") == candidate_id), None))
+                    for candidate_id, (vocals, instrumental)
+                    in stage_quality_sources.items()
+                    if candidate_id in successful_stage_candidates
+                }
+                stage_stem_selection["quality"] = stage_quality
+                stage_stem_quality = stage_quality
+                if (os.getenv("LRC_STEM_HYBRID_DIAGNOSTICS", "true").strip().lower()
+                        in {"1", "true", "yes", "on"}):
+                    asr_ranked = sorted(
+                        (item for item in candidate_selection.get("candidates", [])
+                         if item.get("id") in successful_stage_candidates
+                         and item.get("status") == "success"),
+                        key=lambda item: float(item["score"]), reverse=True)
+                    ranked = sorted(
+                        stage_quality.items(),
+                        key=lambda item: (
+                            float(item[1].get("vocal_recall")
+                                  or item[1].get("lyric_window_coverage") or 0),
+                            -float(item[1].get("instrumental_leak_in_vocal_pauses")
+                                   or 0),
+                            float(item[1].get("basic_pitch", {}).get("quality") or 0),
+                            -float(item[1].get("leakage_suspicion") or 0)),
+                        reverse=True)
+                    recommended = ranked[0][0]
+                    stage_stem_selection["hybrid_diagnostics"] = {
+                        "enabled": True,
+                        "method": "candidate-consistency-v1-diagnostic-only",
+                        "recommended_local_source": recommended,
+                        "ranked_candidates": [name for name, _ in ranked],
+                        "asr_recommendation": {
+                            "candidate": asr_ranked[0]["id"],
+                            "score": asr_ranked[0]["score"],
+                        },
+                        "basic_pitch_recommendation": recommended,
+                        "different_winners": asr_ranked[0]["id"] != recommended,
+                        "singer_context": {
+                            candidate_id: (
+                                item.get("singer_context") or {})
+                            for candidate_id, item in stage_quality.items()
+                            if item.get("basic_pitch", {}).get("singer_context")
+                        },
+                        "intervals": [],
+                    }
+            else:
+                stage_stem_selection["selection_reason_detail"] = (
+                    "insufficient-successful-separator-candidates")
+
+        if not separator:
             stage_vocal_audio = audio
+            stage_instrumental_audio = None
+        if stage_vocal_audio is None:
+            raise RuntimeError("Stage-Vocals konnten nicht geladen werden")
         vocal_activity = detect_vocal_activity(audio)
         stage_vocal_activity = detect_vocal_activity(stage_vocal_audio)
         enable_anchor_context = os.getenv("LRC_EXPERIMENTAL_ANCHOR_CONTEXT", "false").strip().lower() in {
@@ -1555,11 +1762,17 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         pending_voice_lanes = (planned_voice_lanes(lines, multi_voice_analysis)
                                if shadow_silent_prefix_recovery else None)
         pre_verification_stage_vocal_boundaries = constrain_to_stage_vocals(
-            lines, stage_vocal_activity,
+            lines, stage_vocal_activity, vocal_audio=stage_vocal_audio,
             silent_prefix_recovery=shadow_silent_prefix_recovery,
             pending_voice_lanes=pending_voice_lanes)
         stem_contrast_analysis = refine_final_releases_with_stem_contrast(
             lines, stage_vocal_audio, stage_instrumental_audio, mode="shadow")
+        line_transition_analysis = analyze_line_transitions(
+            lines, stage_vocal_audio, stage_instrumental_audio,
+            maximum_early_onset_shift=float(os.getenv(
+                "LRC_LINE_TRANSITION_MAX_EARLY_ONSET_SHIFT", ".12")),
+            minimum_onset_duration=float(os.getenv(
+                "LRC_LINE_TRANSITION_MIN_ONSET_DURATION", ".08")))
         # Everything above may place or resize words.  Only now reprocess each
         # complete sentence in its small local audio window, split the forced
         # IPA path back into words and verify every edge against independent
@@ -1676,7 +1889,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
             lines, timed_repetition_pairs)
         final_overlap_fallback = eliminate_remaining_line_overlaps(lines)
         stage_vocal_boundaries = constrain_to_stage_vocals(
-            lines, stage_vocal_activity,
+            lines, stage_vocal_activity, vocal_audio=stage_vocal_audio,
             silent_prefix_recovery=shadow_silent_prefix_recovery,
             pending_voice_lanes=(
                 planned_voice_lanes(lines, multi_voice_analysis)
@@ -1817,9 +2030,11 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "separation": ("role-separated-analysis-and-stage" if separator else
                        "analysis-original-stage-disabled"),
         "alignment_audio": alignment_audio,
+        "runtime_device": runtime_device,
         "alignment_candidate_selection": candidate_selection,
         "analysis_stem_selection": analysis_stem_selection,
         "stage_stem_selection": stage_stem_selection,
+        "stage_stem_quality": stage_stem_quality,
         "separator_candidates": [
             *candidate_selection.get("candidates", []),
             *analysis_bundle.errors,
@@ -1867,6 +2082,7 @@ def run(audio_path: Path, lrc_path: Path, output_dir: Path, *, language: str, se
         "pre_verification_stage_vocal_boundaries": (
             pre_verification_stage_vocal_boundaries),
         "stem_contrast_analysis": stem_contrast_analysis,
+        "line_transitions": line_transition_analysis,
         "multiple_singing_voices": multi_voice_analysis,
         "multiple_singing_voice_promotion": multi_voice_promotion,
         "source_boundary_constraints": source_boundary_constraints,

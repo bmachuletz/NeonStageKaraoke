@@ -1,6 +1,7 @@
 using Karaoke.Contracts;
 using Karaoke.Editor.Core;
 using Karaoke.Server;
+using Microsoft.Extensions.Options;
 using QRCoder;
 using System.Text.Json;
 
@@ -165,6 +166,14 @@ app.MapPost("/api/admin/songs/{id:guid}/realign", async (Guid id, SongRealignmen
     {
         null => Results.NotFound(),
         false => Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung."),
+        true => Results.Accepted(value: realignment.GetStatus())
+    });
+app.MapPost("/api/admin/songs/{id:guid}/basic-pitch", async (
+    Guid id, SongBasicPitchRequest? request, SongRealignmentService realignment, CancellationToken ct) =>
+    await realignment.TryStartBasicPitchAsync(id, request, ct) switch
+    {
+        null => Results.NotFound(),
+        false => Results.Conflict("Es läuft bereits eine GPU-Analyse."),
         true => Results.Accepted(value: realignment.GetStatus())
     });
 app.MapPost("/api/admin/songs/realign-all", (SongRealignmentRequest? request,
@@ -447,7 +456,8 @@ app.MapPost("/api/admin/songs/{id:guid}/lyrics/usdb/import", async (
 });
 app.MapDelete("/api/admin/songs/{id:guid}", async (Guid id, LibraryRepository repo, CancellationToken ct) =>
     await repo.DeleteSongAsync(id, ct) is { } result ? Results.Ok(result) : Results.NotFound());
-app.MapGet("/api/songs/{id:guid}/lyrics", async (Guid id, LibraryRepository repo, LyricsVersionRepository versions, CancellationToken ct) =>
+app.MapGet("/api/songs/{id:guid}/lyrics", async (Guid id, LibraryRepository repo, LyricsVersionRepository versions,
+    IOptions<KaraokeOptions> options, CancellationToken ct) =>
 {
     var lyrics = await repo.ReadLyricsAsync(id, ct);
     if (lyrics is null) return Results.NotFound();
@@ -455,7 +465,8 @@ app.MapGet("/api/songs/{id:guid}/lyrics", async (Guid id, LibraryRepository repo
     if (version is null) return Results.Ok(lyrics);
     try
     {
-        return Results.Ok(EditorLyricsRuntimeMapper.Map(lyrics, version.DocumentJson));
+        return Results.Ok(EditorLyricsRuntimeMapper.Map(lyrics, version.DocumentJson,
+            new MusicalHighlightSettingsDto(options.Value.EnableMusicalHighlightTimeline)));
     }
     catch (System.Text.Json.JsonException) { return Results.Ok(lyrics); }
 });

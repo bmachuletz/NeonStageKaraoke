@@ -431,8 +431,14 @@ LRC_ALIGNMENT_KEEP_CANDIDATES=false
 
 # When a real alternative separator improves lyric recognition clearly, export
 # its complementary vocal/instrumental pair for Editor and Stage as well.
-LRC_STAGE_STEM_AUTO_SELECT=true
 LRC_STAGE_STEM_MIN_IMPROVEMENT=0.05
+
+# Optional, opt-in separator A/B models. Leave empty until a representative
+# corpus has been evaluated; duplicates of the regular analysis models are
+# ignored. Locally available candidates include:
+# model_bs_roformer_ep_368_sdr_12.9628.ckpt,
+# melband_roformer_instvox_duality_v2.ckpt and vocals_mel_band_roformer.ckpt.
+LRC_SEPARATOR_A_B_MODELS=
 ```
 
 Candidate scores use lyric coverage, matched-word share, and transcript
@@ -446,6 +452,17 @@ never exported as controllable karaoke audio. Playback stem selection is
 restricted to complete, sample-aligned vocal/instrumental pairs from a real
 separator model and is recorded in `stage_stem_selection` and the stem
 manifest.
+
+The configured Stage separator is evaluated as a real candidate alongside all
+Analysis and optional A/B separators. ASR remains the primary selector, while
+Basic Pitch contributes only a capped tonal-quality bonus. The report records
+ASR and tonal recommendations independently in
+`stage_stem_selection.hybrid_diagnostics`; a stem fusion is diagnostic-only and
+never creates an audio file. Each real stem pair is measured in
+`stage_stem_selection.quality` with vocal RMS, instrumental RMS, contrast,
+lyric-window coverage, Basic-Pitch diagnostics and leakage suspicion. If
+library-provided stems are present, their Stage output is locked and never
+replaced.
 
 ## Missing lyrics and repeated sections
 
@@ -625,6 +642,12 @@ leakage-independent sibilant/plosive boundary so a word can start at its
 leading consonant rather than at the later voiced vowel. Repeated exact lyric
 lines also receive relative-pitch DTW fingerprints, group confidence and
 outlier lines for chorus-placement review.
+
+Phrase onsets additionally require an independent vocal-envelope onset
+consensus. The default proximity tolerance is 65 ms
+(`LRC_ONSET_CONSENSUS_TOLERANCE_SECONDS`). A missing envelope match can only be
+overridden by exceptionally strong banded vocal evidence
+(`LRC_ONSET_CONSENSUS_STRONG_INDEPENDENT_DB`, default 12 dB).
 
 Existing internal word and syllable boundaries receive additional pitch-onset
 diagnostics. They remain in `shadow` mode by default because a melodic note

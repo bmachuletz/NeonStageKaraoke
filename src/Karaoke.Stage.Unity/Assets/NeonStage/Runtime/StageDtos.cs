@@ -85,6 +85,7 @@ public sealed class LyricsDto
 {
     public LyricsLineDto[] lines = Array.Empty<LyricsLineDto>();
     public bool hasUltraStarTimingHeritage;
+    public MusicalHighlightSettingsDto musicalHighlight = new();
 }
 
 [Serializable]
@@ -136,6 +137,23 @@ public sealed class LyricsSyllableDto
     public int index;
     public float confidence;
     public bool karaokeTimingLocked;
+    public LyricsNoteEvidenceDto[] notes = Array.Empty<LyricsNoteEvidenceDto>();
+}
+
+[Serializable]
+public sealed class LyricsNoteEvidenceDto
+{
+    public string start = "00:00:00";
+    public string end = "00:00:00";
+    public int midi;
+    public float confidence;
+}
+
+[Serializable]
+public sealed class MusicalHighlightSettingsDto
+{
+    public bool enabled;
+    public int timelineVersion = 1;
 }
 
 [Serializable]

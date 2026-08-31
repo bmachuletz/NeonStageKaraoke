@@ -62,9 +62,15 @@ public sealed class StageLyricsEngine
             {
                 var syllables = new List<StagePresentationSyllable>();
                 foreach (var syllable in word.syllables ?? Array.Empty<LyricsSyllableDto>())
+                {
+                    var notes = new List<StagePresentationNote>();
+                    foreach (var note in syllable.notes ?? Array.Empty<LyricsNoteEvidenceDto>())
+                        notes.Add(new StagePresentationNote(
+                            Seconds(note.start), Seconds(note.end), note.midi, note.confidence));
                     syllables.Add(new StagePresentationSyllable(
                         Seconds(syllable.start), Seconds(syllable.end), syllable.text, syllable.confidence,
-                        syllable.karaokeTimingLocked));
+                        syllable.karaokeTimingLocked, notes));
+                }
                 words.Add(new StagePresentationWord(
                     Seconds(word.start), Seconds(word.end), word.text, syllables, word.syllableConfidence,
                     word.karaokeTimingLocked));
@@ -83,7 +89,10 @@ public sealed class StageLyricsEngine
         _presentation = new StagePresentationEngine(lines,
             lyrics.hasUltraStarTimingHeritage ? 0 : StagePresentationEngine.PerceptualHighlightLeadSeconds,
             karaokeTimingEnabled: !lyrics.hasUltraStarTimingHeritage,
-            beatTimes: beatTimes);
+            beatTimes: beatTimes,
+            highlightOptions: lyrics.musicalHighlight.enabled && !lyrics.hasUltraStarTimingHeritage
+                ? KaraokeHighlightTimelineOptions.Default
+                : null);
     }
 
     public void Update(double position, float audioImpact)

@@ -38,6 +38,28 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment,
         return true;
     }
 
+    public async Task<bool?> TryStartBasicPitchAsync(Guid songId, SongBasicPitchRequest? request,
+        CancellationToken cancellationToken)
+    {
+        var song = await library.GetAsync(songId, cancellationToken);
+        var audio = await library.GetAudioFileAsync(songId, cancellationToken);
+        if (song is null || audio is null) return null;
+        var sourceVersion = request?.SourceVersionId is { } versionId
+            ? await versions.GetAsync(songId, versionId, cancellationToken)
+            : await versions.GetLatestDraftAsync(songId, cancellationToken)
+              ?? await versions.GetRuntimeAsync(songId, cancellationToken);
+        if (sourceVersion is null) return null;
+        lock (_gate)
+        {
+            if (_status.IsRunning) return false;
+            _status = new(true, Guid.CreateVersion7(), songId, $"{song.Title} · {song.Artist}", 1,
+                "Eigenständige Basic-Pitch-Analyse wird gestartet …", DateTimeOffset.UtcNow, null, null, []);
+        }
+        _ = Task.Run(() => RunBasicPitchAsync(songId, audio.Value.Path, sourceVersion.Id,
+            _status.JobId!.Value));
+        return true;
+    }
+
     public bool TryStartAll(SongRealignmentRequest? request)
     {
         var selected = request ?? new SongRealignmentRequest();
@@ -116,6 +138,85 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment,
             lock (_gate) _status = _status with { IsRunning = false, Percent = 100,
                 Message = "Neuausrichtung fehlgeschlagen.", FinishedAt = DateTimeOffset.UtcNow,
                 ExitCode = -1, RecentOutput = output.ToArray() };
+        }
+    }
+
+    private async Task RunBasicPitchAsync(Guid songId, string audioPath, Guid sourceVersionId, Guid jobId)
+    {
+        var output = new List<string>();
+        try
+        {
+            var sourceVersion = await versions.GetAsync(songId, sourceVersionId, CancellationToken.None)
+                ?? throw new InvalidOperationException("Der Basic-Pitch-Quellstand wurde nicht gefunden.");
+            var document = JsonSerializer.Deserialize<LyricsEditorDocument>(sourceVersion.DocumentJson, JsonOptions)
+                ?? throw new InvalidOperationException("Der Basic-Pitch-Quellstand ist nicht lesbar.");
+            if (document.UsesUltraStarTiming)
+                throw new InvalidOperationException(
+                    "Basic Pitch ist für Songs mit UltraStar-Timing-Herkunft ausgeschlossen.");
+
+            var root = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "..", ".."));
+            var alignScript = Path.Combine(root, "scripts", "linux", "align-library.sh");
+            var temporaryRoot = Path.Combine(Path.GetTempPath(), $"neonstage-basic-pitch-{jobId:N}-{songId:N}");
+            Directory.CreateDirectory(temporaryRoot);
+            try
+            {
+                var editorLyrics = Path.Combine(temporaryRoot, "basic-pitch-basis.lrc");
+                await File.WriteAllTextAsync(editorLyrics,
+                    LyricsDocumentLrcExporter.ToEnhancedLrc(document), new UTF8Encoding(false));
+                var basePath = Path.Combine(Path.GetDirectoryName(audioPath)!,
+                    Path.GetFileNameWithoutExtension(audioPath));
+                var stemDirectory = Path.GetDirectoryName(audioPath)!;
+                var vocals = Path.Combine(stemDirectory,
+                    Path.GetFileName(basePath) + ".vocals.flac");
+                var instrumental = Path.Combine(stemDirectory,
+                    Path.GetFileName(basePath) + ".instrumental.flac");
+                if (!File.Exists(vocals) || !File.Exists(instrumental))
+                    throw new InvalidOperationException(
+                        "Eigenständige Basic-Pitch-Analyse benötigt gespeicherte Vocal- und Instrumentalspuren.");
+                var baselineReport = Path.Combine(temporaryRoot, "basic-pitch-basis.alignment.json");
+                await File.WriteAllTextAsync(baselineReport, sourceVersion.AlignmentReportJson ?? "{}",
+                    new UTF8Encoding(false));
+                var outputDirectory = Path.Combine(temporaryRoot, "basic-pitch-result");
+                Set(5, $"Revision {sourceVersion.Revision} wird für Basic Pitch exportiert …");
+                await RunProcessAsync(root, alignScript,
+                    ["--force", "--library", Path.GetDirectoryName(audioPath)!,
+                     "--match", Path.GetFileName(audioPath), "--lyrics-source", editorLyrics,
+                     "--output-dir", outputDirectory, "--reuse-stems", "--no-reindex",
+                     "--profile", "basic-pitch-postprocess", "--baseline-report", baselineReport],
+                    output, percent => MapProgress(percent, 5, 95));
+                var result = Path.Combine(outputDirectory, Path.GetFileName(basePath) + ".lrc");
+                var report = Path.Combine(outputDirectory, Path.GetFileName(basePath) + ".alignment.json");
+                var version = await alignmentVersions.SnapshotFileAsync(
+                    songId, result, report, $"basic-pitch-{jobId:N}:r{sourceVersion.Revision}",
+                    "basic-pitch-only", CancellationToken.None, LyricsVersionStatus.Generated,
+                    preserveExistingDrafts: true, hasUltraStarTimingHeritage: false);
+                Add(output, $"Eigenständige Basic-Pitch-Analyse als Revision {version.Revision} gespeichert.");
+                lock (_gate) _status = _status with
+                {
+                    IsRunning = false, Percent = 100,
+                    Message = "Die eigenständige Basic-Pitch-Analyse ist als Review-Stand bereit.",
+                    FinishedAt = DateTimeOffset.UtcNow, ExitCode = 0, RecentOutput = output.ToArray()
+                };
+            }
+            finally
+            {
+                try { Directory.Delete(temporaryRoot, recursive: true); }
+                catch (IOException exception)
+                {
+                    logger.LogWarning(exception, "Temporäre Basic-Pitch-Ausgaben konnten nicht entfernt werden.");
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(exception, "Eigenständige Basic-Pitch-Analyse für Song {SongId} fehlgeschlagen", songId);
+            Add(output, exception.Message);
+            lock (_gate) _status = _status with
+            {
+                IsRunning = false, Percent = 100,
+                Message = "Eigenständige Basic-Pitch-Analyse fehlgeschlagen.", FinishedAt = DateTimeOffset.UtcNow,
+                ExitCode = -1, RecentOutput = output.ToArray()
+            };
         }
     }
 

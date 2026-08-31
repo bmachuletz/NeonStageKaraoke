@@ -17,6 +17,9 @@ public sealed class StageLyricsPreviewControl : Control
         AvaloniaProperty.Register<StageLyricsPreviewControl, bool>(nameof(PerceptualLeadEnabled), true);
     public static readonly StyledProperty<bool> KaraokeTimingEnabledProperty =
         AvaloniaProperty.Register<StageLyricsPreviewControl, bool>(nameof(KaraokeTimingEnabled), true);
+    public static readonly StyledProperty<bool> MusicalHighlightEnabledProperty =
+        AvaloniaProperty.Register<StageLyricsPreviewControl, bool>(nameof(MusicalHighlightEnabled),
+            StageLyricsPreview.MusicalHighlightEnvironmentEnabled());
     private StageLyricsPreview? _preview;
 
     static StageLyricsPreviewControl()
@@ -42,6 +45,11 @@ public sealed class StageLyricsPreviewControl : Control
             control.RebuildPreview(control.Document);
             control.InvalidateVisual();
         });
+        MusicalHighlightEnabledProperty.Changed.AddClassHandler<StageLyricsPreviewControl>((control, _) =>
+        {
+            control.RebuildPreview(control.Document);
+            control.InvalidateVisual();
+        });
     }
 
     public LyricsEditorDocument? Document { get => GetValue(DocumentProperty); set => SetValue(DocumentProperty, value); }
@@ -58,9 +66,15 @@ public sealed class StageLyricsPreviewControl : Control
         set => SetValue(KaraokeTimingEnabledProperty, value);
     }
 
+    public bool MusicalHighlightEnabled
+    {
+        get => GetValue(MusicalHighlightEnabledProperty);
+        set => SetValue(MusicalHighlightEnabledProperty, value);
+    }
+
     private void RebuildPreview(LyricsEditorDocument? document) =>
         _preview = document is null ? null : new StageLyricsPreview(
-            document, PerceptualLeadEnabled, KaraokeTimingEnabled);
+            document, PerceptualLeadEnabled, KaraokeTimingEnabled, MusicalHighlightEnabled);
 
     public override void Render(DrawingContext context)
     {

@@ -193,7 +193,11 @@ public sealed record LyricsDto(
     string? Album = null,
     string? Author = null,
     int OffsetMilliseconds = 0,
-    bool HasUltraStarTimingHeritage = false);
+    bool HasUltraStarTimingHeritage = false,
+    MusicalHighlightSettingsDto? MusicalHighlight = null);
+public sealed record MusicalHighlightSettingsDto(
+    bool Enabled,
+    int TimelineVersion = 1);
 public sealed record LyricsLineDto(TimeSpan Start, string Text, TimeSpan? End = null, int Index = 0,
     IReadOnlyList<LyricsWordDto>? Words = null, int? HoldAfterMilliseconds = null, string? StageEffect = null,
     int VoiceLane = 0, string? VoiceLabel = null, bool KaraokeTimingLocked = false);
@@ -201,7 +205,9 @@ public sealed record LyricsWordDto(TimeSpan Start, string Text, TimeSpan? End = 
     IReadOnlyList<LyricsSyllableDto>? Syllables = null, double SyllableConfidence = 0,
     bool KaraokeTimingLocked = false);
 public sealed record LyricsSyllableDto(TimeSpan Start, string Text, TimeSpan? End = null, int Index = 0,
-    double Confidence = 0, bool KaraokeTimingLocked = false);
+    double Confidence = 0, bool KaraokeTimingLocked = false,
+    IReadOnlyList<LyricsNoteEvidenceDto>? Notes = null);
+public sealed record LyricsNoteEvidenceDto(TimeSpan Start, TimeSpan End, int Midi, double Confidence);
 public sealed record StemAvailabilityDto(bool HasInstrumental, bool HasVocals, string? Revision = null);
 public sealed record StageTimingSampleDto(
     DateTimeOffset CapturedAt,
@@ -232,7 +238,8 @@ public sealed record LibraryScanStatusDto(
 
 public enum LyricsVersionStatus
 {
-    Generated, NeedsReview, InReview, Reviewed, Approved, Published, Rejected, Superseded
+    Generated, NeedsReview, InReview, ReviewOverlaps, Reviewed, Approved, Published,
+    Rejected, Superseded
 }
 public sealed record LyricsVersionSummaryDto(Guid Id, Guid SongId, long Revision, LyricsVersionStatus Status,
     string? AnalysisRunId, DateTimeOffset CreatedAt, DateTimeOffset UpdatedAt,
@@ -253,6 +260,7 @@ public sealed record SongRealignmentRequest(Guid? SourceVersionId = null,
     bool IncludeEditorBasis = true, bool IncludeOriginalLyrics = true,
     bool IncludeResearchShadow = false, bool IncludeEditorGuidance = false,
     bool IncludeBasicPitchAb = false, int? MaximumSongs = null);
+public sealed record SongBasicPitchRequest(Guid? SourceVersionId = null);
 public sealed record SongSelectionRealignmentRequest(IReadOnlyList<Guid> SongIds,
     SongRealignmentRequest Alignment);
 public sealed record SongPackageExportRequest(IReadOnlyList<Guid> SongIds);

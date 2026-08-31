@@ -1,5 +1,7 @@
 import unittest
 
+import numpy as np
+
 from app.models import AlignmentConfig, LrcLine
 from app.validator import validate
 from app.vocal_boundaries import constrain_to_stage_vocals
@@ -284,10 +286,86 @@ class SilentLeadingRunRecoveryTests(unittest.TestCase):
             [previous, line, following], ISLANDS, silent_prefix_recovery=True)
 
         recovery = report["silent_prefix_recovery"]
-        self.assertEqual(0, recovery["corrected_lines"])
-        self.assertEqual("shifted-line-overruns-next-line-in-lane",
-                         recovery["rejections"][0]["reason"])
-        self.assertEqual(98.35, line.words[0]["start"])
+        self.assertEqual(1, recovery["corrected_lines"])
+        self.assertEqual("release-preserving-reflow",
+                         recovery["corrections"][0]["correction"])
+        self.assertEqual(99.4, line.words[0]["start"])
+        self.assertLessEqual(line.words[-1]["end"], 101.36)
+
+    def test_displaced_first_line_reflows_without_overrunning_next_line(self):
+        previous = _preceding_line()
+        line = _displaced_line()
+        following = LrcLine(101.4, "Wohohohohoh", "", words=[
+            {"word": "Wohohohohoh", "start": 101.4, "end": 103.96},
+        ], voice_lane=0)
+
+        report = constrain_to_stage_vocals(
+            [previous, line, following], [(93.35, 96.6), (99.4, 101.35), (101.4, 106.73)],
+            silent_prefix_recovery=True)
+
+        recovery = report["silent_prefix_recovery"]
+        self.assertEqual(1, recovery["corrected_lines"])
+        correction = recovery["corrections"][0]
+        self.assertEqual("release-preserving-reflow", correction["correction"])
+        self.assertEqual(99.4, line.timestamp)
+        self.assertEqual(99.4, line.words[0]["start"])
+        self.assertLessEqual(line.words[-1]["end"], 101.35)
+        self.assertGreaterEqual(line.words[-1]["end"], 101.0)
+        self.assertLessEqual(line.words[-1]["end"], following.words[0]["start"])
+
+    def test_release_preserving_reflow_keeps_all_word_edges_monotonic(self):
+        line = LrcLine(44.23, "Na gut, dann nicht, dann bin ich eben raus", "", words=[
+            {"word": "Na", "start": 44.23, "end": 44.47},
+            {"word": "gut,", "start": 44.47, "end": 45.11},
+            {"word": "dann", "start": 45.43, "end": 45.67},
+            {"word": "nicht,", "start": 45.67, "end": 46.20},
+            {"word": "dann", "start": 46.20, "end": 46.50},
+            {"word": "bin", "start": 46.50, "end": 46.90},
+            {"word": "ich", "start": 46.90, "end": 47.30},
+            {"word": "eben", "start": 47.30, "end": 47.80},
+            {"word": "raus", "start": 47.80, "end": 49.03},
+        ])
+
+        report = constrain_to_stage_vocals(
+            [line], [(44.63, 49.05)], silent_prefix_recovery=True)
+
+        self.assertEqual(1, report["silent_prefix_recovery"]["corrected_lines"])
+        self.assertAlmostEqual(44.644, line.timestamp, delta=.02)
+        self.assertEqual(44.63, line.words[0]["start"])
+        self.assertEqual(49.43, line.words[-1]["end"])
+        for left, right in zip(line.words, line.words[1:]):
+            self.assertLessEqual(float(left["end"]), float(right["start"]) + .001)
+
+    def test_release_preserving_reflow_snaps_words_to_local_vocal_evidence(self):
+        line = LrcLine(44.23, "Na gut dann dann bin ich eben raus", "", words=[
+            {"word": "Na", "start": 44.23, "end": 44.47},
+            {"word": "gut,", "start": 44.47, "end": 45.11},
+            {"word": "dann", "start": 45.43, "end": 45.67},
+            {"word": "dann", "start": 45.67, "end": 46.20},
+            {"word": "bin", "start": 46.20, "end": 46.50},
+            {"word": "ich", "start": 46.50, "end": 46.90},
+            {"word": "eben", "start": 46.90, "end": 47.30},
+            {"word": "raus", "start": 47.30, "end": 49.03},
+        ])
+        vocal = np.zeros(int(50 * 16000), dtype=np.float32)
+        for onset in (44.644, 44.941, 45.848, 46.125, 46.989, 47.273,
+                      47.584, 47.838, 48.383):
+            start = int(onset * 16000)
+            vocal[start:start + 1600] = np.linspace(.05, .4, 1600,
+                                                        dtype=np.float32)
+            vocal[start + 1600:start + 6400] = .35
+
+        report = constrain_to_stage_vocals(
+            [line], [(44.63, 49.05)], vocal_audio=vocal,
+            silent_prefix_recovery=True)
+
+        self.assertEqual(1, report["silent_prefix_recovery"]["corrected_lines"])
+        self.assertAlmostEqual(44.644, line.timestamp, delta=.015)
+        expected = [44.645, 44.970, 45.815, 46.155, 46.555, 46.955,
+                    47.305, 47.615]
+        self.assertEqual(expected, [round(float(word["start"]), 3)
+                                    for word in line.words])
+        self.assertEqual(49.03, round(float(line.words[-1]["end"]), 3))
 
     def test_missing_preceding_pause_is_rejected_with_a_reason(self):
         # Without an independently observed singing pause the next island may

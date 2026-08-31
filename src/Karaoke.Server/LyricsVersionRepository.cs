@@ -416,10 +416,13 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
     private static bool CanTransition(LyricsVersionStatus from, LyricsVersionStatus to) => (from, to) switch
     {
         (LyricsVersionStatus.Generated or LyricsVersionStatus.NeedsReview, LyricsVersionStatus.InReview) => true,
-        (LyricsVersionStatus.InReview, LyricsVersionStatus.Reviewed) => true,
+        (LyricsVersionStatus.ReviewOverlaps, LyricsVersionStatus.InReview) => true,
+        (LyricsVersionStatus.InReview or LyricsVersionStatus.ReviewOverlaps,
+            LyricsVersionStatus.Reviewed) => true,
         (LyricsVersionStatus.Reviewed, LyricsVersionStatus.Approved) => true,
         (LyricsVersionStatus.Generated or LyricsVersionStatus.NeedsReview or LyricsVersionStatus.InReview or
-            LyricsVersionStatus.Reviewed or LyricsVersionStatus.Approved, LyricsVersionStatus.Published) => true,
+            LyricsVersionStatus.ReviewOverlaps or LyricsVersionStatus.Reviewed or LyricsVersionStatus.Approved,
+            LyricsVersionStatus.Published) => true,
         (_, LyricsVersionStatus.Rejected) when from != LyricsVersionStatus.Published => true,
         _ => false,
     };

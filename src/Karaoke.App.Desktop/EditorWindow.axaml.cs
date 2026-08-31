@@ -324,6 +324,12 @@ public partial class EditorWindow : Window
         if (choice is { } selected) await viewModel.StartAllSongsRealignmentAsync(selected);
     }
 
+    private async void BasicPitchOnlyClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is EditorViewModel viewModel)
+            await viewModel.StartBasicPitchOnlyAsync();
+    }
+
     private async void GlobalLyricsOffsetClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel { Document: not null } viewModel)

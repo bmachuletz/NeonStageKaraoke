@@ -21,6 +21,7 @@ try
     await VerifyUsdbEditorPickerCreatesIsolatedVersionAsync();
     VerifyUsdbRecordingTimingDiagnostics();
     await VerifyAlignmentSyllablesSkipDisplayBoundaryLinesAsync();
+    await VerifyOverlappingAlignmentSnapshotsLandInReviewCategoryAsync();
     await VerifyFirstSongStartsActiveStageAsync();
     var options = Options.Create(new KaraokeOptions { DatabasePath = databasePath });
     var events = new EventRepository(options);
@@ -814,6 +815,50 @@ static async Task VerifyAlignmentSyllablesSkipDisplayBoundaryLinesAsync()
     finally
     {
         if (File.Exists(reportPath)) File.Delete(reportPath);
+    }
+}
+
+static async Task VerifyOverlappingAlignmentSnapshotsLandInReviewCategoryAsync()
+{
+    var database = Path.Combine(Path.GetTempPath(), $"neon-stage-overlap-review-{Guid.NewGuid():N}.db");
+    var libraryRoot = Path.Combine(Path.GetTempPath(), $"neon-stage-overlap-library-{Guid.NewGuid():N}");
+    try
+    {
+        Directory.CreateDirectory(libraryRoot);
+        var options = Options.Create(new KaraokeOptions
+        {
+            DatabasePath = database,
+            LibraryPath = libraryRoot
+        });
+        var library = new LibraryRepository(options, NullLogger<LibraryRepository>.Instance,
+            new TestHubContext(), new ChangeFeedService());
+        await library.InitializeAsync(default);
+        var audioPath = Path.Combine(libraryRoot, "song.wav");
+        WriteTestWave(audioPath);
+        await File.WriteAllTextAsync(Path.ChangeExtension(audioPath, ".lrc"), "[00:01.00]First");
+        await File.WriteAllTextAsync(Path.ChangeExtension(audioPath, ".vocals.flac"), "stub");
+        await File.WriteAllTextAsync(Path.ChangeExtension(audioPath, ".instrumental.flac"), "stub");
+        await library.TryReindexAsync(default);
+        var song = (await library.SearchAsync(null, 0, 10, default, includeUnreleased: true))
+            .SingleOrDefault();
+        var lrcPath = Path.Combine(libraryRoot, "overlapping.lrc");
+        await File.WriteAllTextAsync(lrcPath,
+            "[00:01.000]<00:01.000,00:01.500>First\n[00:01.400]<00:01.400,00:01.900>Second\n");
+        var reportPath = Path.Combine(libraryRoot, "overlapping.alignment.json");
+        await File.WriteAllTextAsync(reportPath, """{"details": []}""");
+        var service = new LyricsAlignmentVersionService(library,
+            new LyricsVersionRepository(options), new ChangeFeedService());
+        var version = await service.SnapshotFileAsync(song!.Id, lrcPath, reportPath,
+            "overlap-test", "test", CancellationToken.None, LyricsVersionStatus.Generated);
+
+        Assert(version.Status == LyricsVersionStatus.ReviewOverlaps,
+            "Alignment-Ergebnisse mit Zeilenüberlappungen landen in der Review-Kategorie.");
+    }
+    finally
+    {
+        foreach (var suffix in new[] { "", "-shm", "-wal" })
+            if (File.Exists(database + suffix)) File.Delete(database + suffix);
+        if (Directory.Exists(libraryRoot)) Directory.Delete(libraryRoot, recursive: true);
     }
 }
 
