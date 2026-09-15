@@ -9,6 +9,23 @@ canonical_source=""
 force_no_canonical=0
 output_dir=""
 reindex=1
+job_id=""
+job_finished=1
+
+cancel_current_job() {
+  if [[ -n "$job_id" && "$job_finished" == 0 ]]; then
+    echo "Cancelling aligner job $job_id …" >&2
+    curl -fsS -X DELETE "$aligner_url/api/jobs/$job_id" >/dev/null 2>&1 || true
+    job_finished=1
+  fi
+}
+
+on_cancel() {
+  cancel_current_job
+  exit 130
+}
+
+trap on_cancel INT TERM HUP
 
 usage() {
   echo "Usage: $0 --audio FILE [--url URL] [--language auto|de|en|...] [--canonical FILE | --no-canonical] [--output-dir DIR] [--no-reindex]"
@@ -65,6 +82,7 @@ upload=(-F "audio=@$audio" -F "language=$language" -F "separate=true" \
 [[ -z "$canonical_lrc" ]] || upload+=(-F "lyrics=@$canonical_lrc;filename=$(basename "$base").lrc")
 response=$(curl -fsS -X POST "$aligner_url/api/transcription-jobs" "${upload[@]}")
 job_id=$(jq -er '.job_id' <<<"$response")
+job_finished=0
 
 while :; do
   status=$(curl -fsS "$aligner_url/api/jobs/$job_id") || { sleep 2; continue; }
@@ -73,13 +91,20 @@ while :; do
   message=$(jq -r '.message // ""' <<<"$status")
   overall=$((2 + percent * 48 / 100))
   echo "[$overall%] $message"
-  [[ "$state" == completed || "$state" == failed ]] && break
+  [[ "$state" == completed || "$state" == failed || "$state" == cancelled ]] && break
   sleep 2
 done
+if [[ "$state" == cancelled ]]; then
+  job_finished=1
+  echo "Complete lyrics recognition was cancelled." >&2
+  exit 130
+fi
 if [[ "$state" == failed ]]; then
+  job_finished=1
   echo "Complete lyrics recognition failed: $(jq -r '.error // .message' <<<"$status")" >&2
   exit 1
 fi
+job_finished=1
 
 download_output() {
   local name=$1 target=$2 encoded temporary

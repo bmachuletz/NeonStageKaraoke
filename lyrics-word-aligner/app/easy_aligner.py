@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import math
 import os
 import statistics
 
@@ -15,9 +16,55 @@ MODEL_IDS = {
     "en": "facebook/wav2vec2-base-960h",
 }
 
+SAMPLE_RATE = 16000
+
+
+def _overlapping_chunk_plan(sample_count: int, *, core_seconds: float = 20.0,
+                            context_seconds: float = 1.0,
+                            frame_stride_samples: int = 320) -> list[dict]:
+    """Plan context-overlapped inference windows on one global CTC frame grid.
+
+    Wav2Vec2 needs acoustic context on both sides of an inference boundary.
+    Every window therefore contains a non-overlapping core plus context, while
+    only logits belonging to the core survive.  Context and core sizes are
+    snapped to the model stride so adjacent chunks retain exactly one common
+    global frame coordinate system.
+    """
+    if sample_count <= 0:
+        return []
+    if frame_stride_samples <= 0:
+        raise ValueError("CTC frame stride must be positive.")
+    core_samples = max(frame_stride_samples, int(round(core_seconds * SAMPLE_RATE)))
+    context_samples = max(0, int(round(context_seconds * SAMPLE_RATE)))
+    core_samples = max(frame_stride_samples,
+                       round(core_samples / frame_stride_samples) * frame_stride_samples)
+    context_samples = round(context_samples / frame_stride_samples) * frame_stride_samples
+    result = []
+    for core_start in range(0, sample_count, core_samples):
+        core_end = min(sample_count, core_start + core_samples)
+        window_start = max(0, core_start - context_samples)
+        window_end = min(sample_count, core_end + context_samples)
+        first_global_frame = math.ceil(core_start / frame_stride_samples)
+        final_global_frame = math.ceil(core_end / frame_stride_samples)
+        window_global_frame = window_start // frame_stride_samples
+        result.append({
+            "core_start": core_start,
+            "core_end": core_end,
+            "window_start": window_start,
+            "window_end": window_end,
+            "keep_start": first_global_frame - window_global_frame,
+            "keep_end": final_global_frame - window_global_frame,
+            "global_frame_start": first_global_frame,
+        })
+    return result
+
 
 def _mean_score(words: list[dict]) -> float:
     return sum(float(word["score"]) for word in words) / max(1, len(words))
+
+
+def _probability_from_mean_log_score(value: float) -> float:
+    return max(0.0, min(1.0, math.exp(float(value))))
 
 
 def _line_tokens(text: str) -> list[str]:
@@ -47,6 +94,7 @@ class EasyGlobalAligner:
         dtype = torch.float16 if device == "cuda" else torch.float32
         self.model = from_pretrained_local_first(
             AutoModelForCTC, model_id).to(device=device, dtype=dtype).eval()
+        self.last_inference: dict = {}
 
     def close(self) -> None:
         del self.model
@@ -54,7 +102,8 @@ class EasyGlobalAligner:
         if self.torch.cuda.is_available():
             self.torch.cuda.empty_cache()
 
-    def align(self, audio: np.ndarray, text: str, *, chunk_seconds: float = 20.0) -> list[dict]:
+    def align(self, audio: np.ndarray, text: str, *, chunk_seconds: float = 20.0,
+              context_seconds: float = 1.0) -> list[dict]:
         from easyaligner.alignment.pytorch import (
             _get_processor_case,
             align_pytorch,
@@ -77,15 +126,38 @@ class EasyGlobalAligner:
                 f"({target_count} Ziele, {character_count} Zeichen)."
             )
 
-        chunk_frames = max(16000, int(chunk_seconds * 16000))
+        frame_stride = int(getattr(self.model.config, "inputs_to_logits_ratio", 320))
+        plan = _overlapping_chunk_plan(
+            len(audio), core_seconds=chunk_seconds, context_seconds=context_seconds,
+            frame_stride_samples=frame_stride)
         emissions = []
-        for offset in range(0, len(audio), chunk_frames):
-            chunk = np.ascontiguousarray(audio[offset:offset + chunk_frames], dtype=np.float32)
+        emitted_global_frames = []
+        for window in plan:
+            chunk = np.ascontiguousarray(
+                audio[window["window_start"]:window["window_end"]], dtype=np.float32)
             inputs = self.processor(chunk, sampling_rate=16000, return_tensors="pt").input_values
             inputs = inputs.to(device=self.device, dtype=self.model.dtype)
             with torch.inference_mode():
                 logits = self.model(inputs).logits
-                emissions.append(torch.softmax(logits.float(), dim=-1).cpu())
+                # torchaudio.functional.forced_align maximizes additive CTC
+                # log-likelihoods. Feeding ordinary probabilities changes that
+                # objective and can let a low-probability character absorb a
+                # long singing pause (for example "Denn" over two seconds).
+                log_probs = torch.log_softmax(logits.float(), dim=-1).cpu()
+            keep_start = min(int(window["keep_start"]), log_probs.shape[1])
+            keep_end = min(int(window["keep_end"]), log_probs.shape[1])
+            if keep_end <= keep_start:
+                continue
+            emissions.append(log_probs[:, keep_start:keep_end])
+            emitted_global_frames.append({
+                "start": int(window["global_frame_start"]),
+                "count": keep_end - keep_start,
+            })
+        if not emissions:
+            raise ValueError("EasyAligner konnte keine CTC-Frames aus dem Audio erzeugen.")
+        for left, right in zip(emitted_global_frames, emitted_global_frames[1:]):
+            if left["start"] + left["count"] != right["start"]:
+                raise ValueError("Überlappende EasyAligner-Chunks bilden kein lückenloses Frame-Raster.")
         emission = torch.cat(emissions, dim=1).to(self.device)
         tokens, scores = align_pytorch(
             normalized_tokens=normalized_tokens,
@@ -107,11 +179,22 @@ class EasyGlobalAligner:
             word_boundary="|",
             processor=self.processor,
         )
-        frame_seconds = (len(audio) / 16000) / max(1, emission.shape[1])
+        frame_seconds = frame_stride / SAMPLE_RATE
+        self.last_inference = {
+            "method": "context-overlap-stitch-v1",
+            "core_seconds": chunk_seconds,
+            "context_seconds": context_seconds,
+            "frame_stride_samples": frame_stride,
+            "frame_seconds": frame_seconds,
+            "chunks": len(emissions),
+            "emission_frames": int(emission.shape[1]),
+        }
         result = []
         for token, spans in zip(mapping, word_spans):
             length = sum(len(span) for span in spans)
-            score = sum(float(span.score) * len(span) for span in spans) / max(1, length)
+            mean_log_probability = (
+                sum(float(span.score) * len(span) for span in spans) / max(1, length))
+            score = _probability_from_mean_log_score(mean_log_probability)
             result.append({
                 "word": token["text"],
                 "normalized": token["normalized_token"].lower(),

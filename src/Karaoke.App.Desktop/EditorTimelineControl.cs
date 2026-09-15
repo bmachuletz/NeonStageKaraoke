@@ -20,6 +20,8 @@ public sealed class EditorTimelineControl : Control
         AvaloniaProperty.Register<EditorTimelineControl, long>(nameof(Revision));
     public static readonly StyledProperty<bool> EditingEnabledProperty =
         AvaloniaProperty.Register<EditorTimelineControl, bool>(nameof(EditingEnabled), true);
+    public static readonly StyledProperty<bool> ShowTechnicalTextProperty =
+        AvaloniaProperty.Register<EditorTimelineControl, bool>(nameof(ShowTechnicalText));
 
     private readonly TimelineViewport _viewport = new(115);
     private (LyricSegment Left, LyricSegment Right, TimeSpan LeftEnd, TimeSpan RightStart,
@@ -44,7 +46,7 @@ public sealed class EditorTimelineControl : Control
     {
         ClipToBoundsProperty.OverrideDefaultValue<EditorTimelineControl>(true);
         AffectsRender<EditorTimelineControl>(DocumentProperty, PlayheadProperty, WaveformProperty,
-            PitchEvidenceProperty, RevisionProperty);
+            PitchEvidenceProperty, RevisionProperty, ShowTechnicalTextProperty);
         DocumentProperty.Changed.AddClassHandler<EditorTimelineControl>((control, change) =>
         {
             var previous = change.GetOldValue<LyricsEditorDocument?>();
@@ -80,6 +82,11 @@ public sealed class EditorTimelineControl : Control
     }
     public long Revision { get => GetValue(RevisionProperty); set => SetValue(RevisionProperty, value); }
     public bool EditingEnabled { get => GetValue(EditingEnabledProperty); set => SetValue(EditingEnabledProperty, value); }
+    public bool ShowTechnicalText
+    {
+        get => GetValue(ShowTechnicalTextProperty);
+        set => SetValue(ShowTechnicalTextProperty, value);
+    }
     public CommandHistory? History { get; set; }
     public event EventHandler<TimeSpan>? PositionRequested;
     public event EventHandler<LyricSegment?>? SegmentSelected;
@@ -679,7 +686,9 @@ public sealed class EditorTimelineControl : Control
             new Pen(selected ? new SolidColorBrush(Color.Parse("#DFFF28")) : new SolidColorBrush(color.Lighten(.2f)), selected ? 2.5 : 1),
             rect, 4, 4);
         if (width < 18) return;
-        var text = new FormattedText(segment.Text, System.Globalization.CultureInfo.CurrentCulture,
+        var label = ShowTechnicalText && !string.IsNullOrWhiteSpace(segment.TechnicalText)
+            ? segment.TechnicalText : segment.Text;
+        var text = new FormattedText(label, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, new Typeface("Inter"), 12, Brushes.White)
         { MaxTextWidth = Math.Max(1, width - 10), MaxTextHeight = track.Height - 6, Trimming = TextTrimming.CharacterEllipsis };
         context.DrawText(text, new Point(x + 5, track.Y + (track.Height - text.Height) / 2));

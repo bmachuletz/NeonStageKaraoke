@@ -39,7 +39,7 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
     """
     dictionary = _dictionary(language)
     words = syllables = dictionary_splits = acoustic_splits = sustained_endings = 0
-    phonological_splits = 0
+    phonological_splits = phoneme_nucleus_windows = 0
     acoustic_attempts = acoustic_refinements = phoneme_splits = 0
     acoustic_confidence_sum = 0.0
     confidence_sum = 0.0
@@ -55,21 +55,33 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
             end = max(start, float(word.get("end", start)))
             confidence = _confidence(
                 parts, end - start, used_dictionary or phonological_split)
-            phoneme_timing = _time_parts_from_phonemes(
+            nucleus_timing = _time_parts_from_phoneme_nuclei(
+                parts, word, start, end, confidence)
+            phoneme_timing = nucleus_timing or _time_parts_from_phonemes(
                 parts, word, start, end, confidence, language)
             acoustic = phoneme_timing or _time_parts_from_ctc(
                 parts, word, start, end, confidence)
             core_end = min(end, max(start, float(word.get("acoustic_end", end))))
             timed_parts = acoustic or _time_parts(parts, start, core_end, confidence)
-            timed_parts, acoustic_summary = refine_syllable_boundaries(
-                audio, timed_parts, sample_rate=sample_rate,
-                prior_is_acoustic=acoustic is not None)
+            if nucleus_timing is not None:
+                # Vowel-nucleus windows deliberately leave articulation gaps.
+                # A shared-boundary refiner would join them again and erase
+                # the crisp karaoke phrasing this stronger phone path proves.
+                acoustic_summary = {
+                    "attempted_boundaries": 0,
+                    "refined_boundaries": 0,
+                    "mean_confidence": 0.0,
+                }
+            else:
+                timed_parts, acoustic_summary = refine_syllable_boundaries(
+                    audio, timed_parts, sample_rate=sample_rate,
+                    prior_is_acoustic=acoustic is not None)
             # A noisy release detector can place ``acoustic_end`` before the
             # word has enough time to articulate its known syllables. Keep the
             # measured release as evidence, but never use an impossible core
             # interval as the parent of the syllable geometry.
             geometry_repaired = False
-            if enforce_minimum_geometry:
+            if enforce_minimum_geometry and nucleus_timing is None:
                 geometry_end = max(
                     core_end,
                     min(end, start + len(timed_parts) * 0.055))
@@ -90,7 +102,9 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
                 sustained_endings += 1
             word["syllables"] = timed_parts
             word["syllable_confidence"] = confidence
-            if acoustic_summary["refined_boundaries"]:
+            if nucleus_timing is not None:
+                word["syllable_method"] = "phoneme-vowel-articulation-windows-v1"
+            elif acoustic_summary["refined_boundaries"]:
                 word["syllable_method"] = (
                     "phoneme-onsets-plus-local-change-v1.1" if phoneme_timing else
                     "local-acoustic-change-point-v1")
@@ -104,6 +118,8 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
             dictionary_splits += int(used_dictionary and len(parts) > 1)
             acoustic_splits += int(acoustic is not None and len(parts) > 1)
             phoneme_splits += int(phoneme_timing is not None and len(parts) > 1)
+            phoneme_nucleus_windows += int(
+                nucleus_timing is not None and len(parts) > 1)
             confidence_sum += confidence
     return {
         "version": 5,
@@ -116,6 +132,7 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
         "dictionary_splits": dictionary_splits,
         "acoustic_splits": acoustic_splits,
         "phoneme_nucleus_splits": phoneme_splits,
+        "phoneme_vowel_articulation_windows": phoneme_nucleus_windows,
         "phoneme_corrected_text_splits": phonological_splits,
         "acoustic_change_point_enabled": audio is not None,
         "acoustic_change_point_attempts": acoustic_attempts,
@@ -128,6 +145,63 @@ def enrich_lines_with_syllables(lines: Iterable, language: str, audio=None,
         "minimum_geometry_safety_enabled": enforce_minimum_geometry,
         "mean_confidence": round(confidence_sum / words, 3) if words else 0.0,
     }
+
+
+def _time_parts_from_phoneme_nuclei(
+        parts: list[str], word: dict, start: float, end: float,
+        confidence: float) -> list[dict] | None:
+    """Create separated karaoke articulation windows from measured vowels.
+
+    A written syllable is perceived mainly at its vowel nucleus.  In clipped
+    singing, consonants and real rests between nuclei must not force one
+    continuous highlight across the entire word.  The first syllable keeps
+    the lexical word onset, internal syllables begin at their measured vowel,
+    and non-final syllables end with that vowel.  The final syllable retains
+    the word release so a genuine held ending still fills naturally.
+
+    This path is available only for an attached IPA alignment with exactly one
+    measured nucleus per textual syllable.  Orthographic and weak fallback
+    splits retain the established contiguous geometry.
+    """
+    phonemes = word.get("phonemes") or word.get("syllable_phonemes")
+    phone_confidence = float(word.get(
+        "phoneme_confidence", word.get("syllable_phoneme_confidence", 0.0)))
+    if (not isinstance(phonemes, list) or len(parts) < 2
+            or phone_confidence < 0.25):
+        return None
+    nuclei = [phone for phone in phonemes
+              if _is_vowel_phone(str(phone.get("phone", "")))]
+    if len(nuclei) != len(parts):
+        return None
+    result = []
+    previous_end = start
+    for index, (part, nucleus) in enumerate(zip(parts, nuclei)):
+        nucleus_start = max(start, min(end, float(nucleus["start"])))
+        nucleus_end = max(nucleus_start, min(end, float(nucleus["end"])))
+        part_start = start if index == 0 else nucleus_start
+        part_end = end if index == len(parts) - 1 else nucleus_end
+        # Frame-level vowel spans below 45 ms are too unstable for readable
+        # Stage geometry. Fall back atomically rather than mixing window types
+        # inside one word.
+        if (part_end - part_start < 0.045
+                or part_start < previous_end - 0.001):
+            return None
+        result.append({
+            "text": part,
+            "start": round(part_start, 3),
+            "end": round(part_end, 3),
+            "confidence": round(min(confidence, max(
+                0.25, phone_confidence)), 2),
+            "index": index,
+            "boundary_source": "phoneme-vowel-articulation-window",
+        })
+        previous_end = part_end
+    if not any(float(right["start"]) - float(left["end"]) >= 0.025
+               for left, right in zip(result, result[1:])):
+        # Connected legato gains nothing from a special representation and is
+        # better served by the mature shared-boundary path.
+        return None
+    return result
 
 
 def _enforce_minimum_syllable_geometry(
@@ -431,7 +505,11 @@ def _weight(part: str) -> float:
 
 
 def _confidence(parts: list[str], duration: float, dictionary_used: bool) -> float:
-    value = 0.84 if dictionary_used and len(parts) > 1 else 0.58
+    # A dictionary-backed single nucleus is still a useful karaoke unit: its
+    # acoustic word window tells the Stage when to attack and how long to hold.
+    # The old sub-threshold value made every one-syllable EasyAligner word fall
+    # back to a continuous whole-word sweep.
+    value = 0.84 if dictionary_used else 0.58
     if duration < 0.09 * len(parts):
         value -= 0.2
     return round(max(0.25, min(0.9, value)), 2)

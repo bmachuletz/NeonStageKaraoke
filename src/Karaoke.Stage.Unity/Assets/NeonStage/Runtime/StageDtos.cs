@@ -40,6 +40,13 @@ public sealed class StemAvailabilityDto
 }
 
 [Serializable]
+public sealed class SongVideoInfoDto
+{
+    public int offsetMilliseconds;
+    public string updatedAt = "";
+}
+
+[Serializable]
 public sealed class KaraokeEventDto
 {
     public string id = "";
@@ -98,6 +105,10 @@ public sealed class SongVisualizationDto
 public sealed class VisualizationFrameDto
 {
     public double timeSeconds;
+    public double energy;
+    public double bass;
+    public double mid;
+    public double high;
     public bool beat;
 }
 
@@ -171,6 +182,8 @@ public sealed class StageTimingSampleDto
     public int dspBufferLength;
     public int dspBufferCount;
     public int outputSampleRate;
+    public double estimatedOutputLatencySeconds;
+    public double appliedOutputLatencySeconds;
     public bool playing;
 }
 }

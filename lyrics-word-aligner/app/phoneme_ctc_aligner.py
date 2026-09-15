@@ -384,6 +384,7 @@ def annotate_phoneme_boundaries(
         "moved_phone_onsets": 0, "lines": [],
     }
     diagnostics = []
+    protected_reflow_lines = 0
     repetition_path_summary = {
         "method": "continuous-phrase-ipa-repetition-v1",
         "attempted_blocks": 0,
@@ -398,6 +399,9 @@ def annotate_phoneme_boundaries(
     }
     try:
         for line_index, line in candidates:
+            protected_reflow = any(
+                word.get("stage_vocal_silent_prefix_original_start") is not None
+                for word in line.words)
             original_start = float(line.words[0]["start"])
             original_end = float(line.words[-1]["end"])
             start = max(0.0, original_start - padding)
@@ -420,6 +424,21 @@ def annotate_phoneme_boundaries(
                 audio, aligned, voicing_track, mode=micro_boundary_mode,
                 search_radius=micro_search_radius,
                 minimum_path_improvement=micro_minimum_path_improvement)
+            if protected_reflow:
+                # The reflow owns word geometry, but its local IPA pass still
+                # contains useful vowel nuclei for crisp syllable windows.
+                # Keep only those read-only child hints; none of the word or
+                # line mutation paths below may touch this protected line.
+                attached_syllable_paths = _attach_syllable_only_phone_paths(
+                    line, aligned)
+                syllable_only_phone_paths += attached_syllable_paths
+                protected_reflow_lines += 1
+                diagnostics.append({
+                    "line": line_index + 1,
+                    "status": "protected-release-preserving-reflow",
+                    "syllable_only_phone_paths": attached_syllable_paths,
+                })
+                continue
             delayed_first_word_repair = _repair_delayed_first_word_onset(
                 audio, line, aligned)
             if delayed_first_word_repair is not None:
@@ -457,6 +476,8 @@ def annotate_phoneme_boundaries(
                 line_index, line, aligned, stem_contrast_candidates or [])
             stem_contrast_release_repairs += len(stem_release_repairs)
             duration_inversion_repairs = _repair_local_duration_inversion_pair(
+                line, aligned)
+            duration_inversion_repairs += _repair_absorbed_multisyllable_successor(
                 line, aligned)
             local_duration_inversion_repairs += len(duration_inversion_repairs)
             local_duration_inversion_words += sum(
@@ -672,6 +693,7 @@ def annotate_phoneme_boundaries(
         "isolated_internal_onset_repairs": isolated_internal_onset_repairs,
         "coherent_late_phrase_repairs": coherent_late_phrase_repairs,
         "syllable_only_phone_paths": syllable_only_phone_paths,
+        "protected_release_preserving_reflow_lines": protected_reflow_lines,
         "micro_boundary_refinement": micro_summary,
         "minimum_confidence": minimum_confidence,
         "promotion_minimum_confidence": promotion_minimum_confidence,
@@ -1469,6 +1491,117 @@ def _repair_local_duration_inversion_pair(
             "source": "local-ipa-duration-conservation-v1",
         })
         occupied.update((index, index + 1))
+    return repairs
+
+
+def _repair_absorbed_multisyllable_successor(
+        line, aligned: list[dict], *,
+        minimum_left_excess: float = 0.35,
+        minimum_right_deficit: float = 0.45,
+        minimum_current_gap: float = 0.12,
+        maximum_current_gap: float = 0.45,
+        maximum_candidate_blank: float = 0.12,
+        maximum_outer_span_delta: float = 0.14,
+        minimum_following_anchors: int = 3) -> list[dict]:
+    """Restore a long successor whose opening syllable was given to its left.
+
+    The characteristic failure is not a normal shared-boundary inversion: a
+    short predecessor owns the beginning of a multi-syllable word *and* the
+    baseline leaves a false gap before that successor.  A complete local IPA
+    path can recover the two independent word windows, but only when their
+    outer span is already anchored, the successor contains several measured
+    vowel nuclei, and several following words confirm the same local path.
+
+    Keeping the IPA blank instead of joining the words is intentional.  It
+    preserves clipped punk/rock articulation and lets syllable derivation
+    expose the internal rests instead of painting through them.
+    """
+    if len(line.words) != len(aligned) or len(aligned) < 5:
+        return []
+    repairs: list[dict] = []
+    occupied: set[int] = set()
+    for index in range(len(aligned) - 1):
+        if index in occupied or index + 1 in occupied:
+            continue
+        left, right = line.words[index:index + 2]
+        ipa_left, ipa_right = aligned[index:index + 2]
+        left_start = float(left["start"])
+        left_end = float(left["end"])
+        right_start = float(right["start"])
+        right_end = float(right["end"])
+        ipa_left_start = float(ipa_left["start"])
+        ipa_left_end = float(ipa_left["end"])
+        ipa_right_start = float(ipa_right["start"])
+        ipa_right_end = float(ipa_right["end"])
+        current_gap = right_start - left_end
+        candidate_blank = ipa_right_start - ipa_left_end
+        left_excess = ((left_end - left_start)
+                       - (ipa_left_end - ipa_left_start))
+        right_deficit = ((ipa_right_end - ipa_right_start)
+                         - (right_end - right_start))
+        current_span = right_end - left_start
+        candidate_span = ipa_right_end - ipa_left_start
+        successor_nuclei = sum(
+            any(character in IPA_VOWELS
+                for character in str(phone.get("phone", "")))
+            for phone in ipa_right.get("phonemes", []))
+        following_anchors = sum(
+            float(candidate.get("confidence", 0.0)) >= 0.25
+            and abs(float(candidate["start"]) - float(word["start"])) <= 0.15
+            and abs(float(candidate["end"]) - float(word["end"])) <= 0.15
+            for word, candidate in zip(
+                line.words[index + 2:], aligned[index + 2:]))
+        if (left_excess < minimum_left_excess
+                or right_deficit < minimum_right_deficit
+                or not minimum_current_gap <= current_gap <= maximum_current_gap
+                or not 0.0 <= candidate_blank <= maximum_candidate_blank
+                or abs(current_span - candidate_span) > maximum_outer_span_delta
+                or abs((left_excess + current_gap) - right_deficit) > 0.20
+                or abs(ipa_left_start - left_start) > 0.08
+                or abs(ipa_right_end - right_end) > 0.14
+                or float(ipa_right.get("confidence", 0.0)) < 0.30
+                or successor_nuclei < 2
+                or following_anchors < minimum_following_anchors
+                or ipa_left_end - ipa_left_start < 0.06
+                or ipa_right_end - ipa_right_start < 0.18):
+            continue
+        old = {
+            "left_start": left_start, "left_end": left_end,
+            "right_start": right_start, "right_end": right_end,
+        }
+        for word, candidate in ((left, ipa_left), (right, ipa_right)):
+            word["absorbed_successor_original_start"] = round(
+                float(word["start"]), 3)
+            word["absorbed_successor_original_end"] = round(
+                float(word["end"]), 3)
+            word["start"] = round(float(candidate["start"]), 3)
+            word["end"] = round(float(candidate["end"]), 3)
+            word["timing_source"] = "ipa-absorbed-multisyllable-successor"
+            word["phonemes"] = [dict(phone)
+                                for phone in candidate.get("phonemes", [])]
+            word["phoneme_source"] = (
+                "xlsr-espeak-ctc-absorbed-multisyllable-successor")
+            word["phoneme_confidence"] = candidate.get("confidence")
+            word["phoneme_word_start_candidate"] = round(
+                float(candidate["start"]), 3)
+            word["phoneme_word_end_candidate"] = round(
+                float(candidate["end"]), 3)
+        repairs.append({
+            "word_indices": [index, index + 1],
+            "words": [left.get("word", ""), right.get("word", "")],
+            "old": {key: round(value, 3) for key, value in old.items()},
+            "new_left_start": round(ipa_left_start, 3),
+            "new_left_end": round(ipa_left_end, 3),
+            "new_right_start": round(ipa_right_start, 3),
+            "new_right_end": round(ipa_right_end, 3),
+            "preserved_blank_ms": round(candidate_blank * 1000, 1),
+            "following_anchors": following_anchors,
+            "successor_vowel_nuclei": successor_nuclei,
+            "source": "local-ipa-absorbed-multisyllable-successor-v1",
+        })
+        occupied.update((index, index + 1))
+    if repairs and line.words:
+        line.timestamp = float(line.words[0]["start"])
     return repairs
 
 
@@ -2959,6 +3092,7 @@ def audit_final_word_boundaries(lines: Iterable, *, tolerance: float = 0.002) ->
                 or word.get("stage_vocal_pickup_reflow")
                 or word.get("source_boundary_trim_ms") is not None
                 or word.get("nonlexical_vocalization_trim_ms") is not None
+                or word.get("stage_vocal_silent_prefix_original_start") is not None
                 or word.get("timing_source") == "overlap-display-lane-fallback")
             if (not invalid_geometry and proof_matches
                     and bool(proof.get("verified"))):

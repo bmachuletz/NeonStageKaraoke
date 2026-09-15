@@ -96,7 +96,9 @@ internal static class EditorLyricsRuntimeMapper
             var start = TimeOrNull(note, "start");
             var end = TimeOrNull(note, "end");
             if (start is null || end is null || end <= start) continue;
-            result.Add(new(start.Value, end.Value, (int)Number(note, "midi"), Number(note, "confidence")));
+            var confidence = Number(note, "confidence");
+            if (confidence <= 0) confidence = Number(note, "amplitude");
+            result.Add(new(start.Value, end.Value, (int)Number(note, "midi"), confidence));
         }
         return result.Count == 0 ? null : result;
     }

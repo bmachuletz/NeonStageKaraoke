@@ -4,6 +4,7 @@ using UnityEngine.Networking;
 using UnityEngine.UI;
 using TMPro;
 using System.Collections.Generic;
+using NeonStage.Timing;
 
 namespace NeonStage.Stage
 {
@@ -33,6 +34,7 @@ public sealed class StageVisualView
     private readonly TextMeshProUGUI _flyingTitle;
     private readonly TextMeshProUGUI _flyingArtist;
     private readonly List<TitleFragment> _titleFragments = new();
+    private bool _videoPerformanceMode;
     public bool IsSongTransitioning => _promoting;
     public float AudioImpact => Mathf.Max(_bass, _pulse);
 
@@ -123,6 +125,17 @@ public sealed class StageVisualView
         if (previous != null) Object.Destroy(previous);
     }
 
+    public void SetVideoPerformanceMode(bool active)
+    {
+        if (_videoPerformanceMode == active) return;
+        _videoPerformanceMode = active;
+        // Deactivating the graphic also removes the full-screen shader pass;
+        // merely covering it with the video would still render it underneath.
+        _background.gameObject.SetActive(!active);
+        if (!active) return;
+        _energy = _bass = _mid = _treble = _pulse = 0;
+    }
+
     public async Task LoadQrAsync(string server, bool force = false)
     {
         if (_qrLoading || (_qrLoaded && !force)) return;
@@ -196,39 +209,56 @@ public sealed class StageVisualView
         _cover.gameObject.SetActive(_cover.texture != null);
     }
 
-    public void Update(StageAudioEngine audio)
+    public void Update(StageAudioEngine audio, StageClockFrame stageTime,
+        StageAudioAnalysisFrame? offlineAnalysis = null)
     {
-        if (!_qrLoaded && !_qrLoading && !string.IsNullOrWhiteSpace(_qrServer) && Time.unscaledTime >= _nextQrAttempt)
+        if (!_videoPerformanceMode && !_qrLoaded && !_qrLoading &&
+            !string.IsNullOrWhiteSpace(_qrServer) && Time.unscaledTime >= _nextQrAttempt)
             _ = LoadQrAsync(_qrServer);
-        audio.GetSpectrum(_spectrum);
-        var energy = 0f; var bass = 0f; var mid = 0f; var treble = 0f;
-        for (var i = 0; i < _spectrum.Length; i++)
+        if (!_videoPerformanceMode)
         {
-            energy += _spectrum[i];
-            if (i < 10) bass += _spectrum[i];
-            else if (i < 48) mid += _spectrum[i];
-            else treble += _spectrum[i];
+            if (offlineAnalysis is { } analyzed)
+            {
+                _energy = (float)analyzed.Energy;
+                _bass = (float)analyzed.Bass;
+                _mid = (float)analyzed.Mid;
+                _treble = (float)analyzed.High;
+                _pulse = (float)analyzed.BeatPulse;
+            }
+            else
+            {
+                audio.GetSpectrum(_spectrum);
+                var energy = 0f; var bass = 0f; var mid = 0f; var treble = 0f;
+                for (var i = 0; i < _spectrum.Length; i++)
+                {
+                    energy += _spectrum[i];
+                    if (i < 10) bass += _spectrum[i];
+                    else if (i < 48) mid += _spectrum[i];
+                    else treble += _spectrum[i];
+                }
+                var delta = (float)stageTime.DeltaSeconds;
+                _energyPeak = Mathf.Max(energy, _energyPeak * Mathf.Exp(-delta * .55f));
+                _bassPeak = Mathf.Max(bass, _bassPeak * Mathf.Exp(-delta * .7f));
+                _midPeak = Mathf.Max(mid, _midPeak * Mathf.Exp(-delta * .75f));
+                _treblePeak = Mathf.Max(treble, _treblePeak * Mathf.Exp(-delta * .8f));
+                var normalizedEnergy = Mathf.Clamp01(energy / Mathf.Max(.0001f, _energyPeak));
+                var newBass = Mathf.Clamp01(bass / Mathf.Max(.0001f, _bassPeak));
+                var newMid = Mathf.Clamp01(mid / Mathf.Max(.0001f, _midPeak));
+                var newTreble = Mathf.Clamp01(treble / Mathf.Max(.0001f, _treblePeak));
+                _energy = Mathf.Lerp(_energy, normalizedEnergy, delta * 6);
+                _pulse = Mathf.Max(_pulse * Mathf.Exp(-delta * 5.5f), Mathf.Max(0, newBass - _bass) * 7);
+                _bass = Mathf.Lerp(_bass, newBass, delta * 7);
+                _mid = Mathf.Lerp(_mid, newMid, delta * 7);
+                _treble = Mathf.Lerp(_treble, newTreble, delta * 8);
+            }
+            SetShaderFloat("_Energy", _energy);
+            SetShaderFloat("_Bass", _bass);
+            SetShaderFloat("_Mid", _mid);
+            SetShaderFloat("_Treble", _treble);
+            SetShaderFloat("_Pulse", _pulse);
+            SetShaderFloat("_SongTime", (float)stageTime.PositionSeconds);
+            SetShaderFloat("_IsPlaying", stageTime.IsPlaying ? 1f : 0f);
         }
-        _energyPeak = Mathf.Max(energy, _energyPeak * Mathf.Exp(-Time.unscaledDeltaTime * .55f));
-        _bassPeak = Mathf.Max(bass, _bassPeak * Mathf.Exp(-Time.unscaledDeltaTime * .7f));
-        _midPeak = Mathf.Max(mid, _midPeak * Mathf.Exp(-Time.unscaledDeltaTime * .75f));
-        _treblePeak = Mathf.Max(treble, _treblePeak * Mathf.Exp(-Time.unscaledDeltaTime * .8f));
-        var normalizedEnergy = Mathf.Clamp01(energy / Mathf.Max(.0001f, _energyPeak));
-        var newBass = Mathf.Clamp01(bass / Mathf.Max(.0001f, _bassPeak));
-        var newMid = Mathf.Clamp01(mid / Mathf.Max(.0001f, _midPeak));
-        var newTreble = Mathf.Clamp01(treble / Mathf.Max(.0001f, _treblePeak));
-        _energy = Mathf.Lerp(_energy, normalizedEnergy, Time.unscaledDeltaTime * 6);
-        _pulse = Mathf.Max(_pulse * Mathf.Exp(-Time.unscaledDeltaTime * 5.5f), Mathf.Max(0, newBass - _bass) * 7);
-        _bass = Mathf.Lerp(_bass, newBass, Time.unscaledDeltaTime * 7);
-        _mid = Mathf.Lerp(_mid, newMid, Time.unscaledDeltaTime * 7);
-        _treble = Mathf.Lerp(_treble, newTreble, Time.unscaledDeltaTime * 8);
-        SetShaderFloat("_Energy", _energy);
-        SetShaderFloat("_Bass", _bass);
-        SetShaderFloat("_Mid", _mid);
-        SetShaderFloat("_Treble", _treble);
-        SetShaderFloat("_Pulse", _pulse);
-        SetShaderFloat("_SongTime", (float)audio.PositionSeconds);
-        SetShaderFloat("_IsPlaying", audio.IsPlaying ? 1f : 0f);
         if (_promoting)
         {
             var t = Mathf.Clamp01((Time.unscaledTime - _promotionStarted) / 1.35f);

@@ -9,13 +9,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
-from .alignment_profiles import ALIGNMENT_PROFILES
 from .vocal_start import detect_first_vocal
 
 OUTPUT_ROOT = Path("/data/output")
 STATIC_ROOT = Path(__file__).parent / "static"
 _LOCK = threading.Lock()
 _PROCESS_LOCK = threading.Lock()
+_JOB_LOCK = threading.Lock()
+_JOB_CANCELLATIONS: dict[str, threading.Event] = {}
+_JOB_PROCESSES: dict[str, subprocess.Popen] = {}
 
 
 @asynccontextmanager
@@ -79,38 +81,116 @@ def _recover_interrupted_jobs() -> dict:
     return {"checked": checked, "recovered": len(recovered), "jobs": recovered}
 
 
+def _register_job(job_id: str) -> threading.Event:
+    with _JOB_LOCK:
+        cancellation = threading.Event()
+        _JOB_CANCELLATIONS[job_id] = cancellation
+        return cancellation
+
+
+def _unregister_job(job_id: str) -> None:
+    with _JOB_LOCK:
+        _JOB_PROCESSES.pop(job_id, None)
+        _JOB_CANCELLATIONS.pop(job_id, None)
+
+
+def _is_cancelled(job_id: str) -> bool:
+    with _JOB_LOCK:
+        cancellation = _JOB_CANCELLATIONS.get(job_id)
+        return cancellation is not None and cancellation.is_set()
+
+
+def _cancel_status(job_dir: Path) -> dict:
+    return _write_status(
+        job_dir,
+        state="cancelled",
+        percent=100,
+        message="Job wurde abgebrochen.",
+        error="job-cancelled",
+    )
+
+
+def _terminate_process(process: subprocess.Popen, timeout: float = 5.0) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _run_worker_process(job_id: str, command: list[str]) -> int | None:
+    if _is_cancelled(job_id):
+        return None
+    process = subprocess.Popen(command)
+    with _JOB_LOCK:
+        cancellation = _JOB_CANCELLATIONS.get(job_id)
+        _JOB_PROCESSES[job_id] = process
+        should_terminate = cancellation is not None and cancellation.is_set()
+    if should_terminate:
+        _terminate_process(process)
+    return_code = process.wait()
+    with _JOB_LOCK:
+        if _JOB_PROCESSES.get(job_id) is process:
+            _JOB_PROCESSES.pop(job_id, None)
+    return return_code
+
+
+def _cancel_job(job_id: str) -> dict | None:
+    job_dir = OUTPUT_ROOT / Path(job_id).name
+    path = _status_path(job_dir)
+    if not path.is_file():
+        return None
+    try:
+        status = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        status = {}
+    if status.get("state") not in {"queued", "processing"}:
+        return status
+    with _JOB_LOCK:
+        cancellation = _JOB_CANCELLATIONS.setdefault(job_dir.name, threading.Event())
+        cancellation.set()
+        process = _JOB_PROCESSES.get(job_dir.name)
+    cancelled = _cancel_status(job_dir)
+    if process is not None:
+        _terminate_process(process)
+    return cancelled
+
+
 def _process_job(job_id: str, audio_path: Path, lrc_path: Path, language: str,
-                 separate: bool, device: str, alignment_profile: str = "standard",
+                 separate: bool, device: str,
                  provided_vocals: Path | None = None,
-                 provided_instrumental: Path | None = None,
-                 baseline_report: Path | None = None) -> None:
+                 provided_instrumental: Path | None = None) -> None:
     job_dir = OUTPUT_ROOT / job_id
     try:
         _write_status(job_dir, state="queued", percent=1, message="Job wartet auf den freien Verarbeitungsslot")
         with _PROCESS_LOCK:
+            if _is_cancelled(job_id):
+                _cancel_status(job_dir)
+                return
             _write_status(job_dir, state="processing", percent=2, message="Verarbeitung wird gestartet")
-
-            completed = subprocess.run(
-                _worker_command(
-                    job_id, audio_path, lrc_path, job_dir, language, separate, device,
-                    provided_vocals, provided_instrumental, alignment_profile,
-                    baseline_report),
-                check=False,
-            )
+            return_code = _run_worker_process(job_id, _worker_command(
+                job_id, audio_path, lrc_path, job_dir, language, separate, device,
+                provided_vocals, provided_instrumental))
             status = json.loads(_status_path(job_dir).read_text(encoding="utf-8"))
-            if completed.returncode != 0 and status.get("state") != "failed":
+            if return_code is not None and return_code != 0 and status.get("state") not in {"failed", "cancelled"}:
                 _write_status(job_dir, state="failed", percent=100,
-                              message=f"Aligner-Worker endete mit Code {completed.returncode}")
+                              message=f"Aligner-Worker endete mit Code {return_code}")
     except Exception as exc:
-        _write_status(job_dir, state="failed", percent=100, message=str(exc), error=str(exc))
+        if _is_cancelled(job_id):
+            _cancel_status(job_dir)
+        else:
+            _write_status(job_dir, state="failed", percent=100, message=str(exc), error=str(exc))
+    finally:
+        _unregister_job(job_id)
 
 
 def _worker_command(job_id: str, audio_path: Path, lrc_path: Path, job_dir: Path,
                     language: str, separate: bool, device: str,
                     provided_vocals: Path | None = None,
-                    provided_instrumental: Path | None = None,
-                    alignment_profile: str = "standard",
-                    baseline_report: Path | None = None) -> list[str]:
+                    provided_instrumental: Path | None = None) -> list[str]:
     command = [
         sys.executable, "-m", "app.job_worker",
         "--job-id", job_id,
@@ -119,7 +199,6 @@ def _worker_command(job_id: str, audio_path: Path, lrc_path: Path, job_dir: Path
         "--output", str(job_dir),
         "--language", language,
         "--device", device,
-        "--alignment-profile", alignment_profile,
     ]
     if separate:
         command.append("--separate")
@@ -127,8 +206,6 @@ def _worker_command(job_id: str, audio_path: Path, lrc_path: Path, job_dir: Path
         command.extend(["--provided-vocals", str(provided_vocals)])
     if provided_instrumental is not None:
         command.extend(["--provided-instrumental", str(provided_instrumental)])
-    if baseline_report is not None:
-        command.extend(["--baseline-report", str(baseline_report)])
     return command
 
 
@@ -155,20 +232,25 @@ def _process_transcription_job(job_id: str, audio_path: Path, language: str,
         _write_status(job_dir, state="queued", percent=1,
                       message="Volltext-Job wartet auf den freien GPU-Slot")
         with _PROCESS_LOCK:
+            if _is_cancelled(job_id):
+                _cancel_status(job_dir)
+                return
             _write_status(job_dir, state="processing", percent=2,
                           message="Isolierter Volltext-Worker wird gestartet")
-            completed = subprocess.run(
-                _transcription_worker_command(
-                    job_id, audio_path, job_dir, language, separate, device,
-                    canonical_path),
-                check=False,
-            )
+            return_code = _run_worker_process(job_id, _transcription_worker_command(
+                job_id, audio_path, job_dir, language, separate, device,
+                canonical_path))
             status = json.loads(_status_path(job_dir).read_text(encoding="utf-8"))
-            if completed.returncode != 0 and status.get("state") != "failed":
+            if return_code is not None and return_code != 0 and status.get("state") not in {"failed", "cancelled"}:
                 _write_status(job_dir, state="failed", percent=100,
-                              message=f"Transkriptions-Worker endete mit Code {completed.returncode}")
+                              message=f"Transkriptions-Worker endete mit Code {return_code}")
     except Exception as exc:
-        _write_status(job_dir, state="failed", percent=100, message=str(exc), error=str(exc))
+        if _is_cancelled(job_id):
+            _cancel_status(job_dir)
+        else:
+            _write_status(job_dir, state="failed", percent=100, message=str(exc), error=str(exc))
+    finally:
+        _unregister_job(job_id)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -188,17 +270,12 @@ def create_job(
     lyrics: UploadFile = File(...),
     vocals: UploadFile | None = File(None),
     instrumental: UploadFile | None = File(None),
-    baseline_report: UploadFile | None = File(None),
     language: str = Form("de"),
     separate: bool = Form(True),
     alignment_device: str = Form("cuda"),
-    alignment_profile: str = Form("standard"),
 ):
     if alignment_device not in {"cpu", "cuda", "auto"}:
         raise HTTPException(400, "alignment_device muss cpu, cuda oder auto sein")
-    if alignment_profile not in ALIGNMENT_PROFILES:
-        raise HTTPException(
-            400, "unbekanntes alignment_profile")
     if not (lyrics.filename or "").lower().endswith(".lrc"):
         raise HTTPException(400, "Die Lyrics-Datei muss eine .lrc-Datei sein")
     if (vocals is None) != (instrumental is None):
@@ -206,9 +283,6 @@ def create_job(
             400, "Vorhandene Vocal- und Instrumentalspur müssen gemeinsam hochgeladen werden")
     if vocals is not None and not separate:
         raise HTTPException(400, "Vorhandene Stems erfordern separate=true")
-    if alignment_profile == "basic-pitch-postprocess" and (
-            vocals is None or instrumental is None or baseline_report is None):
-        raise HTTPException(400, "Basic-Pitch-Postprocessing benötigt Stems und Baseline-Report")
 
     job_id = next(tempfile._get_candidate_names())
     job_dir = OUTPUT_ROOT / job_id
@@ -230,12 +304,6 @@ def create_job(
             shutil.copyfileobj(vocals.file, target)
         with provided_instrumental.open("wb") as target:
             shutil.copyfileobj(instrumental.file, target)
-    saved_baseline_report = None
-    if baseline_report is not None:
-        saved_baseline_report = job_dir / "baseline.alignment.json"
-        with saved_baseline_report.open("wb") as target:
-            shutil.copyfileobj(baseline_report.file, target)
-
     status = {
         "job_id": job_id,
         "state": "queued",
@@ -245,13 +313,13 @@ def create_job(
         "lyrics_name": lrc_path.name,
         "audio_reference": ("provided-library-stems"
                             if provided_vocals is not None else "new-separation"),
-        "alignment_profile": alignment_profile,
+        "alignment_profile": "easyaligner-global",
     }
     _write_status(job_dir, **status)
+    _register_job(job_id)
     background_tasks.add_task(
         _process_job, job_id, audio_path, lrc_path, language, separate,
-        alignment_device, alignment_profile, provided_vocals, provided_instrumental,
-        saved_baseline_report)
+        alignment_device, provided_vocals, provided_instrumental)
     return status
 
 
@@ -288,6 +356,7 @@ def create_transcription_job(
         "canonical_lyrics_name": Path(lyrics.filename).name if lyrics and lyrics.filename else None,
     }
     _write_status(job_dir, **status)
+    _register_job(job_id)
     background_tasks.add_task(
         _process_transcription_job, job_id, audio_path, language, separate,
         alignment_device, canonical_path)
@@ -301,6 +370,33 @@ def job_status(job_id: str):
     if not path.is_file():
         raise HTTPException(404, "Job nicht gefunden")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@app.delete("/api/jobs/{job_id}")
+def cancel_job(job_id: str):
+    status = _cancel_job(Path(job_id).name)
+    if status is None:
+        raise HTTPException(404, "Job nicht gefunden")
+    if status.get("state") != "cancelled":
+        raise HTTPException(409, "Nur wartende oder laufende Jobs können abgebrochen werden")
+    return status
+
+
+@app.post("/api/jobs/cancel-all")
+def cancel_all_jobs():
+    candidates: set[str] = set()
+    with _JOB_LOCK:
+        candidates.update(_JOB_CANCELLATIONS)
+    if OUTPUT_ROOT.is_dir():
+        for job_dir in OUTPUT_ROOT.iterdir():
+            if job_dir.is_dir():
+                candidates.add(job_dir.name)
+    cancelled = []
+    for job_id in sorted(candidates):
+        status = _cancel_job(job_id)
+        if status is not None and status.get("state") == "cancelled":
+            cancelled.append(job_id)
+    return {"cancelled": len(cancelled), "jobs": cancelled}
 
 
 # Bestehende synchrone API bleibt kompatibel.

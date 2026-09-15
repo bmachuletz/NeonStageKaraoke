@@ -7,11 +7,17 @@ from unittest.mock import patch
 import numpy as np
 
 from app.analysis_stems import build_analysis_candidates
-from app.separator import StemPaths
+from app.separator import StemPaths, _stem_role
 from app.stem_roles import SeparationConfig, StemPurpose, separator_family
 
 
 class StemRoleTests(unittest.TestCase):
+    def test_separator_role_ignores_instrumental_in_input_filename(self):
+        self.assertEqual("vocals", _stem_role(Path(
+            "song.instrumental_(Vocals)_mel_band_roformer.wav")))
+        self.assertEqual("instrumental", _stem_role(Path(
+            "song.instrumental_(Instrumental)_mel_band_roformer.wav")))
+
     def test_analysis_candidate_directory_exists_before_first_conversion(self):
         with tempfile.TemporaryDirectory() as root:
             temporary_directory = Path(root) / "new-analysis-directory"

@@ -1,5 +1,25 @@
 # Actual Tasks
 
+> Historical engineering log. The multi-profile, Basic Pitch, SOFA, MMS, and
+> MedleyVox experiments described below have been superseded and removed. The
+> current product path is EasyAligner plus the optional Full transcript source;
+> see `README.md` and `lyrics-word-aligner/README.md` for the maintained state.
+
+## Current status 2026-09-15
+
+- EasyAligner is the single forced-alignment path for imports, selected songs,
+  and the complete library.
+- Full transcript is a virtual lyrics source and feeds its result through the
+  same EasyAligner path.
+- German and English use separate global CTC models. Human-readable and
+  technical normalized lyrics remain separately inspectable.
+- Suspicious chorus/backing passages receive a bounded independent all-vocals
+  recovery pass; only stronger local evidence is accepted.
+- Enhanced LRC import, cancellation, windowed Editor-to-Stage testing, song
+  video playback, and deterministic MP4 export are implemented.
+- Legacy experimental alignment services, profiles, vendored SOFA sources, and
+  their tests/configuration have been removed.
+
 ## Aktiver Auftrag: Alignment-Zeilenübergänge verbessern
 
 ### Ziel
@@ -482,3 +502,167 @@ Satzanfänge sollen nicht mehr durch eine falsch erkannte, zu lange Endsilbe der
   und wurde daher zunächst nicht aktiviert.
 - `vocals_mel_band_roformer.ckpt` bleibt zunächst deaktiviert, weil mit dem
   Standard-Mel-Band-Modell bereits eine ähnliche Familie läuft.
+
+## Nachkontrolle Version 16 / 17 2026-08-31
+
+### Versionserklärung
+
+- Der Forschungs-Schattenlauf erzeugt nur **eine** neue Version.
+- Revision 17 (Job `dual-01a0597f…`) ist der echte Schattenlauf.
+- Revision 16 ist eine Editor-Folgerevision der alten InReview-Basis aus Job
+  `dual-01a05675…`, nicht ein zweiter Schattenlauf.
+- Revision 16 war dadurch zeitweise neuer als der noch laufende Schattenlauf;
+  nach Abschluss wurde Revision 17 als `Generated` ergänzt.
+
+### Pitch-Befund
+
+- Revision 16 enthält 9.716 Pitch-Noten im Dokument.
+- Der Editor zeichnet Pitch jedoch aus `alignmentReportJson`; dieser Report ging
+  beim Folgespeichern verloren, weshalb Version 16 scheinbar „keinen Pitch“ hatte.
+- `UpdateLyricsVersionRequest` transportiert jetzt den Alignment-Report mit.
+- Beim Speichern einer Folgerevision bleibt bzw. wird die Provenienz erhalten.
+
+### Version-17-Befund
+
+- Compressed-Word-Repair hat Zeile 1 diesmal **nicht** verändert.
+- Der gute Reflow war im `pre_verification_stage_vocal_boundaries`-Report korrekt.
+- Die anschließende Phoneme-CTC-Verifikation sah nur
+  `mean_confidence=0.0585`, schrieb die Zeile aber trotzdem in die alte,
+  zusammengepresste Geometrie zurück.
+- Zeilen mit `stage_vocal_silent_prefix_original_start` werden jetzt von der
+  IPA-Verifikation geschützt und nur als
+  `protected-release-preserving-reflow` diagnostiziert.
+- Der finale Audit markiert diese Reflow-Zeilen als `hard-constrained`.
+
+### Validierung
+
+- `pytest lyrics-word-aligner/tests/test_phoneme_ctc_aligner.py`: 60 Tests.
+- Zielkombination (`phoneme_ctc`, `collapsed_lines`, `vocal_boundaries`):
+  102 Tests erfolgreich.
+- Server- und Desktop-Build erfolgreich.
+- Playback-Integrationstests erfolgreich.
+
+### Noch offen
+
+## Abschluss der Korrektur 2026-09-01
+
+### Reflow über mehrere Vocal-Inseln
+
+- Version 18 presste Zeile 1 in die erste Vocal-Insel, obwohl die Phrase aus
+  `44.63–45.51`, `45.82–46.62` und `46.95–48.99` besteht.
+- `_recover_silently_placed_line` sammelt jetzt alle überlappenden
+  Stage-Vocal-Inseln der Phrase und nutzt deren letztes Ende als gemessenes
+  Release.
+- Dadurch wird der Release-erhaltende Reflow auch ohne direkte
+  `vocal_audio`-Referenz über die komplette Phrase verteilt.
+- Neuer Regressionstest:
+  `test_release_preserving_reflow_uses_all_islands_of_the_phrase`.
+
+### Doppelte Schattenlauf-Versionen
+
+- Reine Forschungs-Schattenläufe speichern den lokalen Editorstand jetzt nicht
+  mehr automatisch vor dem Start.
+- Nur Varianten mit Editor-Basis (`IncludeEditorBasis`) oder
+  Editor-Guidance (`IncludeEditorGuidance`) erzeugen vorher einen Snapshot.
+- Damit erzeugt ein reiner Schattenlauf wieder genau eine neue Version.
+
+### Alignment-Report-Provenienz
+
+- `UpdateLyricsVersionRequest` transportiert den technischen Alignment-Report.
+- Beim Folgespeichern bleibt der vorhandene Report erhalten; ein explizit
+  mitgesendeter Report ersetzt ihn.
+- Dadurch zeigt der Editor Pitch weiterhin an, auch wenn man eine
+  Alignment-Version als Editor-Draft weiterbearbeitet.
+
+### Behobene Laufzeitfehler
+
+- `Object of type bool is not JSON serializable`:
+  `job_worker.py` serialisiert Status jetzt mit `default=str`.
+- `'AnalysisCandidates' object has no attribute 'pairs'`:
+  Pipelinezugriffe verwenden jetzt das tatsächliche Feld `stem_pairs`.
+- Duplizierte Report-Validierung in `LyricsVersionRepository` entfernt.
+
+### Validierung
+
+- `tests/test_vocal_boundaries.py`: 23 Tests erfolgreich.
+- Zielkombination `vocal_boundaries`, `line_transitions`,
+  `basic_pitch_evidence`, `pipeline_phase_order`: 65 Tests erfolgreich.
+- Nach Pipeline-Fix erneut `pipeline_phase_order` und `vocal_boundaries`:
+  38 Tests erfolgreich.
+- Server-, Contracts- und Desktop-Build erfolgreich, jeweils ohne Warnungen.
+- Playback-Integrationstests vollständig erfolgreich.
+- `git diff --check`: erfolgreich.
+
+### Deployment
+
+- Vor dem Neustart gab es keine aktiven/queued Aligner-Jobs.
+- Aligner- und Basic-Pitch-Images wurden neu gebaut.
+- Beide Container laufen über Compose; Health ist okay.
+- Aligner: CUDA verfügbar, 1 GPU.
+- Aktiv:
+  `BASIC_PITCH_URL=http://basic-pitch-evidence:8090`,
+  `LRC_BASIC_PITCH_ENABLED=true`,
+  `LRC_SEPARATOR_A_B_MODELS=melband_roformer_instvox_duality_v2.ckpt`.
+- Der alte manuelle Aligner-Container wurde durch den Compose-Container ersetzt.
+
+### Noch offen
+
+- Neuer reiner Forschungs-Schattenlauf für „Na gut dann nicht“:
+  - genau eine neue Version,
+  - Zeile 1 nahe Revision 12 halten,
+  - `protected_release_preserving_reflow_lines=2`,
+  - Pitch im Editor sichtbar,
+  - kein `pairs`-/JSON-Serialisierungsfehler.
+- Server ist aktuell nicht erreichbar (`127.0.0.1:5274`); vor dem Kontrolllauf
+  muss er gestartet werden. Desktop ebenfalls neu starten, damit der
+  Shadow-Save-Fix aktiv ist.
+
+## Karaoke-Artikulationsfenster 2026-09-01
+
+### Nachvollzogene Handkorrekturen bis 01:14
+
+- Verglichen wurden die automatisch erzeugte Revision 22 und die manuell
+  überarbeitete Revision 23 von „Na gut dann nicht“.
+- Bei `Ich unterschreib` hatte das kurze Wort `Ich` den Anfang des folgenden,
+  mehrsilbigen Wortes absorbiert. Der lokale IPA-Pfad lag mit
+  `49.601–51.104` bereits sehr nahe an der Handkorrektur von `unterschreib`.
+- Die manuell gesetzten Silben von `unterschreib` sind bewusst nicht
+  lückenlos: Sie markieren die hörbaren Artikulationskerne und erzeugen so das
+  gewünschte knackige Karaoke-Gefühl.
+- Die folgende Zeile begann automatisch bei `53.220`, also noch im Ausklang
+  der vorherigen Phrase. Der nächste echte Gesangseinsatz liegt bei etwa
+  `53.780`; die Handkorrektur setzte ihn bei `53.820`.
+
+### Implementierte Regeln
+
+- Eine lokale IPA-Reparatur erkennt jetzt, wenn ein kurzes Vorgängerwort Zeit
+  eines mehrsilbigen Nachfolgers absorbiert. Sie greift nur bei stabilen
+  Folgeankern, passender Gesamtdauer und ausreichend sicherem IPA-Kandidaten.
+- Mehrsilbige Wörter können ihre Silben nun aus den gemessenen Vokalkernen
+  ableiten. Reale Artikulationspausen bleiben zwischen den Silben erhalten;
+  der letzte Silbenausklang darf weiterhin bis zum Wortende reichen.
+- Geschützte Release-Reflows behalten ihre Wortgeometrie, dürfen aber
+  weiterhin Phonemdaten für diese internen Silbenfenster übernehmen.
+- Die Stage-Vocal-Analyse erkennt einen Zeilenanfang innerhalb des Ausklangs
+  der Vorgängerphrase als `predecessor-tail collision` und verschiebt ihn auf
+  die nächste Gesangsinsel hinter einer echten Pause.
+
+### Kontrollwerte
+
+- IPA-Reparatur `Ich`: `49.301–49.541`.
+- IPA-Reparatur `unterschreib`: `49.601–51.104`.
+- Beispielhafte Artikulationsfenster `un / ter / schreib`:
+  `49.601–49.822`, `50.443–50.603`, `50.763–51.104`.
+- Trockentest der betroffenen Folgezeile: neuer Einsatz `53.780` statt
+  `53.220`.
+
+### Validierung
+
+- Zielkombination `vocal_boundaries`, `syllables`, `phoneme_ctc_aligner`,
+  `line_transitions`, `pipeline_phase_order`: 124 Tests erfolgreich.
+- Vollständige Python-Testsuite des Aligners: 500 Tests erfolgreich.
+- Desktop- und Server-Build: erfolgreich, jeweils ohne Warnungen.
+- Editor-Core- und Playback-Integrationstests: vollständig erfolgreich.
+- `git diff --check`: erfolgreich.
+- Der laufende Aligner und die übrigen Container wurden für diese Änderung
+  noch nicht neu gebaut oder gestartet.

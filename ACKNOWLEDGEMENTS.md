@@ -37,23 +37,20 @@ Special thanks go to:
   [Qwen](https://huggingface.co/Qwen),
   [OpenAI Whisper](https://github.com/openai/whisper),
   [stable-ts](https://github.com/jianfch/stable-ts),
-  [Spotify Basic Pitch](https://github.com/spotify/basic-pitch),
   [librosa](https://librosa.org/) and the pYIN authors for precise local pitch and voicing analysis,
   [eSpeak NG](https://github.com/espeak-ng/espeak-ng),
   [Meta's multilingual XLSR phoneme model](https://huggingface.co/facebook/wav2vec2-xlsr-53-espeak-cv-ft),
   [Silero VAD](https://github.com/snakers4/silero-vad),
-  [EasyAligner](https://github.com/kb-labb/easyaligner), and
-  [SOFA](https://github.com/qiuqiao/SOFA) for speech recognition and forced
-  alignment research and tooling.
+  [EasyAligner](https://github.com/kb-labb/easyaligner) for speech recognition
+  and forced alignment tooling.
 - [python-audio-separator](https://github.com/nomadkaraoke/python-audio-separator),
   [Ultimate Vocal Remover](https://github.com/Anjok07/ultimatevocalremovergui),
   and their model authors and contributors for making practical stem
   separation available to the community.
-- The [MedleyVox](https://github.com/jeonchangbin49/MedleyVox) researchers for
-  advancing evaluation of overlapping singing voices, and Carson Evans for
-  publishing the separately licensed `Cyru5/MedleyVox` checkpoint used by the
-  optional shadow analysis.
 - [LRCLIB](https://lrclib.net/) and its community for an open lyrics service.
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) and its contributors for the
+  optional, separately installed media acquisition tool used for
+  operator-authorized song videos.
 - [UltraStar Deluxe](https://github.com/UltraStar-Deluxe/USDX) and its
   community for documenting and maintaining a widely used timed karaoke text
   format. Neon Stage implements compatible TXT import independently and does

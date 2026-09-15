@@ -69,7 +69,15 @@ public static class AlignmentPitchEvidence
         foreach (var note in notes)
         {
             if (note.End <= syllable.Start || note.Start >= syllable.End) continue;
-            syllable.Notes.Add(note);
+            // The immutable technical report remains the authority for the
+            // high-resolution contour. Repeating hundreds of contour points
+            // in every overlapping syllable can inflate an otherwise small
+            // editor document beyond its persistence limit. The editor only
+            // needs the compact note event here; pitch-editing can load the
+            // original contour from the alignment report on demand.
+            syllable.Notes.Add(note.Contour is null or { Count: 0 }
+                ? note
+                : note with { Contour = null });
             attached++;
         }
         return attached;

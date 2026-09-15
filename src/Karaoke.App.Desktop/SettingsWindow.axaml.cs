@@ -9,6 +9,7 @@ public partial class SettingsWindow : Window
     private readonly HttpClient _http;
     private readonly Uri _serverAddress;
     private bool _managedByEnvironment;
+    private bool _geniusManagedByEnvironment;
 
     public SettingsWindow() : this(new Uri(
         (Environment.GetEnvironmentVariable("NEONSTAGE_SERVER_URL") ??
@@ -37,9 +38,12 @@ public partial class SettingsWindow : Window
         {
             var libraryTask = _http.GetFromJsonAsync<LibrarySettingsDto>("/api/settings/library");
             var usdbTask = _http.GetFromJsonAsync<UsdbProviderSettingsDto>("/api/admin/settings/usdb");
-            await Task.WhenAll(libraryTask, usdbTask);
+            var geniusTask = _http.GetFromJsonAsync<GeniusProviderSettingsDto>("/api/admin/settings/genius");
+            var nvencTask = EditorExportSettings.DetectNvencAsync();
+            await Task.WhenAll(libraryTask, usdbTask, geniusTask);
             var library = await libraryTask ?? throw new InvalidDataException("Missing library settings.");
             var usdb = await usdbTask ?? throw new InvalidDataException("Missing USDB settings.");
+            var genius = await geniusTask ?? throw new InvalidDataException("Missing Genius settings.");
             LibraryPathBox.Text = library.LibraryPath;
             UsdbEnabledBox.IsChecked = usdb.Enabled;
             UsdbBaseUrlBox.Text = usdb.BaseUrl;
@@ -53,6 +57,28 @@ public partial class SettingsWindow : Window
                 : Text("Animux-Passwort eingeben", "Enter Animux password");
             UsdbStatusText.Text = usdb.Status;
             SetManagedState(usdb.ManagedByEnvironment);
+            GeniusEnabledBox.IsChecked = genius.Enabled;
+            GeniusBaseUrlBox.Text = genius.BaseUrl;
+            GeniusAccessTokenBox.Text = string.Empty;
+            GeniusAccessTokenBox.Watermark = genius.HasAccessToken
+                ? Text("Gespeicherter Token vorhanden · leer lassen zum Behalten",
+                    "Stored token present · leave blank to keep")
+                : Text("Client Access Token eingeben", "Enter client access token");
+            GeniusStatusText.Text = genius.Status;
+            SetGeniusManagedState(genius.ManagedByEnvironment);
+            var exportSettings = EditorExportSettings.Load();
+            VideoEncoderBox.SelectedIndex = exportSettings.VideoEncoder switch
+            {
+                EditorVideoEncoderMode.Software => 1,
+                EditorVideoEncoderMode.NvidiaNvenc => 2,
+                _ => 0
+            };
+            var nvencAvailable = await nvencTask;
+            VideoEncoderStatusText.Text = nvencAvailable
+                ? Text("NVENC erkannt · automatische Auswahl verwendet die NVIDIA-GPU.",
+                    "NVENC detected · automatic selection uses the NVIDIA GPU.")
+                : Text("NVENC nicht verfügbar · automatische Auswahl verwendet libx264.",
+                    "NVENC unavailable · automatic selection uses libx264.");
             StatusText.Text = string.Empty;
         }
         catch (Exception exception)
@@ -85,7 +111,24 @@ public partial class SettingsWindow : Window
                 using var usdbResponse = await _http.PutAsJsonAsync("/api/admin/settings/usdb", request);
                 await EnsureSuccessAsync(usdbResponse);
             }
+            if (!_geniusManagedByEnvironment)
+            {
+                using var geniusResponse = await _http.PutAsJsonAsync("/api/admin/settings/genius",
+                    new UpdateGeniusProviderSettingsRequest(
+                        GeniusEnabledBox.IsChecked == true,
+                        GeniusBaseUrlBox.Text?.Trim() ?? string.Empty,
+                        NullIfEmpty(GeniusAccessTokenBox.Text),
+                        ClearGeniusAccessTokenBox.IsChecked == true));
+                await EnsureSuccessAsync(geniusResponse);
+            }
+            new EditorExportSettings(VideoEncoderBox.SelectedIndex switch
+            {
+                1 => EditorVideoEncoderMode.Software,
+                2 => EditorVideoEncoderMode.NvidiaNvenc,
+                _ => EditorVideoEncoderMode.Auto
+            }).Save();
             ClearAnimuxCredentialsBox.IsChecked = false;
+            ClearGeniusAccessTokenBox.IsChecked = false;
             await LoadAsync();
             StatusText.Text = Text("Einstellungen wurden auf dem Server gespeichert.",
                 "Settings were saved on the server.");
@@ -126,6 +169,16 @@ public partial class SettingsWindow : Window
         if (managed)
             UsdbStatusText.Text = Text("USDB wird durch Server-Umgebungsvariablen verwaltet.",
                 "USDB is managed by server environment variables.");
+    }
+
+    private void SetGeniusManagedState(bool managed)
+    {
+        _geniusManagedByEnvironment = managed;
+        GeniusEnabledBox.IsEnabled = GeniusBaseUrlBox.IsEnabled = GeniusAccessTokenBox.IsEnabled =
+            ClearGeniusAccessTokenBox.IsEnabled = !managed;
+        if (managed)
+            GeniusStatusText.Text = Text("Genius wird durch Server-Umgebungsvariablen verwaltet.",
+                "Genius is managed by server environment variables.");
     }
 
     private void SetBusy(bool busy) => SaveButton.IsEnabled = !busy;

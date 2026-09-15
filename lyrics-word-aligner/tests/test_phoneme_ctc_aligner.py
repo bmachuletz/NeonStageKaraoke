@@ -18,6 +18,7 @@ from app.phoneme_ctc_aligner import (
     _repair_ipa_vocal_holes,
     _repair_final_release_from_stem_contrast,
     _repair_local_duration_inversion_pair,
+    _repair_absorbed_multisyllable_successor,
     _promote_coherent_sentence_path,
     _promote_isolated_supported_internal_onsets,
     _promote_supported_local_word_intervals,
@@ -454,6 +455,68 @@ class PhonemeCtcBoundaryTests(unittest.TestCase):
 
         self.assertEqual([], result)
         self.assertEqual(41.08, line.words[0]["end"])
+        self.assertEqual(41.2, line.words[1]["start"])
+
+    def test_absorbed_multisyllable_successor_restores_both_word_windows(self):
+        line = SimpleNamespace(timestamp=49.28, words=[
+            {"word": "Ich", "start": 49.28, "end": 50.05},
+            {"word": "unterschreib", "start": 50.36, "end": 51.16},
+            {"word": "hier", "start": 51.56, "end": 51.80},
+            {"word": "nichts", "start": 51.80, "end": 52.12},
+            {"word": "was", "start": 52.12, "end": 52.36},
+            {"word": "ich", "start": 52.413, "end": 52.60},
+        ])
+        aligned = [
+            {"word": "ich", "start": 49.301, "end": 49.541,
+             "confidence": .02, "phonemes": [{"phone": "ɪ"}]},
+            {"word": "unterschreib", "start": 49.601, "end": 51.104,
+             "confidence": .383, "phonemes": [
+                 {"phone": "ʊ", "start": 49.601, "end": 49.822},
+                 {"phone": "n", "start": 49.822, "end": 50.343},
+                 {"phone": "t", "start": 50.363, "end": 50.423},
+                 {"phone": "ɜ", "start": 50.443, "end": 50.603},
+                 {"phone": "ʃ", "start": 50.623, "end": 50.683},
+                 {"phone": "aɪ", "start": 50.763, "end": 51.084},
+             ]},
+            {"word": "hier", "start": 51.545, "end": 51.725,
+             "confidence": .335, "phonemes": []},
+            {"word": "nichts", "start": 51.825, "end": 52.106,
+             "confidence": .780, "phonemes": []},
+            {"word": "was", "start": 52.126, "end": 52.406,
+             "confidence": .772, "phonemes": []},
+            {"word": "ich", "start": 52.413, "end": 52.547,
+             "confidence": .779, "phonemes": []},
+        ]
+
+        repairs = _repair_absorbed_multisyllable_successor(line, aligned)
+
+        self.assertEqual(1, len(repairs))
+        self.assertEqual(49.301, line.words[0]["start"])
+        self.assertEqual(49.541, line.words[0]["end"])
+        self.assertEqual(49.601, line.words[1]["start"])
+        self.assertEqual(51.104, line.words[1]["end"])
+        self.assertEqual(60.0, repairs[0]["preserved_blank_ms"])
+        self.assertEqual("ipa-absorbed-multisyllable-successor",
+                         line.words[1]["timing_source"])
+
+    def test_absorbed_successor_needs_following_sentence_anchors(self):
+        line = SimpleNamespace(timestamp=40.4, words=[
+            {"word": "mehr", "start": 40.4, "end": 41.08},
+            {"word": "relevant", "start": 41.2, "end": 41.92},
+        ])
+        aligned = [
+            {"word": "mehr", "start": 40.452, "end": 40.713,
+             "confidence": .333, "phonemes": [{"phone": "eː"}]},
+            {"word": "relevant", "start": 40.773, "end": 41.818,
+             "confidence": .481, "phonemes": [
+                 {"phone": "e", "start": 40.8, "end": 41.0},
+                 {"phone": "a", "start": 41.1, "end": 41.3},
+                 {"phone": "ə", "start": 41.5, "end": 41.7},
+             ]},
+        ]
+
+        self.assertEqual([], _repair_absorbed_multisyllable_successor(
+            line, aligned))
         self.assertEqual(41.2, line.words[1]["start"])
 
     @patch("app.phoneme_ctc_aligner._best_supported_boundary")
@@ -1601,6 +1664,41 @@ class PhonemeCtcBoundaryTests(unittest.TestCase):
 
         self.assertEqual(1.10, current.words[0]["start"])
         self.assertEqual(0, summary["promoted_word_onsets"])
+
+    def test_release_preserving_reflow_is_not_overwritten_by_ipa(self):
+        line = SimpleNamespace(timestamp=44.63, text="Na gut dann nicht", words=[
+            {"word": "Na", "start": 44.63, "end": 44.685,
+             "stage_vocal_silent_prefix_original_start": 44.23},
+            {"word": "gut", "start": 44.685, "end": 44.767,
+             "stage_vocal_silent_prefix_original_start": 44.47},
+            {"word": "dann", "start": 44.767, "end": 44.877,
+             "stage_vocal_silent_prefix_original_start": 45.43},
+            {"word": "nicht", "start": 44.877, "end": 45.015,
+             "stage_vocal_silent_prefix_original_start": 46.10},
+        ])
+        before = [dict(word) for word in line.words]
+        fake = Mock()
+        fake.model_id = "test-model"
+        fake.align.return_value = [
+            {"word": "Na", "start": 44.695, "end": 44.756,
+             "confidence": .50, "phonemes": []},
+            {"word": "gut", "start": 44.756, "end": 44.837,
+             "confidence": .00, "phonemes": []},
+            {"word": "dann", "start": 44.837, "end": 44.898,
+             "confidence": .00, "phonemes": []},
+            {"word": "nicht", "start": 44.918, "end": 44.999,
+             "confidence": .00, "phonemes": []},
+        ]
+
+        with patch("app.phoneme_ctc_aligner.PhonemeCtcAligner", return_value=fake):
+            summary = annotate_phoneme_boundaries(
+                np.zeros(50 * 16000, dtype=np.float32), [line], "de", "cpu")
+
+        self.assertEqual(before, line.words)
+        self.assertEqual(1, summary["protected_release_preserving_reflow_lines"])
+        self.assertEqual("protected-release-preserving-reflow",
+                         summary["diagnostics"][0]["status"])
+        fake.align.assert_called_once()
 
 
 if __name__ == "__main__":

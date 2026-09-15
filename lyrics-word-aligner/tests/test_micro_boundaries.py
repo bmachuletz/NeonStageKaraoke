@@ -14,7 +14,6 @@ from app.micro_boundaries import (
     serialize_voicing_evidence,
     sustain_voicing_intervals,
 )
-from app.repair import constrain_final_words_to_source_boundaries
 
 
 class MicroBoundaryTests(unittest.TestCase):
@@ -150,26 +149,6 @@ class MicroBoundaryTests(unittest.TestCase):
         self.assertEqual(1.28, line.words[0]["end"])
         self.assertEqual("internal-release-beyond-vocal-activity",
                          report["details"][0]["reason"])
-
-    def test_explicit_source_end_is_reapplied_after_voicing_sustain(self):
-        times = np.arange(0, 2.0, .005, dtype=np.float64)
-        probability = np.zeros_like(times, dtype=np.float32)
-        probability[(times >= .90) & (times <= 1.48)] = .86
-        track = VoicingTrack(
-            times=times, f0=np.full_like(times, 220, dtype=np.float32),
-            probability=probability, voiced=probability >= .38,
-            sample_rate=16000, frame_length=1024, hop_length=80)
-        line = SimpleNamespace(source_end_boundary=1.25, words=[{
-            "word": "lang", "start": .7, "acoustic_end": 1.0,
-            "end": 1.10, "sustain_extension_ms": 100,
-        }])
-
-        refine_sustain_releases_with_voicing([line], track, mode="select")
-        self.assertGreater(line.words[0]["end"], 1.25)
-        constrained = constrain_final_words_to_source_boundaries([line])
-
-        self.assertEqual(1, constrained)
-        self.assertEqual(1.25, line.words[0]["end"])
 
     def test_reference_report_makes_boundary_changes_measurable(self):
         current = [SimpleNamespace(words=[

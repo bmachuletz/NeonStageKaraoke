@@ -17,6 +17,8 @@ public sealed class FolderImportService(
     UsdbLyricsSourceService usdb,
     ILogger<FolderImportService> logger)
 {
+    public const string DefaultImportAlignmentProfile = "easyaligner-global";
+
     private static readonly HashSet<string> SupportedAudioExtensions =
         new([".mp3", ".flac"], StringComparer.OrdinalIgnoreCase);
     private readonly object _gate = new();
@@ -109,7 +111,6 @@ public sealed class FolderImportService(
                     CopyCoverSidecar(sourcePath, workBase + ".cover.jpg");
 
                     var lyricsPath = workBase + ".lrc";
-                    var trustedUltraStar = false;
                     if (!HasUsableLyrics(lyricsPath))
                     {
                         SetMessage("UltraStar-Timings werden in USDB gesucht …", .10);
@@ -127,8 +128,6 @@ public sealed class FolderImportService(
                         Add(output, sourceResult.Source == "USDB"
                             ? $"USDB: kompatible UltraStar-Version {sourceResult.Usdb.VersionId} übernommen."
                             : $"USDB: {sourceResult.Usdb.Reason} Fallback: {sourceResult.Source}.");
-                        trustedUltraStar = sourceResult.Source == "USDB" &&
-                                           sourceResult.Usdb.TrustedDirectCandidate;
                         if (!sourceResult.Success)
                             Add(output, "Kein geeigneter lokaler oder LRCLIB-Text; GPU-Volltranskript wird erzeugt.");
                     }
@@ -138,7 +137,7 @@ public sealed class FolderImportService(
                     {
                         // Do not pass a failed/empty matcher result back as a canonical source. The
                         // recognition worker first creates timed words from the complete vocal signal
-                        // and then invokes the same IPA word/syllable pipeline used by variant 1.2.
+                        // and then invokes the configured EasyAligner Direct import profile.
                         File.Delete(lyricsPath);
                         SetMessage("Keine Lyrics vorhanden · GPU-Volltranskript mit Wortgrenzen läuft …", .22);
                         alignExit = await RunAsync(root, "/bin/bash", output,
@@ -146,27 +145,17 @@ public sealed class FolderImportService(
                             "--audio", workPath, "--language", "auto", "--url", alignerUrl,
                             "--no-canonical", "--no-reindex");
                         if (alignExit == 0)
-                            Add(output, "Volltranskript, Wortgrenzen und Variante 1.2 wurden abgeschlossen.");
+                            Add(output, "Volltranskript und EasyAligner Direct wurden abgeschlossen.");
                     }
                     else
                     {
-                        SetMessage(trustedUltraStar
-                            ? "Passende UltraStar-Timings · Stems werden ohne AI-Alignment erzeugt …"
-                            : "Lyrics vorhanden · Variante 1.2 mit GPU-Separation läuft …", .30);
+                        SetMessage("Lyrics vorhanden · EasyAligner mit GPU-Separation läuft …", .30);
                         var arguments = new List<string>
                         {
                             Path.Combine(root, "scripts", "linux", "align-library.sh"), "--force",
                             "--library", workDirectory, "--match", Path.GetFileName(workPath), "--url", alignerUrl
                         };
-                        if (trustedUltraStar) arguments.AddRange(["--profile", "trusted-ultrastar"]);
                         alignExit = await RunAsync(root, "/bin/bash", output, arguments.ToArray());
-                        if (alignExit != 0 && trustedUltraStar)
-                        {
-                            Add(output, "UltraStar-Aufnahmeprüfung fehlgeschlagen; reguläres Alignment wird als Fallback gestartet.");
-                            alignExit = await RunAsync(root, "/bin/bash", output,
-                                Path.Combine(root, "scripts", "linux", "align-library.sh"), "--force",
-                                "--library", workDirectory, "--match", Path.GetFileName(workPath), "--url", alignerUrl);
-                        }
                     }
                     if (alignExit != 0)
                         throw new InvalidOperationException("Die GPU-Pipeline konnte den Titel nicht technisch fertigstellen.");
@@ -509,7 +498,7 @@ public sealed class FolderImportService(
 
     internal static FolderImportPipelineRoute SelectPipelineRoute(string lyricsPath) =>
         HasUsableLyrics(lyricsPath)
-            ? FolderImportPipelineRoute.Variant12
+            ? FolderImportPipelineRoute.EasyAligner
             : FolderImportPipelineRoute.FullTranscript;
 
     internal static string UniquePath(string folder, string name)
@@ -531,6 +520,6 @@ public sealed class FolderImportService(
 
 internal enum FolderImportPipelineRoute
 {
-    Variant12,
+    EasyAligner,
     FullTranscript
 }

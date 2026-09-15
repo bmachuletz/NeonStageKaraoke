@@ -9,6 +9,7 @@ using Avalonia.Media.Imaging;
 using Karaoke.App.Services;
 using Karaoke.Contracts;
 using Karaoke.Editor.Core;
+using NeonStage.Testing;
 
 namespace Karaoke.App.Desktop;
 
@@ -27,9 +28,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private bool _busy;
     private WaveformPyramid? _waveform;
     private Bitmap? _cover;
+    private SongVideoInfoDto? _songVideo;
     private readonly FfmpegWaveformService _waveforms = new();
     private readonly EditorAudioCache _audioCache;
     private readonly EditorDraftRecovery _draftRecovery = new();
+    private readonly EditorStageTestSession _stageTest = new();
     private Guid? _serverVersionId;
     private long _serverRevision;
     private LyricsVersionStatus? _serverVersionStatus;
@@ -53,6 +56,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private long _previewRevision;
     private bool _perceptualLeadEnabled = true;
     private bool _karaokeTimingEnabled = true;
+    private bool _showTechnicalLyrics;
     private bool _musicalHighlightEnabled = StageLyricsPreview.MusicalHighlightEnvironmentEnabled();
     private long _timelineRevision;
     private TimeSpan? _loopStart;
@@ -60,6 +64,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private bool _loopEnabled;
     private readonly DispatcherTimer _positionTimer;
     private readonly DispatcherTimer _jobTimer;
+    private readonly DispatcherTimer _stageLyricsUpdateTimer;
+    private bool _stageLyricsUpdatePending;
     private bool _consoleVisible;
     private string _consoleMode = "wishlist";
     private bool _versionsVisible;
@@ -90,8 +96,17 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private CancellationTokenSource? _seekCancellation;
     private int _loopSeekInProgress;
     private bool _visualClockSuspended;
+    private long _lastStageClockTimestamp;
+    private string _stageTestStatus = "Stage-Test nicht gestartet";
+    private string _mp4ExportStatus = "Kein MP4-Export aktiv";
+    private bool _mp4ExportRunning;
+    private CancellationTokenSource? _mp4ExportCancellation;
+    private bool _stageTestAudioMuted;
+    private int _stageTestPreviousMasterVolume;
+    private int _stageTestPreviousVocalVolume;
     private string? _loadedSourceFingerprint;
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web) { WriteIndented = true };
+    private static readonly JsonSerializerOptions StageIpcJsonOptions = new(JsonSerializerDefaults.Web);
 
     public EditorViewModel(IAudioPlaybackService audio, bool loadVisualAssets = true)
     {
@@ -107,6 +122,18 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _audio.PlaybackFailed += (_, error) => Dispatcher.UIThread.Post(() => Status = error);
         _audio.Volume = _vocalVolume;
         _audio.VocalVolume = _vocalVolume;
+        _stageTest.StatusChanged += value => Dispatcher.UIThread.Post(() =>
+        {
+            StageTestStatus = value;
+            OnPropertyChanged(nameof(IsStageTestRunning));
+            OnPropertyChanged(nameof(StageTestActionLabel));
+            if (!_stageTest.IsRunning) RestoreEditorAudioAfterStageTest();
+        });
+        _stageTest.ExportProgress += (frame, total) => Dispatcher.UIThread.Post(() =>
+        {
+            var percent = total <= 0 ? 0 : frame * 100d / total;
+            Mp4ExportStatus = $"MP4: {frame:N0} / {total:N0} Frames · {percent:0.0} %";
+        });
         _positionTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(16), DispatcherPriority.Render,
             (_, _) =>
             {
@@ -121,8 +148,15 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                     return;
                 }
                 Playhead = interpolated < Playhead ? Playhead : interpolated;
+                if (_stageTest.IsRunning && Stopwatch.GetElapsedTime(_lastStageClockTimestamp) >= TimeSpan.FromMilliseconds(500))
+                {
+                    _lastStageClockTimestamp = Stopwatch.GetTimestamp();
+                    _ = _stageTest.SendClockAsync(Playhead, _audio.IsPlaying);
+                }
             });
         _positionTimer.Start();
+        _stageLyricsUpdateTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(50),
+            DispatcherPriority.Background, (_, _) => FlushStageLyricsUpdate());
         _jobTimer = new DispatcherTimer(TimeSpan.FromSeconds(2), DispatcherPriority.Background,
             async (_, _) => await RefreshJobStatusAsync());
         _jobTimer.Start();
@@ -165,10 +199,14 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         private set
         {
             if (!Set(ref _document, value)) return;
+            _showTechnicalLyrics = false;
             RefreshTimingProjection();
             OnPropertyChanged(nameof(KaraokeTimingAvailable));
             OnPropertyChanged(nameof(KaraokeTimingActive));
             OnPropertyChanged(nameof(KaraokeTimingDescription));
+            OnPropertyChanged(nameof(ShowTechnicalLyrics));
+            OnPropertyChanged(nameof(HasTechnicalLyrics));
+            OnPropertyChanged(nameof(CanEditDisplayedSegmentText));
         }
     }
     public LyricsEditorDocument? TimingPreviewDocument
@@ -200,6 +238,23 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         set { if (Set(ref _playhead, value)) OnPropertyChanged(nameof(PlayheadLabel)); }
     }
     public string PlayheadLabel => Playhead.ToString(@"mm\:ss\.fff");
+    public bool IsAudioPlaying => _audio.IsPlaying;
+    public bool IsStageTestRunning => _stageTest.IsRunning;
+    public string StageTestActionLabel => IsStageTestRunning ? "■ Stage-Test beenden" : "▣ Song auf Stage testen";
+    public string StageTestStatus { get => _stageTestStatus; private set => Set(ref _stageTestStatus, value); }
+    public string Mp4ExportStatus { get => _mp4ExportStatus; private set => Set(ref _mp4ExportStatus, value); }
+    public bool Mp4ExportRunning
+    {
+        get => _mp4ExportRunning;
+        private set
+        {
+            if (!Set(ref _mp4ExportRunning, value)) return;
+            OnPropertyChanged(nameof(Mp4ExportActionLabel));
+        }
+    }
+    public string Mp4ExportActionLabel => Mp4ExportRunning ? "■ MP4-Export abbrechen" : "MP4 exportieren …";
+    public bool HasSongVideo => _songVideo is not null;
+    public int SongVideoOffsetMilliseconds => _songVideo?.OffsetMilliseconds ?? 0;
     public string Status { get => _status; private set => Set(ref _status, EditorLocale.Text(value)); }
     public bool Busy { get => _busy; private set => Set(ref _busy, value); }
     public bool ConsoleVisible
@@ -244,6 +299,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             _loadedAudioSongId = null;
             _audio.Volume = value ? InstrumentalVolume : VocalVolume;
             _audio.VocalVolume = VocalVolume;
+            if (_stageTestAudioMuted) MuteEditorAudioForStageTest();
             var start = value ? TimeSpan.Zero : FirstVocalPosition();
             AnchorPosition(start);
             Status = value ? "Instrumental wird bei der nächsten Wiedergabe zugemischt." : "Vocal-Solowiedergabe aktiviert.";
@@ -272,7 +328,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 _loadedAudioSongId = null;
                 Status = "Vocalpegel geändert – wird beim nächsten Start angewendet.";
             }
-            else _audio.Volume = value;
+            else if (!_stageTestAudioMuted) _audio.Volume = value;
         }
     }
     public int PlaybackSpeedPercent
@@ -322,6 +378,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         {
             if (!Set(ref _musicalHighlightEnabled, value)) return;
             PreviewRevision++;
+            QueueStageLyricsUpdate();
         }
     }
     public bool KaraokeTimingAvailable => Document is not null && !Document.UsesUltraStarTiming;
@@ -331,6 +388,21 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             "UltraStar timing protected · no conversion")
         : Localized("Visuelles Beat-Raster · gespeicherte Zeiten bleiben unverändert",
             "Visual beat grid · stored timing remains unchanged");
+    public bool HasTechnicalLyrics => Document?.Segments.Any(segment =>
+        !string.IsNullOrWhiteSpace(segment.TechnicalText)) == true;
+    public bool ShowTechnicalLyrics
+    {
+        get => _showTechnicalLyrics;
+        set
+        {
+            var normalized = value && HasTechnicalLyrics;
+            if (!Set(ref _showTechnicalLyrics, normalized)) return;
+            TimelineRevision++;
+            OnPropertyChanged(nameof(SelectedSegmentHeading));
+            OnPropertyChanged(nameof(SelectedSegmentText));
+            OnPropertyChanged(nameof(CanEditDisplayedSegmentText));
+        }
+    }
     public long TimelineRevision { get => _timelineRevision; private set => Set(ref _timelineRevision, value); }
     public TimeSpan? LoopStart { get => _loopStart; private set => Set(ref _loopStart, value); }
     public TimeSpan? LoopEnd { get => _loopEnd; private set => Set(ref _loopEnd, value); }
@@ -364,23 +436,25 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(CanEditSyllable));
             OnPropertyChanged(nameof(CanEditLine));
             OnPropertyChanged(nameof(CanDeleteSegment));
+            OnPropertyChanged(nameof(CanEditDisplayedSegmentText));
             OnPropertyChanged(nameof(SelectedStageEffect));
             OnPropertyChanged(nameof(SelectedVoiceLane));
         }
     }
     public string SelectedSegmentHeading => SelectedSegment is null
         ? "Segment auswählen"
-        : $"{SelectedSegment.Type}: {SelectedSegment.Text}";
+        : $"{SelectedSegment.Type}: {DisplayedText(SelectedSegment)}";
     public string SelectedSegmentTiming => SelectedSegment is null ? "" :
         $"{SelectedSegment.Start:mm\\:ss\\.fff}  →  {SelectedSegment.End:mm\\:ss\\.fff}  ·  {(SelectedSegment.End - SelectedSegment.Start).TotalMilliseconds:0} ms";
     public string SelectedSegmentDetails => SelectedSegment is null ?
         "Klicke ein Segment oder ziehe eine gemeinsame Silbengrenze in der Timeline."
         : $"Quelle: {SelectedSegment.Origin} · Konfidenz: {(SelectedSegment.Confidence is null ? "–" : SelectedSegment.Confidence.Value.ToString("P0"))}";
-    public string SelectedSegmentText => SelectedSegment?.Text ?? string.Empty;
+    public string SelectedSegmentText => SelectedSegment is null ? string.Empty : DisplayedText(SelectedSegment);
     public bool CanEditWord => SelectedSegment?.Type == LyricSegmentType.Word;
     public bool CanEditSyllable => SelectedSegment?.Type == LyricSegmentType.Syllable;
     public bool CanEditLine => SelectedSegment?.Type == LyricSegmentType.Line;
     public bool CanDeleteSegment => CanEditLine || CanEditWord || CanEditSyllable;
+    public bool CanEditDisplayedSegmentText => CanDeleteSegment && !ShowTechnicalLyrics;
     public Array StageEffects { get; } = Enum.GetValues<StageLineEffect>();
     public StageLineEffect SelectedStageEffect => SelectedSegment?.Type == LyricSegmentType.Line
         ? SelectedSegment.StageEffect : StageLineEffect.Automatic;
@@ -607,6 +681,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             OnPropertyChanged(nameof(Document));
             OnPropertyChanged(nameof(ReviewSummary));
             SaveLocalRecoverySnapshot();
+            QueueStageLyricsUpdate();
             await RefreshLyricsVersionsAsync(cancellationToken, reportErrors: false);
             Status = connectedWorkingVersion
                 ? Localized(
@@ -917,14 +992,6 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             Status = "Bitte zuerst einen Song auswählen.";
             return;
         }
-        if (choice == AlignmentVariantChoice.BasicPitchAb && Document?.UsesUltraStarTiming == true)
-        {
-            Status = Localized(
-                "Basic-Pitch-A/B ist für Songs mit UltraStar-Timing-Herkunft ausgeschlossen.",
-                "Basic Pitch A/B excludes songs with UltraStar timing heritage.");
-            AppendConsole(Status);
-            return;
-        }
         if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
         {
             AppendConsole("Der aktuelle Editor-Stand konnte nicht als Alignment-Basis gespeichert werden.");
@@ -932,26 +999,14 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
         ConsoleVisible = true;
         _audio.Stop();
-        var (includeEditorBasis, includeOriginalLyrics, includeResearchShadow, includeEditorGuidance, includeBasicPitchAb) =
-            AlignmentVariants(choice);
         AppendConsole($"> GPU-Alignment: {song.Title} · {song.Artist}");
-        if (includeEditorBasis) AppendConsole("  Variante 1.2: IPA-Mikroanalyse + Pitch-/Voicing-Ausklänge");
-        if (includeOriginalLyrics) AppendConsole("  Variante 2: ursprüngliche LRCLIB-Lyrics + Volltranskript-Timing");
-        if (includeEditorGuidance) AppendConsole(Localized(
-            "  Referenzgestützt: manuelle Bereiche kalibrieren unbearbeitete Nachbarzeilen",
-            "  Reference-guided: manual regions calibrate untouched neighbouring lines"));
-        if (includeResearchShadow) AppendConsole(Localized(
-            "  Forschungs-Schattenlauf: unveränderte Original-Lyrics, keine Editor-Korrekturen",
-            "  Research shadow: immutable original lyrics, no editor corrections"));
-        if (includeBasicPitchAb) AppendConsole(Localized(
-            "  Basic Pitch A/B: unveränderte Kontrolle A + konservative Pitch-Evidenz B",
-            "  Basic Pitch A/B: unchanged control A + conservative pitch evidence B"));
+        AppendConsole(Localized(
+            "  EasyAligner: globales DE/EN-CTC auf dem reinen Vocal-Stem",
+            "  EasyAligner: global DE/EN CTC on the clean vocal stem"));
         try
         {
             using var response = await _http.PostAsJsonAsync($"/api/admin/songs/{song.Id}/realign",
-                new SongRealignmentRequest(_serverVersionId, includeEditorBasis,
-                    includeOriginalLyrics, includeResearchShadow, includeEditorGuidance,
-                    includeBasicPitchAb),
+                new SongRealignmentRequest(_serverVersionId),
                 cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
             {
@@ -961,73 +1016,12 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledRealignmentJob = null;
-            Status = choice == AlignmentVariantChoice.All
-                ? $"Vier GPU-Alignment-Varianten für {song.Title} laufen im Hintergrund …"
-                : $"Die ausgewählte GPU-Alignment-Variante für {song.Title} läuft im Hintergrund …";
+            Status = $"EasyAligner für {song.Title} läuft im Hintergrund …";
             await RefreshRealignmentStatusAsync(cancellationToken);
         }
         catch (Exception exception)
         {
             Status = "Neuausrichtung konnte nicht gestartet werden: " + exception.Message;
-            AppendConsole(Status);
-        }
-    }
-
-    public async Task StartBasicPitchOnlyAsync(CancellationToken cancellationToken = default)
-    {
-        if (SelectedSong is not { } song)
-        {
-            Status = Localized("Bitte zuerst einen Song auswählen.",
-                "Please select a song first.");
-            return;
-        }
-        if (Document?.UsesUltraStarTiming == true)
-        {
-            Status = Localized(
-                "Basic Pitch ist für Songs mit UltraStar-Timing-Herkunft ausgeschlossen.",
-                "Basic Pitch excludes songs with UltraStar timing heritage.");
-            AppendConsole(Status);
-            return;
-        }
-        if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
-        {
-            AppendConsole(Localized(
-                "Der aktuelle Editor-Stand konnte nicht als Basic-Pitch-Basis gespeichert werden.",
-                "The current editor version could not be saved as the Basic Pitch basis."));
-            return;
-        }
-
-        ConsoleVisible = true;
-        _audio.Stop();
-        AppendConsole($"> Basic Pitch: {song.Title} · {song.Artist}");
-        AppendConsole(Localized(
-            "  Eigenständige Analyse des geladenen Stands · kein ASR-/Forced-Alignment-Neustart",
-            "  Standalone analysis of the loaded version · no ASR or forced-alignment rerun"));
-        try
-        {
-            using var response = await _http.PostAsJsonAsync(
-                $"/api/admin/songs/{song.Id}/basic-pitch",
-                new SongBasicPitchRequest(_serverVersionId), cancellationToken);
-            if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
-            {
-                AppendConsole(Localized(
-                    "Es läuft bereits eine GPU-Analyse. Es wird kein zweiter Auftrag gestartet.",
-                    "A GPU analysis is already running. No second job was started."));
-                return;
-            }
-            if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
-            _handledRealignmentJob = null;
-            Status = Localized(
-                $"Eigenständige Basic-Pitch-Analyse für {song.Title} läuft im Hintergrund …",
-                $"Standalone Basic Pitch analysis for {song.Title} is running in the background …");
-            await RefreshRealignmentStatusAsync(cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            Status = Localized(
-                "Basic-Pitch-Auftrag konnte nicht gestartet werden: " + exception.Message,
-                "Could not start Basic Pitch job: " + exception.Message);
             AppendConsole(Status);
         }
     }
@@ -1048,18 +1042,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             await StartSelectedSongRealignmentAsync(choice, cancellationToken);
             return;
         }
-        if (Document is not null && !await SaveDraftAsync(
-                cancellationToken, allowTimingConflicts: true))
-        {
-            AppendConsole(Localized(
-                "Der aktuelle Editor-Stand konnte vor dem Auswahl-Alignment nicht gespeichert werden.",
-                "The current editor state could not be saved before aligning the selection."));
-            return;
-        }
+        var alignment = new SongRealignmentRequest();
         ConsoleVisible = true;
         _audio.Stop();
-        var (includeEditorBasis, includeOriginalLyrics, includeResearchShadow,
-            includeEditorGuidance, includeBasicPitchAb) = AlignmentVariants(choice);
         AppendConsole(Localized(
             $"> GPU-Neuausrichtung: {selectedSongs.Length} ausgewählte Songs",
             $"> GPU realignment: {selectedSongs.Length} selected songs"));
@@ -1067,10 +1052,6 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             AppendConsole($"  • {song.Title} · {song.Artist}");
         try
         {
-            var alignment = new SongRealignmentRequest(
-                null, includeEditorBasis, includeOriginalLyrics, includeResearchShadow,
-                includeEditorGuidance, includeBasicPitchAb,
-                includeBasicPitchAb ? 5 : null);
             using var response = await _http.PostAsJsonAsync(
                 "/api/admin/songs/realign-selection",
                 new SongSelectionRealignmentRequest(
@@ -1102,33 +1083,17 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     public async Task StartAllSongsRealignmentAsync(AlignmentVariantChoice choice,
         CancellationToken cancellationToken = default)
     {
-        if (Document is not null && !await SaveDraftAsync(cancellationToken, allowTimingConflicts: true))
-        {
-            AppendConsole("Der aktuelle Editor-Stand konnte vor dem Bibliotheks-Alignment nicht gespeichert werden.");
-            return;
-        }
+        var alignment = new SongRealignmentRequest();
         ConsoleVisible = true;
         _audio.Stop();
-        var (includeEditorBasis, includeOriginalLyrics, includeResearchShadow, includeEditorGuidance, includeBasicPitchAb) =
-            AlignmentVariants(choice);
         AppendConsole("> GPU-Neuausrichtung: gesamte Bibliothek");
-        if (includeEditorBasis) AppendConsole("  Variante 1.2: IPA-Mikroanalyse + Pitch-/Voicing-Ausklänge");
-        if (includeOriginalLyrics) AppendConsole("  Variante 2: LRCLIB + Volltranskript-Timing");
-        if (includeEditorGuidance) AppendConsole(Localized(
-            "  Referenzgestützt: lokale Kalibrierung aus manuellen Korrekturen",
-            "  Reference-guided: local calibration from manual corrections"));
-        if (includeResearchShadow) AppendConsole(Localized(
-            "  Forschungs-Schattenlauf: unveränderte Original-Lyrics, keine Editor-Korrekturen",
-            "  Research shadow: immutable original lyrics, no editor corrections"));
-        if (includeBasicPitchAb) AppendConsole(Localized(
-            "  Basic Pitch A/B: maximal fünf Songs ohne UltraStar-Herkunft",
-            "  Basic Pitch A/B: at most five songs without UltraStar heritage"));
+        AppendConsole(Localized(
+            "  EasyAligner: globales DE/EN-CTC auf dem reinen Vocal-Stem",
+            "  EasyAligner: global DE/EN CTC on the clean vocal stem"));
         try
         {
             using var response = await _http.PostAsJsonAsync("/api/admin/songs/realign-all",
-                new SongRealignmentRequest(null, includeEditorBasis, includeOriginalLyrics,
-                    includeResearchShadow, includeEditorGuidance, includeBasicPitchAb,
-                    includeBasicPitchAb ? 5 : null), cancellationToken);
+                alignment, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
             {
                 AppendConsole("Es läuft bereits eine GPU-Neuausrichtung.");
@@ -1137,9 +1102,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
             _handledRealignmentJob = null;
-            Status = choice == AlignmentVariantChoice.All
-                ? "Alle vier GPU-Alignment-Varianten der gesamten Bibliothek laufen im Hintergrund …"
-                : "Die ausgewählte GPU-Alignment-Variante der gesamten Bibliothek läuft im Hintergrund …";
+            Status = "EasyAligner für die gesamte Bibliothek läuft im Hintergrund …";
             await RefreshRealignmentStatusAsync(cancellationToken);
         }
         catch (Exception exception)
@@ -1149,18 +1112,121 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
-    private static (bool IncludeEditorBasis, bool IncludeOriginalLyrics,
-        bool IncludeResearchShadow, bool IncludeEditorGuidance, bool IncludeBasicPitchAb) AlignmentVariants(
-        AlignmentVariantChoice choice) => choice switch
+    public async Task CancelRealignmentAsync(CancellationToken cancellationToken = default)
+    {
+        try
         {
-            AlignmentVariantChoice.Phoneme => (true, false, false, false, false),
-            AlignmentVariantChoice.EditorGuided => (false, false, false, true, false),
-            AlignmentVariantChoice.FullTranscript => (false, true, false, false, false),
-            AlignmentVariantChoice.ResearchShadow => (false, false, true, false, false),
-            AlignmentVariantChoice.BasicPitchAb => (false, false, false, false, true),
-            AlignmentVariantChoice.All => (true, true, true, true, false),
-            _ => throw new ArgumentOutOfRangeException(nameof(choice), choice, null)
-        };
+            using var response = await _http.DeleteAsync(
+                "/api/admin/song-realignment", cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            {
+                Status = Localized("Es läuft derzeit kein Alignment.",
+                    "No alignment is currently running.");
+                AppendConsole(Status);
+                return;
+            }
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    await response.Content.ReadAsStringAsync(cancellationToken));
+            Status = Localized(
+                "Abbruch angefordert; aktive und wartende Alignments werden beendet …",
+                "Cancellation requested; active and queued alignments are being stopped …");
+            AppendConsole(Status);
+            await RefreshRealignmentStatusAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            Status = Localized("Alignment-Abbruch fehlgeschlagen: ",
+                "Could not cancel alignment: ") + exception.Message.Trim('"');
+            AppendConsole(Status);
+        }
+    }
+
+    public async Task ObserveReplacementLyricsAlignmentAsync(SongDto song,
+        RetrieveReplacementLyricsResultDto result, CancellationToken cancellationToken = default)
+    {
+        ConsoleVisible = true;
+        _audio.Stop();
+        if (result.IsFullTranscript)
+        {
+            AppendConsole(Localized(
+                $"> Volltranskript: {song.Title} · {song.Artist}",
+                $"> Full transcript: {song.Title} · {song.Artist}"));
+            AppendConsole(Localized(
+                "  Audio → vollständige Lyrics-Erkennung → EasyAligner → neuer Review-Stand",
+                "  Audio → complete lyrics recognition → EasyAligner → new review version"));
+            _handledLyricsRecognitionJob = null;
+            Status = Localized(
+                $"Vollständige Lyrics für {song.Title} werden aus dem Audio erkannt …",
+                $"Complete lyrics for {song.Title} are being recognized from audio …");
+            await RefreshLyricsRecognitionStatusAsync(cancellationToken);
+            return;
+        }
+        AppendConsole(Localized(
+            $"> Neue Lyrics: {result.Source} #{result.SourceId} · {song.Title} · {song.Artist}",
+            $"> New lyrics: {result.Source} #{result.SourceId} · {song.Title} · {song.Artist}"));
+        AppendConsole(Localized(
+            "  Ausgewählte Provider-Fassung → EasyAligner Direct → neuer Review-Stand",
+            "  Selected provider version → EasyAligner Direct → new review version"));
+        _handledRealignmentJob = null;
+        Status = Localized(
+            $"Neue Lyrics von {result.Source} werden mit EasyAligner ausgerichtet …",
+            $"New lyrics from {result.Source} are being aligned with EasyAligner …");
+        await RefreshRealignmentStatusAsync(cancellationToken);
+    }
+
+    public async Task<bool> WaitForReplacementLyricsAlignmentAsync(bool fullTranscript = false,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            Guid? jobId = null;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (fullTranscript)
+                {
+                    var recognition = await _http.GetFromJsonAsync<EditorLyricsRecognitionStatus>(
+                        "/api/admin/song-lyrics-recognition", cancellationToken);
+                    if (recognition?.JobId is null)
+                    {
+                        await Task.Delay(500, cancellationToken);
+                        continue;
+                    }
+                    jobId ??= recognition.JobId;
+                    await RefreshLyricsRecognitionStatusAsync(cancellationToken);
+                    if (recognition.JobId == jobId && !recognition.IsRunning)
+                        return recognition.ExitCode == 0;
+                }
+                else
+                {
+                    var alignment = await _http.GetFromJsonAsync<EditorRealignmentStatus>(
+                        "/api/admin/song-realignment", cancellationToken);
+                    if (alignment?.JobId is null)
+                    {
+                        await Task.Delay(500, cancellationToken);
+                        continue;
+                    }
+                    jobId ??= alignment.JobId;
+                    await RefreshRealignmentStatusAsync(cancellationToken);
+                    if (alignment.JobId == jobId && !alignment.IsRunning)
+                        return alignment.ExitCode == 0;
+                }
+                await Task.Delay(750, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or JsonException)
+        {
+            Status = Localized("Alignment-Status konnte nicht gelesen werden: ",
+                "Could not read alignment status: ") + exception.Message;
+            AppendConsole(Status);
+            return false;
+        }
+    }
 
     public async Task StartCompleteLyricsRecognitionAsync(CancellationToken cancellationToken = default)
     {
@@ -1298,6 +1364,14 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 if (_seenConsoleOutput.Add("realign:" + status.JobId + ":" + line)) AppendConsole(line);
             if (status.IsRunning || _handledRealignmentJob == status.JobId) return;
             _handledRealignmentJob = status.JobId;
+            if (status.ExitCode == -2)
+            {
+                Status = Localized(
+                    "GPU-Analyse wurde abgebrochen; es werden keine weiteren Jobs gestartet.",
+                    "GPU analysis was cancelled; no further jobs will be started.");
+                AppendConsole(Status);
+                return;
+            }
             if (status.ExitCode != 0)
             {
                 Status = Localized(
@@ -1605,6 +1679,117 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         return true;
     }
 
+    public async Task RefreshSongVideoAsync(CancellationToken cancellationToken = default)
+    {
+        _songVideo = null;
+        if (SelectedSong is { } song)
+        {
+            try
+            {
+                using var response = await _http.GetAsync($"/api/songs/{song.Id}/video/info", cancellationToken);
+                if (response.IsSuccessStatusCode)
+                    _songVideo = await response.Content.ReadFromJsonAsync<SongVideoInfoDto>(
+                        cancellationToken: cancellationToken);
+            }
+            catch (Exception exception) when (exception is HttpRequestException or JsonException)
+            {
+                // Eine optionale Video-Vorschau darf das Lyrics-Editing nicht blockieren.
+            }
+        }
+        OnPropertyChanged(nameof(HasSongVideo));
+        OnPropertyChanged(nameof(SongVideoOffsetMilliseconds));
+        if (_stageTest.IsRunning && SelectedSong is not null && Document is not null)
+            await _stageTest.ReplaceStateAsync(CreateStageSongState(), cancellationToken);
+    }
+
+    public async Task<bool> RemoveSongVideoAsync(SongDto song, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _http.DeleteAsync($"/api/admin/songs/{song.Id}/video", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                Status = response.StatusCode == System.Net.HttpStatusCode.NotFound
+                    ? Localized("Für diesen Song ist kein Video hinterlegt.",
+                        "No video is assigned to this song.")
+                    : Localized("Das Video konnte nicht entfernt werden: ",
+                        "Could not remove the video: ") +
+                      (await response.Content.ReadAsStringAsync(cancellationToken)).Trim('"');
+                AppendConsole(Status);
+                return false;
+            }
+
+            if (SelectedSong?.Id == song.Id) await RefreshSongVideoAsync(cancellationToken);
+            Status = Localized($"Video von „{song.Title}“ wurde entfernt.",
+                $"Video for “{song.Title}” was removed.");
+            AppendConsole(Status);
+            return true;
+        }
+        catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException)
+        {
+            Status = Localized("Das Video konnte nicht entfernt werden: ",
+                "Could not remove the video: ") + exception.Message.Trim('"');
+            AppendConsole(Status);
+            return false;
+        }
+    }
+
+    public async Task RemoveAllSongsFromStageAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            using var response = await _http.PostAsync(
+                "/api/admin/songs/remove-all-from-stage", null, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    await response.Content.ReadAsStringAsync(cancellationToken));
+            var result = await response.Content.ReadFromJsonAsync<RemoveSongsFromStageResultDto>(
+                cancellationToken: cancellationToken);
+            await ReloadSongsAsync(cancellationToken);
+            Status = Localized(
+                $"Stage geleert: {result?.SongsRemoved ?? 0} Songs wurden auf „In Review“ gesetzt.",
+                $"Stage cleared: {result?.SongsRemoved ?? 0} songs were moved to “In Review”.");
+            AppendConsole(Status);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or JsonException)
+        {
+            Status = Localized("Die Stage konnte nicht geleert werden: ",
+                "Could not clear the stage: ") + exception.Message.Trim('"');
+            AppendConsole(Status);
+        }
+    }
+
+    public async Task DeleteAllLyricsVersionsAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            _audio.Stop();
+            using var response = await _http.DeleteAsync(
+                "/api/admin/lyrics/versions", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    await response.Content.ReadAsStringAsync(cancellationToken));
+            var result = await response.Content.ReadFromJsonAsync<DeleteAllLyricsVersionsResultDto>(
+                cancellationToken: cancellationToken);
+            var localRecoveries = await _draftRecovery.DeleteAllAsync(cancellationToken);
+            _handledRealignmentJob = null;
+            _realignedSongsPendingReview.Clear();
+            await ReloadSongsAsync(cancellationToken);
+            if (SelectedSong is not null) await LoadSelectedSongAsync(cancellationToken);
+            Status = Localized(
+                $"Versionsspeicher aufgeräumt: {result?.VersionsDeleted ?? 0} Serverversionen und {localRecoveries} lokale Recoverys gelöscht; {result?.SongsRemoved ?? 0} Songs von der Stage entfernt.",
+                $"Version store cleaned: {result?.VersionsDeleted ?? 0} server versions and {localRecoveries} local recoveries deleted; {result?.SongsRemoved ?? 0} songs removed from the stage.");
+            AppendConsole(Status);
+        }
+        catch (Exception exception) when (exception is HttpRequestException or InvalidOperationException or
+                                          JsonException or IOException or UnauthorizedAccessException)
+        {
+            Status = Localized("Die Lyrics-Versionen konnten nicht vollständig gelöscht werden: ",
+                "Could not completely delete the lyrics versions: ") + exception.Message.Trim('"');
+            AppendConsole(Status);
+        }
+    }
+
     private void ReplaceSong(SongDto updated)
     {
         var index = Songs.ToList().FindIndex(song => song.Id == updated.Id);
@@ -1651,6 +1836,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         Document = null;
         Waveform = null;
         Cover = null;
+        _songVideo = null;
+        OnPropertyChanged(nameof(HasSongVideo));
+        OnPropertyChanged(nameof(SongVideoOffsetMilliseconds));
         LyricsVersions.Clear();
         OnPropertyChanged(nameof(LyricsVersionsHeading));
         Playhead = TimeSpan.Zero;
@@ -1675,6 +1863,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                 // Waveform editing remains available when no beat analysis exists.
                 _visualBeatTimes = [];
             }
+            await RefreshSongVideoAsync(ct);
             Status = "KI-Alignment wird geladen …";
             var stems = await _http.GetFromJsonAsync<StemAvailabilityDto>($"/api/songs/{song.Id}/stems", ct);
             _hasVocalStem = stems?.HasVocals == true;
@@ -1810,6 +1999,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
                     ? "Song ohne Lyrics geladen · Original-Waveform bereit · Lyrics importieren und danach neu alignen"
                     : "Alignment und Vocal-Waveform bereit zur Prüfung";
             }
+            if (_stageTest.IsRunning && Document is not null)
+                await _stageTest.ReplaceStateAsync(CreateStageSongState(), ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception exception) { Status = "Song konnte nicht geladen werden: " + exception.Message; }
@@ -1852,6 +2043,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         ReplaceSong(updated);
         SelectedSong = updated;
         await LoadCoverAsync(song.Id, cancellationToken);
+        if (_stageTest.IsRunning && Document is not null)
+            await _stageTest.ReplaceStateAsync(CreateStageSongState(), cancellationToken);
         Status = "Cover gespeichert · quadratisch, 1024 × 1024 JPEG";
     }
 
@@ -1899,7 +2092,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             else
                 response = await _http.PutAsJsonAsync($"/api/songs/{songId}/lyrics/versions/{_serverVersionId}",
                     new UpdateLyricsVersionRequest(_serverRevision, json,
-                        AllowTimingConflicts: allowTimingConflicts), cancellationToken);
+                        AllowTimingConflicts: allowTimingConflicts,
+                        AlignmentReportJson: _alignmentReportJson), cancellationToken);
             using (response)
             {
                 if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
@@ -1942,19 +2136,39 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         try
         {
             await _pendingSeek;
-            if (_audio.IsPlaying) { _audio.Pause(); return; }
-            if (_loadedAudioSongId == SelectedSong.Id) { _audio.Resume(); return; }
+            if (_audio.IsPlaying)
+            {
+                _audio.Pause();
+                await _stageTest.SendTransportAsync(StageTestProtocol.Pause, Playhead);
+                OnPropertyChanged(nameof(IsAudioPlaying));
+                return;
+            }
+            if (_loadedAudioSongId == SelectedSong.Id)
+            {
+                _audio.Resume();
+                await _stageTest.SendTransportAsync(StageTestProtocol.Play, Playhead, true);
+                OnPropertyChanged(nameof(IsAudioPlaying));
+                return;
+            }
             var requestedPosition = Playhead;
             _visualClockSuspended = true;
             var vocals = _hasVocalStem ? _localVocalUri : _selectedPlaybackUri;
-            if (InstrumentalEnabled && HasInstrumentalStem)
+            if (_stageTestAudioMuted)
+            {
+                // Im Stage-Test erzeugt ausschließlich Unity den hörbaren Stem-Mix.
+                // Der stumme Originalstream bleibt hier nur als Editor-Masterclock aktiv.
+                var clockSource = _localOriginalUri ?? new Uri(ServerAddress,
+                    $"/api/songs/{SelectedSong.Id}/audio");
+                await _audio.PlayAsync(clockSource, startPosition: requestedPosition);
+            }
+            else if (InstrumentalEnabled && HasInstrumentalStem)
             {
                 var instrumental = _localInstrumentalUri ?? throw new InvalidOperationException("Instrumentalspur ist noch nicht lokal vorbereitet.");
                 var vocal = vocals ?? throw new InvalidOperationException("Vocalspur ist noch nicht lokal vorbereitet.");
                 Status = "Einspuriger Preview-Mix wird vorbereitet …";
                 var mix = await _audioCache.GetMixAsync(SelectedSong.Id, instrumental, vocal,
                     InstrumentalVolume, VocalVolume, _songLoadCancellation?.Token ?? CancellationToken.None);
-                _audio.Volume = 100;
+                _audio.Volume = _stageTestAudioMuted ? 0 : 100;
                 await _audio.PlayAsync(mix, startPosition: requestedPosition);
             }
             else
@@ -1964,15 +2178,137 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             }
             _loadedAudioSongId = SelectedSong.Id;
             AnchorPosition(_audio.Position);
+            await _stageTest.SendTransportAsync(StageTestProtocol.Play, requestedPosition, true);
+            OnPropertyChanged(nameof(IsAudioPlaying));
         }
         catch (Exception exception) { Status = "Playback konnte nicht gestartet werden: " + exception.Message; }
         finally { _visualClockSuspended = false; _playbackCommandLock.Release(); }
+    }
+
+    public async Task ToggleStageTestAsync()
+    {
+        if (_stageTest.IsRunning)
+        {
+            await _stageTest.StopAsync();
+            OnPropertyChanged(nameof(IsStageTestRunning));
+            OnPropertyChanged(nameof(StageTestActionLabel));
+            return;
+        }
+        if (SelectedSong is null || Document is null)
+        {
+            Status = "Für den Stage-Test bitte zuerst einen Song mit Lyrics laden.";
+            return;
+        }
+        try
+        {
+            StageTestStatus = "Stage-Test wird gestartet …";
+            var continuePlaying = _audio.IsPlaying;
+            var editorPosition = Playhead;
+            MuteEditorAudioForStageTest();
+            // Bereits geladene Vocal-/Instrumental-Stems werden aus dem Editor
+            // entfernt. Für die Masterclock genügt während des Tests der stumme
+            // Originalstream; den hörbaren Stem-Mix erzeugt allein Unity.
+            _audio.Stop();
+            _loadedAudioSongId = null;
+            await _stageTest.StartAsync(CreateStageSongState(continuePlaying, editorPosition));
+            MuteEditorAudioForStageTest();
+            if (continuePlaying)
+            {
+                var clockSource = _localOriginalUri ?? new Uri(ServerAddress,
+                    $"/api/songs/{SelectedSong.Id}/audio");
+                await _audio.PlayAsync(clockSource, startPosition: editorPosition);
+                _loadedAudioSongId = SelectedSong.Id;
+                AnchorPosition(_audio.Position);
+            }
+            OnPropertyChanged(nameof(IsStageTestRunning));
+            OnPropertyChanged(nameof(StageTestActionLabel));
+        }
+        catch (Exception exception)
+        {
+            await _stageTest.StopAsync();
+            RestoreEditorAudioAfterStageTest();
+            StageTestStatus = "Stage-Test konnte nicht gestartet werden: " + exception.Message;
+        }
+    }
+
+    public async Task ExportMp4Async(string outputPath, CancellationToken cancellationToken = default)
+    {
+        if (SelectedSong is null || Document is null)
+        {
+            Status = "Für den MP4-Export bitte zuerst einen Song mit Lyrics laden.";
+            return;
+        }
+        if (Mp4ExportRunning) return;
+        Mp4ExportRunning = true;
+        Mp4ExportStatus = "Unity-Renderer wird für den MP4-Export gestartet …";
+        _mp4ExportCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        try
+        {
+            var snapshot = CreateStageSongState(false, TimeSpan.Zero);
+            var completedPath = await _stageTest.ExportAsync(snapshot, outputPath,
+                cancellationToken: _mp4ExportCancellation.Token);
+            Mp4ExportStatus = "MP4 fertig: " + completedPath;
+            Status = "MP4-Export abgeschlossen.";
+        }
+        catch (OperationCanceledException) { Mp4ExportStatus = "MP4-Export abgebrochen."; }
+        catch (Exception exception)
+        {
+            Mp4ExportStatus = "MP4-Export fehlgeschlagen: " + exception.Message;
+            Status = Mp4ExportStatus;
+        }
+        finally
+        {
+            await _stageTest.StopAsync();
+            _mp4ExportCancellation.Dispose();
+            _mp4ExportCancellation = null;
+            Mp4ExportRunning = false;
+        }
+    }
+
+    public void CancelMp4Export()
+    {
+        if (!Mp4ExportRunning) return;
+        Mp4ExportStatus = "MP4-Export wird abgebrochen …";
+        _mp4ExportCancellation?.Cancel();
+    }
+
+    private void MuteEditorAudioForStageTest()
+    {
+        if (!_stageTestAudioMuted)
+        {
+            _stageTestPreviousMasterVolume = _audio.Volume;
+            _stageTestPreviousVocalVolume = _audio.VocalVolume;
+            _stageTestAudioMuted = true;
+        }
+        _audio.Volume = 0;
+        _audio.VocalVolume = 0;
+    }
+
+    private void RestoreEditorAudioAfterStageTest()
+    {
+        if (!_stageTestAudioMuted) return;
+        _audio.Stop();
+        _loadedAudioSongId = null;
+        _stageTestAudioMuted = false;
+        _audio.Volume = _stageTestPreviousMasterVolume;
+        _audio.VocalVolume = _stageTestPreviousVocalVolume;
+    }
+
+    public async Task StopPlaybackAsync()
+    {
+        _audio.Stop();
+        _loadedAudioSongId = null;
+        AnchorPosition(TimeSpan.Zero);
+        await _stageTest.SendTransportAsync(StageTestProtocol.Stop, TimeSpan.Zero);
+        OnPropertyChanged(nameof(IsAudioPlaying));
+        Status = "Wiedergabe gestoppt";
     }
 
     public void Seek(TimeSpan position)
     {
         Playhead = position < TimeSpan.Zero ? TimeSpan.Zero : position;
         AnchorPosition(Playhead);
+        _ = _stageTest.SendTransportAsync(StageTestProtocol.Seek, Playhead, _audio.IsPlaying);
         if (_audio.IsSeekable)
         {
             _visualClockSuspended = true;
@@ -2076,6 +2412,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(SelectedSegmentText));
         OnPropertyChanged(nameof(ReviewSummary));
         SaveLocalRecoverySnapshot();
+        QueueStageLyricsUpdate();
     }
 
     public void SelectSegment(LyricSegment? segment)
@@ -2687,6 +3024,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(SelectedSegmentTiming));
         OnPropertyChanged(nameof(ReviewSummary));
         SaveLocalRecoverySnapshot();
+        QueueStageLyricsUpdate();
         if (beatChanges > 0)
             Status = Localized(
                 $"{beatChanges} Beat-Grenze(n) in den Arbeitsstand übernommen.",
@@ -2734,7 +3072,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
 
     public void PauseEditorPlaybackForCatalogPreview()
     {
-        if (_audio.IsPlaying) _audio.Pause();
+        if (_audio.IsPlaying)
+        {
+            _audio.Pause();
+            _ = _stageTest.SendTransportAsync(StageTestProtocol.Pause, Playhead);
+        }
     }
 
     public async Task ImportUltraStarLyricsAsync(UltraStarLyricsImport imported,
@@ -2775,9 +3117,52 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(Document));
         OnPropertyChanged(nameof(ReviewSummary));
         SaveLocalRecoverySnapshot();
+        QueueStageLyricsUpdate();
         Status = EditorLocale.German
             ? $"UltraStar-Lyrics als neuer ungespeicherter Arbeitsstand importiert · {replacement.Lines.Count} Zeilen · Rückgängig möglich · bei fehlenden Stems anschließend neu alignen"
             : $"UltraStar lyrics imported as a new unsaved working state · {replacement.Lines.Count} lines · Undo is available · run alignment next if stems are missing";
+    }
+
+    public async Task ImportEnhancedLrcLyricsAsync(string source, LyricsDto imported,
+        CancellationToken cancellationToken = default)
+    {
+        if (SelectedSong is not { } song || imported.SongId != song.Id)
+            throw new InvalidOperationException(EditorLocale.German
+                ? "Bitte zuerst den zugehörigen Song auswählen."
+                : "Select the matching song first.");
+        var replacement = LyricsDocumentImporter.Import(imported,
+            modelVersion: "Enhanced LRC", detailedOrigin: SegmentOrigin.ImportedLineLyrics);
+        var previous = Document;
+        using (var response = await _http.PutAsJsonAsync($"/api/admin/songs/{song.Id}/lyrics/import-source",
+                   new ImportLyricsSourceRequest(source.Trim()), cancellationToken))
+        {
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(await response.Content.ReadAsStringAsync(cancellationToken));
+        }
+        _audio.Stop();
+        _visualClockSuspended = false;
+        LoopEnabled = false;
+        LoopStart = null;
+        LoopEnd = null;
+        SelectedSegment = null;
+        History.Execute(new ReplaceLyricsDocumentCommand(previous, replacement,
+            value => Document = value, EditorLocale.German
+                ? "Enhanced-LRC importieren" : "Import Enhanced LRC"));
+        _serverVersionId = null;
+        _serverRevision = 0;
+        _serverVersionStatus = null;
+        SetAlignmentReport(null);
+        _loadedSourceFingerprint = null;
+        if (replacement.Lines.Count > 0) AnchorPosition(replacement.Lines.Min(line => line.Start));
+        PreviewRevision++;
+        TimelineRevision++;
+        OnPropertyChanged(nameof(Document));
+        OnPropertyChanged(nameof(ReviewSummary));
+        SaveLocalRecoverySnapshot();
+        QueueStageLyricsUpdate();
+        Status = EditorLocale.German
+            ? $"Enhanced-LRC als neuer ungespeicherter Arbeitsstand importiert · {replacement.Lines.Count} Zeilen · Rückgängig möglich"
+            : $"Enhanced LRC imported as a new unsaved working state · {replacement.Lines.Count} lines · Undo is available";
     }
 
     private LyricSegment? FindLine(LyricSegment segment) => Document?.Lines.FirstOrDefault(line =>
@@ -2833,7 +3218,56 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         OnPropertyChanged(nameof(SelectedSegmentDetails));
         OnPropertyChanged(nameof(ReviewSummary));
         SaveLocalRecoverySnapshot();
+        QueueStageLyricsUpdate();
     }
+
+    private StageTestSongState CreateStageSongState(bool? playing = null, TimeSpan? position = null)
+    {
+        var song = SelectedSong ?? throw new InvalidOperationException("Kein Song ausgewählt.");
+        var document = Document ?? throw new InvalidOperationException("Keine Lyrics geladen.");
+        var lyrics = StageTestLyricsMapper.ToLyricsDto(document, song, MusicalHighlightEnabled);
+        return new StageTestSongState
+        {
+            songId = song.Id.ToString(),
+            title = song.Title,
+            artist = song.Artist,
+            serverUrl = ServerAddress.ToString().TrimEnd('/'),
+            lyricsJson = JsonSerializer.Serialize(lyrics, StageIpcJsonOptions),
+            positionSeconds = Math.Max(0, (position ?? Playhead).TotalSeconds),
+            playing = playing ?? _audio.IsPlaying,
+            durationSeconds = song.DurationSeconds
+        };
+    }
+
+    private void QueueStageLyricsUpdate()
+    {
+        if (!_stageTest.IsRunning || SelectedSong is null || Document is null) return;
+        _stageLyricsUpdatePending = true;
+        if (!_stageLyricsUpdateTimer.IsEnabled) _stageLyricsUpdateTimer.Start();
+    }
+
+    private void FlushStageLyricsUpdate()
+    {
+        if (!_stageTest.IsRunning || SelectedSong is null || Document is null)
+        {
+            _stageLyricsUpdatePending = false;
+            _stageLyricsUpdateTimer.Stop();
+            return;
+        }
+        if (!_stageLyricsUpdatePending)
+        {
+            _stageLyricsUpdateTimer.Stop();
+            return;
+        }
+        _stageLyricsUpdatePending = false;
+        var lyrics = StageTestLyricsMapper.ToLyricsDto(Document, SelectedSong, MusicalHighlightEnabled);
+        _stageTest.QueueLyricsUpdate(JsonSerializer.Serialize(lyrics, StageIpcJsonOptions));
+    }
+
+    private string DisplayedText(LyricSegment segment) =>
+        ShowTechnicalLyrics && !string.IsNullOrWhiteSpace(segment.TechnicalText)
+            ? segment.TechnicalText
+            : segment.Text;
 
     private void SaveLocalRecoverySnapshot()
     {
@@ -2892,9 +3326,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _songLoadCancellation?.Dispose();
         _positionTimer.Stop();
         _jobTimer.Stop();
+        _stageLyricsUpdateTimer.Stop();
         _changeFeedCancellation.Cancel();
         _changeFeedCancellation.Dispose();
         _audio.Dispose();
+        Task.Run(async () => await _stageTest.DisposeAsync()).GetAwaiter().GetResult();
         Cover = null;
         _draftSaveLock.Dispose();
         _http.Dispose();
@@ -2934,22 +3370,12 @@ public sealed record EditorLyricsVersionItem(LyricsVersionSummaryDto Version, bo
         : string.Empty;
     public string VariantLabel => Version.AnalysisRunId switch
     {
-        { } value when value.Contains(":editor-basis:", StringComparison.Ordinal) =>
-            EditorLocale.German ? "VARIANTE · LETZTER EDITOR-STAND" : "VARIANT · LATEST EDITOR VERSION",
-        { } value when value.Contains(":lrclib-full-transcript", StringComparison.Ordinal) =>
-            EditorLocale.German ? "VARIANTE · LRCLIB + VOLLTRANSKRIPT" : "VARIANT · LRCLIB + FULL TRANSCRIPT",
-        { } value when value.Contains(":research-shadow:", StringComparison.Ordinal) =>
+        { } value when value.Contains(":easyaligner-global:", StringComparison.Ordinal) =>
             EditorLocale.German
-                ? "FORSCHUNGS-SCHATTENLAUF · OHNE EDITOR-BASIS"
-                : "RESEARCH SHADOW · NO EDITOR BASIS",
-        { } value when value.Contains(":basic-pitch-ab-control:", StringComparison.Ordinal) =>
-            EditorLocale.German
-                ? "BASIC PITCH A · UNVERÄNDERTE KONTROLLE"
-                : "BASIC PITCH A · UNCHANGED CONTROL",
-        { } value when value.Contains(":basic-pitch-ab-treatment:", StringComparison.Ordinal) =>
-            EditorLocale.German
-                ? "BASIC PITCH B · PITCH-EVIDENZ"
-                : "BASIC PITCH B · PITCH EVIDENCE",
+                ? "EASYALIGNER DIRECT · GLOBALES CTC"
+                : "EASYALIGNER DIRECT · GLOBAL CTC",
+        { } value when value.Contains("full-transcription-", StringComparison.Ordinal) =>
+            EditorLocale.German ? "VOLLTRANSKRIPT · EASYALIGNER" : "FULL TRANSCRIPT · EASYALIGNER",
         _ => string.Empty
     };
     public bool CanDelete => Version.Status != LyricsVersionStatus.Published;

@@ -4,8 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .alignment_profiles import ALIGNMENT_PROFILES
-from .trusted_ultrastar import run_trusted_ultrastar
+from .easyaligner_profile import run
 
 
 def _write_status(job_dir: Path, **changes) -> dict:
@@ -18,7 +17,8 @@ def _write_status(job_dir: Path, **changes) -> dict:
             current = {}
     current.update(changes)
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.write_text(json.dumps(
+        current, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     temporary.replace(path)
     return current
 
@@ -31,35 +31,20 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--language", required=True)
     parser.add_argument("--device", required=True)
-    parser.add_argument("--alignment-profile", choices=ALIGNMENT_PROFILES,
-                        default="standard")
     parser.add_argument("--separate", action="store_true")
     parser.add_argument("--provided-vocals", type=Path)
     parser.add_argument("--provided-instrumental", type=Path)
-    parser.add_argument("--baseline-report", type=Path)
     args = parser.parse_args()
     try:
         def progress(percent: int, message: str) -> None:
             _write_status(args.output, state="processing", percent=percent, message=message)
 
-        if args.alignment_profile == "trusted-ultrastar":
-            runner = run_trusted_ultrastar
-        elif args.alignment_profile == "basic-pitch-postprocess":
-            from .basic_pitch_postprocess import run as runner
-        else:
-            # Keep heavyweight ASR/forced-alignment dependencies out of the
-            # trusted chart worker altogether.
-            from .pipeline import run
-            runner = run
-        result = runner(
+        result = run(
             args.audio, args.lyrics, args.output,
             language=args.language, separator=args.separate,
             device=args.device, progress=progress,
             provided_vocals=args.provided_vocals,
             provided_instrumental=args.provided_instrumental,
-            alignment_profile=args.alignment_profile,
-            **({"baseline_report": args.baseline_report}
-               if args.alignment_profile == "basic-pitch-postprocess" else {}),
         )
         result.update({
             "job_id": args.job_id,

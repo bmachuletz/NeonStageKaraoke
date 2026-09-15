@@ -41,6 +41,13 @@ public sealed class LyricSegment
     public TimeSpan Start { get; set; }
     public TimeSpan End { get; set; }
     public string Text { get; set; } = string.Empty;
+    /// <summary>
+    /// Optional immutable text representation consumed by an alignment model.
+    /// The human-facing <see cref="Text"/> remains authoritative for editing,
+    /// export and Stage playback.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? TechnicalText { get; set; }
     public SegmentOrigin Origin { get; set; }
     public double? Confidence { get; set; }
     public bool IsAutomaticallyGenerated { get; init; }
@@ -97,6 +104,13 @@ public sealed class LyricsEditorDocument
     public DateTimeOffset ModifiedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<LyricSegment> Lines { get; init; } = [];
 
+    /// <summary>
+    /// Flattened in-memory view of <see cref="Lines"/>. The hierarchy under
+    /// <c>lines</c> is the persisted authority; serializing this projection as
+    /// well duplicates every word, syllable and attached pitch event and can
+    /// make otherwise valid editor revisions exceed the persistence limit.
+    /// </summary>
+    [JsonIgnore]
     public IEnumerable<LyricSegment> Segments => Lines.SelectMany(line => line.DescendantsAndSelf());
 
     [JsonIgnore]

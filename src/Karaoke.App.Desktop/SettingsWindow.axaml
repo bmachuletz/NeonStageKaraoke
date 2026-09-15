@@ -64,6 +64,22 @@
           <CheckBox x:Name="ClearAnimuxCredentialsBox" Content="Gespeicherte Animux-Anmeldedaten löschen" />
           <Button Content="Animux-Verbindung testen" Click="TestAnimuxClick" HorizontalAlignment="Left" />
           <TextBlock x:Name="UsdbStatusText" Foreground="#45E6D0" FontFamily="monospace" TextWrapping="Wrap" />
+          <Separator Margin="0,8" />
+          <TextBlock Text="GENIUS · OFFIZIELLE DISCOVERY" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <CheckBox x:Name="GeniusEnabledBox" Content="Genius-Trefferlinks in der Lyrics-Suche anzeigen" />
+          <StackPanel>
+            <TextBlock Text="API-BASISADRESSE" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="GeniusBaseUrlBox" />
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="CLIENT ACCESS TOKEN" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="GeniusAccessTokenBox" PasswordChar="●"
+                     Watermark="Leer lassen = gespeicherten Token behalten" />
+          </StackPanel>
+          <CheckBox x:Name="ClearGeniusAccessTokenBox" Content="Gespeicherten Genius-Token löschen" />
+          <TextBlock Text="Die offizielle Genius-API liefert Suche und Links, aber keinen Lyrics-Text. Neon Stage scrapt deshalb keine Genius-Seiten."
+                     Foreground="#FFB45E" TextWrapping="Wrap" />
+          <TextBlock x:Name="GeniusStatusText" Foreground="#45E6D0" FontFamily="monospace" TextWrapping="Wrap" />
         </StackPanel></ScrollViewer>
       </TabItem>
 
@@ -74,6 +90,27 @@
                      Foreground="#AAB2C1" TextWrapping="Wrap" />
           <Button Content="Qobuz konfigurieren …" Click="OpenQobuzClick" HorizontalAlignment="Left" />
         </StackPanel>
+      </TabItem>
+
+      <TabItem Header="Video-Export">
+        <ScrollViewer><StackPanel Margin="18" Spacing="14">
+          <TextBlock Text="MP4-ENCODER" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <TextBlock Text="Video-Encoder für den Export aus der Unity-Stage"
+                     Foreground="#AAB2C1" />
+          <ComboBox x:Name="VideoEncoderBox" SelectedIndex="0">
+            <ComboBoxItem Content="Automatisch (NVENC bevorzugen)" />
+            <ComboBoxItem Content="Software (libx264)" />
+            <ComboBoxItem Content="NVIDIA NVENC" />
+          </ComboBox>
+          <Border Padding="12" CornerRadius="7" Background="#171D28">
+            <StackPanel Spacing="5">
+              <TextBlock x:Name="VideoEncoderStatusText" Foreground="#45E6D0"
+                         FontFamily="monospace" TextWrapping="Wrap" />
+              <TextBlock Text="Automatisch verwendet NVENC nur, wenn FFmpeg einen echten Testframe über die NVIDIA-GPU encodieren kann. Andernfalls wird libx264 verwendet."
+                         Foreground="#AAB2C1" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+        </StackPanel></ScrollViewer>
       </TabItem>
     </TabControl>
 

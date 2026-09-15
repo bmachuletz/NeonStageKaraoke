@@ -118,6 +118,7 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
                          "anchor-tail-vocal-activity", "geometric-repair",
                          "lrc-chorus-anchor", "instrumental-chorus-stable-ts",
                          "stable-ts-interpolated", "overlap-display-lane-fallback"}
+    heuristic_sources.add("source-text-unverified-display-only")
     heuristic_words = sum(
         (word.get("timing_source") in heuristic_sources
          or bool(word.get("window_edge_fallback")))
@@ -126,7 +127,7 @@ def validate(lines: list[LrcLine], cfg: AlignmentConfig, *, repaired_lines: int 
     coverage = measurable_words / total_words if total_words else 0.0
     acoustic_coverage = (total_words - heuristic_words) / total_words if total_words else 0.0
     line_ratio = ok / len(lines) if lines else 0.0
-    # Later acoustic passes (CTC, SOFA, EasyAligner, Stable-ts) can replace a
+    # Later acoustic passes (CTC, EasyAligner, Stable-ts) can replace a
     # provisional geometric repair completely.  Penalising the historical
     # repair counter here made a successfully verified final line look
     # heuristic forever.  The quality gate must describe the emitted LRC.

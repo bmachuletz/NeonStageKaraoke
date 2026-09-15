@@ -11,11 +11,27 @@ lyrics_source=""
 output_dir=""
 reindex=1
 reuse_stems=0
-alignment_profile="standard"
-baseline_report=""
+current_job_id=""
+current_job_finished=1
+
+cancel_current_job() {
+  if [[ -n "$current_job_id" && "$current_job_finished" == 0 ]]; then
+    echo >&2
+    echo "Breche Aligner-Job $current_job_id ab …" >&2
+    curl -fsS -X DELETE "$aligner_url/api/jobs/$current_job_id" >/dev/null 2>&1 || true
+    current_job_finished=1
+  fi
+}
+
+on_cancel() {
+  cancel_current_job
+  exit 130
+}
+
+trap on_cancel INT TERM HUP
 
 usage() {
-  echo "Verwendung: $0 [--force] [--library PFAD] [--url URL] [--language SPRACHE] [--no-separate] [--reuse-stems] [--match TEXT] [--lyrics-source DATEI] [--baseline-report DATEI] [--output-dir PFAD] [--profile standard|editor-guided|research-shadow|trusted-ultrastar|basic-pitch-ab|basic-pitch-postprocess] [--no-reindex]"
+  echo "Verwendung: $0 [--force] [--library PFAD] [--url URL] [--language SPRACHE] [--no-separate] [--reuse-stems] [--match TEXT] [--lyrics-source DATEI] [--output-dir PFAD] [--no-reindex]"
 }
 
 while (($#)); do
@@ -28,19 +44,12 @@ while (($#)); do
     --reuse-stems) reuse_stems=1; shift ;;
     --match) match=${2:?Suchtext fehlt}; shift 2 ;;
     --lyrics-source) lyrics_source=${2:?Lyrics-Datei fehlt}; shift 2 ;;
-    --baseline-report) baseline_report=${2:?Baseline-Report fehlt}; shift 2 ;;
     --output-dir) output_dir=${2:?Ausgabeordner fehlt}; shift 2 ;;
-    --profile) alignment_profile=${2:?Profil fehlt}; shift 2 ;;
     --no-reindex) reindex=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unbekannte Option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
-
-if [[ "$alignment_profile" != standard && "$alignment_profile" != editor-guided && "$alignment_profile" != research-shadow && "$alignment_profile" != trusted-ultrastar && "$alignment_profile" != basic-pitch-ab && "$alignment_profile" != basic-pitch-postprocess ]]; then
-  echo "Unbekanntes Alignment-Profil: $alignment_profile" >&2
-  exit 2
-fi
 
 if ((reuse_stems != 0)) && [[ "$separate" != true ]]; then
   echo "--reuse-stems kann nicht mit --no-separate kombiniert werden." >&2
@@ -52,11 +61,6 @@ for command in curl jq find install realpath; do
 done
 [[ -d "$library" ]] || { echo "Bibliothek nicht gefunden: $library" >&2; exit 1; }
 [[ -z "$lyrics_source" || -f "$lyrics_source" ]] || { echo "Lyrics-Quelle nicht gefunden: $lyrics_source" >&2; exit 1; }
-[[ -z "$baseline_report" || -f "$baseline_report" ]] || { echo "Baseline-Report nicht gefunden: $baseline_report" >&2; exit 1; }
-if [[ "$alignment_profile" == basic-pitch-postprocess && -z "$baseline_report" ]]; then
-  echo "basic-pitch-postprocess erfordert --baseline-report." >&2
-  exit 2
-fi
 if [[ -n "$lyrics_source" && -z "$match" ]]; then
   echo "--lyrics-source erfordert --match, damit die Quelle genau einem Song zugeordnet wird." >&2
   exit 2
@@ -112,11 +116,7 @@ while IFS= read -r -d '' audio; do
   fi
 
   echo
-  if [[ "$alignment_profile" == trusted-ultrastar ]]; then
-    echo "Erzeuge Karaoke-Stems; UltraStar-Timings bleiben unverändert: $audio"
-  else
-    echo "Sende an GPU-Aligner: $audio"
-  fi
+  echo "Sende an EasyAligner: $audio"
   echo "Lyrics-Quelle: $input_lrc"
   request=(
     -fsS -X POST "$aligner_url/api/jobs"
@@ -125,11 +125,7 @@ while IFS= read -r -d '' audio; do
     -F "language=$language"
     -F "separate=$separate"
     -F "alignment_device=cuda"
-    -F "alignment_profile=$alignment_profile"
   )
-  if [[ -n "$baseline_report" ]]; then
-    request+=( -F "baseline_report=@$baseline_report" )
-  fi
   if ((reuse_stems != 0)); then
     vocals_source=""
     instrumental_source=""
@@ -154,6 +150,8 @@ while IFS= read -r -d '' audio; do
       continue
     }
   job_id=$(jq -er '.job_id' <<<"$response")
+  current_job_id=$job_id
+  current_job_finished=0
 
   while :; do
     status=$(curl -fsS "$aligner_url/api/jobs/$job_id") || { sleep 2; continue; }
@@ -161,16 +159,24 @@ while IFS= read -r -d '' audio; do
     percent=$(jq -r '.percent // 0' <<<"$status")
     message=$(jq -r '.message // ""' <<<"$status")
     printf '\r%3s%%  %-70s' "$percent" "$message"
-    [[ "$state" == completed || "$state" == failed ]] && break
+    [[ "$state" == completed || "$state" == failed || "$state" == cancelled ]] && break
     sleep 2
   done
   echo
 
+  if [[ "$state" == cancelled ]]; then
+    current_job_finished=1
+    echo "Alignment wurde abgebrochen: $audio" >&2
+    exit 130
+  fi
+
   if [[ "$state" == failed ]]; then
+    current_job_finished=1
     echo "Alignment fehlgeschlagen: $(jq -r '.error // .message' <<<"$status")" >&2
     ((failed+=1))
     continue
   fi
+  current_job_finished=1
 
   publishable=$(jq -r '.quality.publishable // false' <<<"$status")
   quality_score=$(jq -r '.quality.score // 0' <<<"$status")

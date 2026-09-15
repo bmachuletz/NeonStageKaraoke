@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Threading.Tasks;
 using NeonStage.Presentation;
+using NeonStage.Timing;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -24,6 +25,10 @@ public sealed class StageLyricsEngine
 
     public void SetStageTheme(string? stageThemeId) =>
         _view?.SetPresentationStyle(StageBackgroundShaderCatalog.ResolveLyricsStyle(stageThemeId));
+
+    public void SetVideoBackground(bool active) => _view?.SetVideoBackground(active);
+
+    public void SetVideoPerformanceMode(bool active) => _view?.SetVideoPerformanceMode(active);
 
     public async Task LoadAsync(string server, string songId)
     {
@@ -51,6 +56,21 @@ public sealed class StageLyricsEngine
             }
         }
 
+        Load(lyrics, beatTimes, clearView: true);
+    }
+
+    public void LoadJson(string lyricsJson, IReadOnlyList<double>? beatTimes = null, bool clearView = true)
+    {
+        var lyrics = JsonUtility.FromJson<LyricsDto>(lyricsJson);
+        if (lyrics?.lines == null) return;
+        Load(lyrics, beatTimes ?? Array.Empty<double>(), clearView);
+    }
+
+    private void Load(LyricsDto lyrics, IReadOnlyList<double> beatTimes, bool clearView)
+    {
+        _presentation = null;
+        _shownPage = -1;
+        if (clearView) _view?.Show(Array.Empty<string>(), Array.Empty<int>());
         var lines = new List<StagePresentationLine>();
         foreach (var line in lyrics.lines)
         {
@@ -95,11 +115,12 @@ public sealed class StageLyricsEngine
                 : null);
     }
 
-    public void Update(double position, float audioImpact)
+    public void Update(StageClockFrame stageTime, float audioImpact)
     {
         if (_view == null || _presentation == null) return;
-        _view.TickEffects(Time.unscaledDeltaTime);
-        var frame = _presentation.Evaluate(position);
+        _view.SetSongTime(stageTime.PositionSeconds);
+        _view.TickEffects((float)stageTime.DeltaSeconds);
+        var frame = _presentation.Evaluate(stageTime.LyricsPositionSeconds);
         if (frame.PageIndex < 0) return;
 
         if (_shownPage != frame.PageIndex)

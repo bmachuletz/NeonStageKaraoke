@@ -1,0 +1,171 @@
+using System.Globalization;
+using System.Text;
+using System.Text.RegularExpressions;
+using Karaoke.Contracts;
+
+namespace Karaoke.Editor.Core;
+
+/// <summary>Parses line-timed and word-start-timed Enhanced LRC without changing its timestamps.</summary>
+public static partial class EnhancedLrcLyricsImporter
+{
+    public static bool LooksLikeEnhancedLrc(string? value) =>
+        !string.IsNullOrWhiteSpace(value) && TimestampRegex().IsMatch(value) &&
+        EnhancedWordRegex().IsMatch(value);
+
+    public static LyricsDto Parse(Guid songId, string value, TimeSpan duration) =>
+        Parse(songId, value.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n'), duration);
+
+    public static LyricsDto Parse(Guid songId, IEnumerable<string> sourceLines, TimeSpan duration)
+    {
+        var source = sourceLines.ToArray();
+        var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var offsetMilliseconds = 0;
+        foreach (var sourceLine in source)
+        {
+            var match = MetadataRegex().Match(sourceLine.Trim());
+            if (!match.Success) continue;
+            var key = match.Groups["key"].Value;
+            var value = match.Groups["value"].Value.Trim();
+            metadata[key] = value;
+            if (key.Equals("offset", StringComparison.OrdinalIgnoreCase))
+                int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out offsetMilliseconds);
+        }
+
+        var parsed = new List<(TimeSpan Start, string Text,
+            IReadOnlyList<(TimeSpan Start, TimeSpan? End, string Text)> Words,
+            int VoiceLane, string? VoiceLabel)>();
+        var voiceLane = 0;
+        string? voiceLabel = null;
+        foreach (var sourceLine in source)
+        {
+            var voice = VoiceLaneRegex().Match(sourceLine.Trim());
+            if (voice.Success)
+            {
+                voiceLane = int.TryParse(voice.Groups["lane"].Value,
+                    NumberStyles.None, CultureInfo.InvariantCulture, out var lane)
+                    ? Math.Max(0, lane) : 0;
+                voiceLabel = DecodeBase64Url(voice.Groups["label"].Success
+                    ? voice.Groups["label"].Value : null);
+                continue;
+            }
+            var matches = TimestampRegex().Matches(sourceLine);
+            if (matches.Count == 0) continue;
+            var withoutLineTimestamps = TimestampRegex().Replace(sourceLine, string.Empty);
+            var words = EnhancedWordRegex().Matches(withoutLineTimestamps)
+                .Select(match => (
+                    Start: ParseTimestamp(match.Groups["minutes"].Value, match.Groups["seconds"].Value, offsetMilliseconds),
+                    End: match.Groups["endMinutes"].Success
+                        ? ParseTimestamp(match.Groups["endMinutes"].Value, match.Groups["endSeconds"].Value, offsetMilliseconds)
+                        : (TimeSpan?)null,
+                    Text: match.Groups["text"].Value.Trim()))
+                .Where(word => !string.IsNullOrWhiteSpace(word.Text))
+                .ToArray();
+            var text = words.Length > 0
+                ? string.Join(' ', words.Select(word => word.Text))
+                : EnhancedTimestampRegex().Replace(withoutLineTimestamps, string.Empty).Trim();
+            if (LyricsStructureMarker.IsMarker(text))
+            {
+                text = string.Empty;
+                words = [];
+            }
+            foreach (Match match in matches)
+            {
+                var lineStart = ParseTimestamp(match.Groups["minutes"].Value, match.Groups["seconds"].Value, offsetMilliseconds);
+                parsed.Add((words.Length > 0 ? words[0].Start : lineStart,
+                    text, words, voiceLane, voiceLabel));
+            }
+            voiceLane = 0;
+            voiceLabel = null;
+        }
+
+        var ordered = parsed
+            .GroupBy(line => (line.Start, line.VoiceLane, line.VoiceLabel))
+            .Select(group => (
+                Start: group.Key.Start,
+                Text: string.Join("  ·  ", group.Select(line => line.Text)
+                    .Where(text => !string.IsNullOrWhiteSpace(text)).Distinct(StringComparer.Ordinal)),
+                Words: group.SelectMany(line => line.Words)
+                    .GroupBy(word => (word.Start, word.Text)).Select(word => word.First())
+                    .OrderBy(word => word.Start).ToArray(),
+                VoiceLane: group.Key.VoiceLane,
+                VoiceLabel: group.Key.VoiceLabel))
+            .OrderBy(line => line.Start).ThenBy(line => line.VoiceLane)
+            .ToArray();
+        var lines = new LyricsLineDto[ordered.Length];
+        var hasIndependentVoiceLanes = ordered.Any(line => line.VoiceLane > 0);
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            var following = ordered.Skip(index + 1)
+                .FirstOrDefault(candidate => candidate.VoiceLane == ordered[index].VoiceLane);
+            var end = following == default ? duration : following.Start;
+            if (hasIndependentVoiceLanes)
+            {
+                var exactWordEnd = ordered[index].Words.Where(word => word.End is not null)
+                    .Select(word => word.End!.Value).DefaultIfEmpty(TimeSpan.Zero).Max();
+                if (exactWordEnd > ordered[index].Start) end = exactWordEnd;
+            }
+            if (end <= ordered[index].Start)
+                end = ordered[index].Start + TimeSpan.FromSeconds(2);
+            var words = new LyricsWordDto[ordered[index].Words.Length];
+            for (var wordIndex = 0; wordIndex < words.Length; wordIndex++)
+            {
+                var sourceWord = ordered[index].Words[wordIndex];
+                var exactEnd = sourceWord.End;
+                var inferredEnd = wordIndex + 1 < words.Length
+                    ? ordered[index].Words[wordIndex + 1].Start
+                    : sourceWord.Start + TimeSpan.FromSeconds(
+                        Math.Clamp(sourceWord.Text.Length / 7d, 0.35, 1.8));
+                // Start-only Enhanced LRC cannot express the last word's
+                // release. Never let its conservative estimate invade the
+                // following lyric line. Explicit end timestamps remain exact,
+                // including intentional overlaps that need editor review.
+                var wordEnd = exactEnd is { } exact && exact >= sourceWord.Start
+                    ? exact
+                    : inferredEnd > end ? end : inferredEnd;
+                words[wordIndex] = new(sourceWord.Start, sourceWord.Text,
+                    wordEnd < sourceWord.Start ? sourceWord.Start : wordEnd, wordIndex);
+            }
+            lines[index] = new(ordered[index].Start, ordered[index].Text, end, index, words,
+                VoiceLane: ordered[index].VoiceLane, VoiceLabel: ordered[index].VoiceLabel);
+        }
+
+        return new(songId, lines, Get("ar"), Get("ti"), Get("al"), Get("by"), offsetMilliseconds);
+
+        string? Get(string key) => metadata.TryGetValue(key, out var value) ? value : null;
+    }
+
+    private static TimeSpan ParseTimestamp(string minutesValue, string secondsValue, int offset)
+    {
+        var minutes = int.Parse(minutesValue, CultureInfo.InvariantCulture);
+        var seconds = double.Parse(secondsValue.Replace(':', '.'), CultureInfo.InvariantCulture);
+        var value = TimeSpan.FromMinutes(minutes) + TimeSpan.FromSeconds(seconds) + TimeSpan.FromMilliseconds(offset);
+        return value < TimeSpan.Zero ? TimeSpan.Zero : value;
+    }
+
+    private static string? DecodeBase64Url(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return null;
+        try
+        {
+            var value = token.Replace('-', '+').Replace('_', '/');
+            value = value.PadRight(value.Length + ((4 - value.Length % 4) % 4), '=');
+            return Encoding.UTF8.GetString(Convert.FromBase64String(value));
+        }
+        catch (FormatException) { return null; }
+    }
+
+    [GeneratedRegex(@"\[(?<minutes>\d{1,3}):(?<seconds>\d{1,2}(?:[\.:]\d{1,3})?)\]", RegexOptions.CultureInvariant)]
+    private static partial Regex TimestampRegex();
+
+    [GeneratedRegex(@"<\d{1,3}:\d{1,2}(?:[\.:]\d{1,3})?>", RegexOptions.CultureInvariant)]
+    private static partial Regex EnhancedTimestampRegex();
+
+    [GeneratedRegex(@"<(?<minutes>\d{1,3}):(?<seconds>\d{1,2}(?:[\.:]\d{1,3})?)(?:,(?<endMinutes>\d{1,3}):(?<endSeconds>\d{1,2}(?:[\.:]\d{1,3})?))?>(?<text>[^<]*)", RegexOptions.CultureInvariant)]
+    private static partial Regex EnhancedWordRegex();
+
+    [GeneratedRegex(@"^\[(?<key>ar|ti|al|by|offset):(?<value>.*)\]$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex MetadataRegex();
+
+    [GeneratedRegex(@"^\[neon-voice:(?<lane>\d+)(?::(?<label>[A-Za-z0-9_-]+))?\]$", RegexOptions.CultureInvariant)]
+    private static partial Regex VoiceLaneRegex();
+}

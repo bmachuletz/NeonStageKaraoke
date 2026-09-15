@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import gc
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +17,25 @@ KARAOKE_MODEL = os.getenv(
 class StemPaths:
     vocals: Path
     instrumental: Path
+
+
+def _stem_role(path: Path) -> str | None:
+    """Read the separator's output role, not words in the input filename.
+
+    A second separation pass commonly receives ``song.instrumental.flac``.
+    audio-separator keeps that input stem in both output filenames, so a broad
+    ``"instrumental" in name`` check misclassified the recovered Vocal output.
+    Parenthesised output labels and final role suffixes are authoritative.
+    """
+    name = path.stem.casefold()
+    labels = re.findall(r"\(([^()]*)\)", name)
+    role = labels[-1].strip() if labels else name
+    if role in {"vocals", "vocal"} or role.endswith("_vocals"):
+        return "vocals"
+    if role in {"instrumental", "no vocals", "no_vocals"} or any(
+            role.endswith(suffix) for suffix in ("_instrumental", "_no vocals", "_no_vocals")):
+        return "instrumental"
+    return None
 
 
 def separate_stems(audio_path: str | Path, output_dir: str | Path, *, model_name: str | None = None) -> StemPaths:
@@ -55,10 +75,10 @@ def separate_stems(audio_path: str | Path, output_dir: str | Path, *, model_name
             path = output_dir / path
         if not path.exists():
             continue
-        lowered = path.name.lower()
-        if "instrumental" in lowered or "no vocals" in lowered:
+        role = _stem_role(path)
+        if role == "instrumental":
             instrumentals.append(path)
-        elif "vocal" in lowered:
+        elif role == "vocals":
             vocals.append(path)
     if not vocals or not instrumentals:
         raise RuntimeError(f"Vocal- oder Instrumental-Spur fehlt in Separator-Ausgabe: {outputs}")

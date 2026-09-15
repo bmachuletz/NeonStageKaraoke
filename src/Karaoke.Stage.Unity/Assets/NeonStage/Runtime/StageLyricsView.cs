@@ -33,6 +33,9 @@ public sealed class StageLyricsView
     private readonly RectTransform _fuseFill;
     private readonly RectTransform _fuseSpark;
     private string _presentationStyle = "neon";
+    private bool _videoBackground;
+    private bool _videoPerformanceMode;
+    private float _songTime;
 
     public StageLyricsView(GameObject host)
     {
@@ -103,12 +106,39 @@ public sealed class StageLyricsView
         if (string.Equals(_presentationStyle, normalized, StringComparison.Ordinal)) return;
         _presentationStyle = normalized;
         var milkGlass = normalized == "milk-glass";
-        _backdrop.gameObject.SetActive(milkGlass);
-        _backdrop.color = milkGlass
-            ? new Color(.010f, .016f, .030f, .985f)
-            : Color.clear;
+        ApplyBackdrop(milkGlass);
         for (var index = 0; index < _lineCount; index++)
             ApplyVoicePalette(index, _voiceLanes[index]);
+    }
+
+    public void SetVideoBackground(bool active)
+    {
+        _videoBackground = active;
+        ApplyBackdrop(_presentationStyle == "milk-glass");
+    }
+
+    public void SetVideoPerformanceMode(bool active)
+    {
+        if (_videoPerformanceMode == active) return;
+        _videoPerformanceMode = active;
+        for (var line = 0; line < MaxLines; line++)
+        {
+            foreach (var burn in _burn[line]) burn.gameObject.SetActive(!active);
+            if (active) _flames[line].gameObject.SetActive(false);
+        }
+        if (!active) return;
+        foreach (var particle in _particles) UnityEngine.Object.Destroy(particle.Rect.gameObject);
+        _particles.Clear();
+    }
+
+    public void SetSongTime(double seconds) => _songTime = (float)System.Math.Max(0, seconds);
+
+    private void ApplyBackdrop(bool milkGlass)
+    {
+        _backdrop.gameObject.SetActive(milkGlass || _videoBackground);
+        _backdrop.color = milkGlass
+            ? new Color(.010f, .016f, .030f, .985f)
+            : _videoBackground ? new Color(.010f, .016f, .030f, .82f) : Color.clear;
     }
 
     public void SetEntryCue(double remaining, bool hasPause, bool showCountdown)
@@ -120,8 +150,8 @@ public sealed class StageLyricsView
         var width = 66f * progress;
         _fuseFill.anchoredPosition = new Vector2(-33, 0);
         _fuseFill.sizeDelta = new Vector2(Mathf.Max(2, width), 8);
-        _fuseSpark.anchoredPosition = new Vector2(-33 + width, Mathf.Sin(Time.unscaledTime * 27f) * 1.2f);
-        var sparkScale = 1f + Mathf.Sin(Time.unscaledTime * 31f) * .1f + Mathf.SmoothStep(0, .22f, progress);
+        _fuseSpark.anchoredPosition = new Vector2(-33 + width, Mathf.Sin(_songTime * 27f) * 1.2f);
+        var sparkScale = 1f + Mathf.Sin(_songTime * 31f) * .1f + Mathf.SmoothStep(0, .22f, progress);
         _fuseSpark.localScale = new Vector3(sparkScale, 1f + progress * .18f, 1);
         if (_lineCount > 0 && progress > .68f)
         {
@@ -244,11 +274,17 @@ public sealed class StageLyricsView
         _masks[line].SetSizeWithCurrentAnchors(
             RectTransform.Axis.Horizontal,
             progressWidth);
-        _flames[line].gameObject.SetActive(p > .002f && p < .998f);
+        if (_videoPerformanceMode)
+        {
+            _fill[line].transform.localScale = Vector3.one;
+            _lastProgress[line] = p;
+            return;
+        }
+        _flames[line].gameObject.SetActive(!_videoPerformanceMode && p > .002f && p < .998f);
         _flames[line].anchoredPosition = new Vector2(
             -_rowWidths[line] * .5f + _textLeft[line] + progressWidth,
-            Mathf.Sin(Time.unscaledTime * Mathf.Lerp(7f, 19f, pace) + line) * Mathf.Lerp(1.2f, 3.2f, pace));
-        var pulse = 1f + Mathf.Sin(Time.unscaledTime * Mathf.Lerp(8f, 24f, pace) + line * 1.7f) * Mathf.Lerp(.07f, .18f, pace);
+            Mathf.Sin(_songTime * Mathf.Lerp(7f, 19f, pace) + line) * Mathf.Lerp(1.2f, 3.2f, pace));
+        var pulse = 1f + Mathf.Sin(_songTime * Mathf.Lerp(8f, 24f, pace) + line * 1.7f) * Mathf.Lerp(.07f, .18f, pace);
         _flames[line].sizeDelta = new Vector2(Mathf.Lerp(82f, 25f, pace), Mathf.Lerp(98f, 45f, pace));
         _flames[line].localScale = new Vector3(pulse, 1f + (pulse - 1f) * Mathf.Lerp(1.1f, 2.2f, pace), 1);
         var lane = _voiceLanes[line];

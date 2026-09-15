@@ -30,6 +30,7 @@ internal sealed class LyricsAlignmentVersionService(
                          $"Das Alignment für Song {songId} enthält keine lesbaren Lyrics.");
         var document = LyricsDocumentImporter.Import(lyrics, analysisRunId, "gpu-aligner");
         var reportJson = await ReadLibraryAlignmentReportAsync(songId, cancellationToken);
+        AlignmentTechnicalText.Attach(document, reportJson);
         AlignmentPitchEvidence.AttachToSyllables(
             document, AlignmentPitchEvidence.Parse(reportJson));
         var json = JsonSerializer.Serialize(document, JsonOptions);
@@ -67,6 +68,7 @@ internal sealed class LyricsAlignmentVersionService(
             status = LyricsVersionStatus.ReviewOverlaps;
         var reportJson = await PersistAlignmentArtifactsAsync(
             songId, alignmentPath, analysisRunId, cancellationToken);
+        AlignmentTechnicalText.Attach(document, reportJson);
         AlignmentPitchEvidence.AttachToSyllables(
             document, AlignmentPitchEvidence.Parse(reportJson));
         var json = JsonSerializer.Serialize(document, JsonOptions);

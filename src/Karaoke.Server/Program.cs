@@ -22,6 +22,7 @@ builder.Services.PostConfigure<KaraokeOptions>(options =>
 builder.Services.Configure<SpotifyOptions>(builder.Configuration.GetSection("Spotify"));
 builder.Services.Configure<QobuzOptions>(builder.Configuration.GetSection("Qobuz"));
 builder.Services.Configure<UsdbOptions>(builder.Configuration.GetSection("Usdb"));
+builder.Services.Configure<GeniusOptions>(builder.Configuration.GetSection("Genius"));
 builder.Services.PostConfigure<UsdbOptions>(options =>
 {
     if (!Path.IsPathFullyQualified(options.CachePath))
@@ -35,6 +36,19 @@ builder.Services.AddHttpClient("Usdb", client =>
 {
     client.DefaultRequestHeaders.UserAgent.ParseAdd("NeonStageKaraoke/1.0");
     client.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/html;q=0.9, */*;q=0.1");
+});
+builder.Services.AddHttpClient("Lrclib", client =>
+{
+    client.BaseAddress = new Uri("https://lrclib.net/");
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("NeonStageKaraoke/1.0");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+});
+builder.Services.AddHttpClient("Genius", client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+    client.DefaultRequestHeaders.UserAgent.ParseAdd("NeonStageKaraoke/1.0");
+    client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
 });
 builder.Services.AddHttpClient("UsdbAnimux", client =>
 {
@@ -63,17 +77,20 @@ builder.Services.AddSingleton<EventRepository>();
 builder.Services.AddSingleton<PublicServerUrlResolver>();
 builder.Services.AddSingleton<WishlistProcessingService>();
 builder.Services.AddSingleton<UsdbProviderSettingsService>();
+builder.Services.AddSingleton<GeniusProviderSettingsService>();
 builder.Services.AddSingleton<UsdbClient>();
 builder.Services.AddSingleton<AnimuxUsdbClient>();
 builder.Services.AddSingleton<IUsdbClient, PreferredUsdbClient>();
 builder.Services.AddSingleton<UsdbSongMatcher>();
 builder.Services.AddSingleton<UsdbLyricsSourceService>();
 builder.Services.AddSingleton<UsdbEditorLyricsService>();
+builder.Services.AddSingleton<ReplacementLyricsService>();
 builder.Services.AddSingleton<SongImportService>();
 builder.Services.AddSingleton<FolderImportService>();
 builder.Services.AddSingleton<SongRealignmentService>();
 builder.Services.AddSingleton<SongLyricsRecognitionService>();
 builder.Services.AddSingleton<SongPackageService>();
+builder.Services.AddSingleton<SongVideoService>();
 builder.Services.AddSingleton<StageTimingDiagnosticsService>();
 builder.Services.AddSingleton<LyricsVersionRepository>();
 builder.Services.AddSingleton<LyricsAlignmentVersionService>();
@@ -88,6 +105,9 @@ app.UseDefaultFiles();
 app.UseStaticFiles();
 app.MapGet("/admin", (IWebHostEnvironment environment) =>
     Results.File(Path.Combine(environment.WebRootPath, "admin.html"), "text/html"));
+app.MapGet("/api/admin/settings/genius/callback", () => Results.Content(
+    "Neon Stage verwendet für Genius ausschließlich einen serverseitigen Client Access Token. Dieses Fenster kann geschlossen werden.",
+    "text/plain; charset=utf-8"));
 app.MapGet("/e/{token}", (string token, IWebHostEnvironment environment) =>
     Results.File(Path.Combine(environment.WebRootPath, "index.html"), "text/html"));
 app.MapHub<KaraokeHub>("/hubs/karaoke");
@@ -150,6 +170,10 @@ app.MapGet("/api/admin/wishlist-processing", (WishlistProcessingService processi
 app.MapGet("/api/admin/song-import", (SongImportService imports) => Results.Ok(imports.GetStatus()));
 app.MapGet("/api/admin/folder-import", (FolderImportService imports) => Results.Ok(imports.GetStatus()));
 app.MapGet("/api/admin/song-realignment", (SongRealignmentService realignment) => Results.Ok(realignment.GetStatus()));
+app.MapDelete("/api/admin/song-realignment", (SongRealignmentService realignment) =>
+    realignment.TryCancel()
+        ? Results.Accepted(value: realignment.GetStatus())
+        : Results.Conflict("Es läuft keine GPU-Neuausrichtung."));
 app.MapGet("/api/admin/song-lyrics-recognition", (SongLyricsRecognitionService recognition) =>
     Results.Ok(recognition.GetStatus()));
 app.MapPost("/api/admin/songs/{id:guid}/recognize-lyrics", async (
@@ -166,14 +190,6 @@ app.MapPost("/api/admin/songs/{id:guid}/realign", async (Guid id, SongRealignmen
     {
         null => Results.NotFound(),
         false => Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung."),
-        true => Results.Accepted(value: realignment.GetStatus())
-    });
-app.MapPost("/api/admin/songs/{id:guid}/basic-pitch", async (
-    Guid id, SongBasicPitchRequest? request, SongRealignmentService realignment, CancellationToken ct) =>
-    await realignment.TryStartBasicPitchAsync(id, request, ct) switch
-    {
-        null => Results.NotFound(),
-        false => Results.Conflict("Es läuft bereits eine GPU-Analyse."),
         true => Results.Accepted(value: realignment.GetStatus())
     });
 app.MapPost("/api/admin/songs/realign-all", (SongRealignmentRequest? request,
@@ -412,6 +428,18 @@ app.MapGet("/api/songs/{id:guid}", async (Guid id, LibraryRepository repo, Cance
 app.MapPut("/api/admin/songs/{id:guid}/review-status", async (Guid id, ChangeSongReviewStatusRequest request,
     LibraryRepository repo, CancellationToken ct) =>
     await repo.SetReviewStatusAsync(id, request.Status, ct) is { } song ? Results.Ok(song) : Results.BadRequest("Lyrics sowie Instrumental- und Vocalspur sind erforderlich."));
+app.MapPost("/api/admin/songs/remove-all-from-stage", async (
+    LibraryRepository repo, CancellationToken ct) =>
+    Results.Ok(new RemoveSongsFromStageResultDto(await repo.RemoveAllSongsFromStageAsync(ct))));
+app.MapDelete("/api/admin/lyrics/versions", async (
+    LyricsVersionRepository versions, LibraryRepository repo, CancellationToken ct) =>
+{
+    var versionsDeleted = await versions.DeleteAllAsync(ct);
+    // Ohne veröffentlichte Version darf kein Song als freigegeben gelten. So
+    // kann die Runtime auch nicht unbemerkt auf eine physische LRC zurückfallen.
+    var songsRemoved = await repo.RemoveAllSongsFromStageAsync(ct);
+    return Results.Ok(new DeleteAllLyricsVersionsResultDto(versionsDeleted, songsRemoved));
+});
 app.MapPut("/api/admin/songs/{id:guid}/lyrics/import-source", async (Guid id, ImportLyricsSourceRequest request,
     LibraryRepository repo, CancellationToken ct) =>
 {
@@ -425,7 +453,7 @@ app.MapGet("/api/admin/songs/{id:guid}/lyrics/usdb/search", async (
     if (await library.GetAsync(id, ct) is not { } song) return Results.NotFound();
     try { return Results.Ok(await usdb.SearchAsync(song, query, ct)); }
     catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or
-                                      InvalidOperationException or JsonException)
+                                      InvalidOperationException or ArgumentException or JsonException)
     {
         return Results.Problem("USDB search is currently unavailable: " + exception.Message,
             statusCode: StatusCodes.Status502BadGateway);
@@ -442,15 +470,43 @@ app.MapPost("/api/admin/songs/{id:guid}/lyrics/usdb/import", async (
             return Results.NotFound("The USDB selection expired or does not belong to this song.");
         var alignmentStarted = request.StartLocalAlignment &&
                                await realignment.TryStartAsync(id,
-                                   new SongRealignmentRequest(imported.Version.Id,
-                                       IncludeEditorBasis: true, IncludeOriginalLyrics: false,
-                                       IncludeResearchShadow: false), ct) == true;
+                                   new SongRealignmentRequest(imported.Version.Id), ct) == true;
         return Results.Ok(imported with { AlignmentStarted = alignmentStarted });
     }
     catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or
                                       InvalidOperationException or UltraStarFormatException or JsonException)
     {
         return Results.Problem("The selected USDB version could not be imported: " + exception.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+app.MapGet("/api/admin/songs/{id:guid}/lyrics/replacements/search", async (
+    Guid id, string? query, LibraryRepository library, ReplacementLyricsService replacements,
+    CancellationToken ct) =>
+{
+    if (await library.GetAsync(id, ct) is not { } song) return Results.NotFound();
+    return Results.Ok(await replacements.SearchAsync(song, query, ct));
+});
+app.MapPost("/api/admin/songs/{id:guid}/lyrics/replacements/apply", async (
+    Guid id, RetrieveReplacementLyricsRequest request, ReplacementLyricsService replacements,
+    SongRealignmentService realignment, SongLyricsRecognitionService recognition, CancellationToken ct) =>
+{
+    try
+    {
+        if (await replacements.RetrieveAsync(id, request.SelectionToken, ct) is not { } selected)
+            return Results.NotFound("Die Lyrics-Auswahl ist abgelaufen oder gehört zu einem anderen Song.");
+        var started = selected.IsFullTranscript
+            ? await recognition.TryStartAsync(id, ct)
+            : await realignment.TryStartReplacementLyricsAsync(id, selected, ct);
+        if (started is null) return Results.NotFound();
+        if (started == false) return Results.Conflict("Es läuft bereits eine GPU-Neuausrichtung.");
+        return Results.Accepted(value: new RetrieveReplacementLyricsResultDto(
+            selected.Source, selected.SourceId, selected.Label, true, selected.IsFullTranscript));
+    }
+    catch (Exception exception) when (exception is HttpRequestException or InvalidDataException or
+                                      InvalidOperationException or ArgumentException or JsonException)
+    {
+        return Results.Problem("Die ausgewählten Lyrics konnten nicht übernommen werden: " + exception.Message,
             statusCode: StatusCodes.Status502BadGateway);
     }
 });
@@ -525,6 +581,85 @@ app.MapGet("/api/songs/{id:guid}/audio", async (Guid id, LibraryRepository repo,
     return file is { } audioFile
         ? Results.File(audioFile.Path, audioFile.ContentType, enableRangeProcessing: true)
         : Results.NotFound();
+});
+app.MapGet("/api/songs/{id:guid}/video", async (Guid id, SongVideoService videos, CancellationToken ct) =>
+    await videos.GetFileAsync(id, ct) is { } video
+        ? Results.File(video.Path, video.ContentType, enableRangeProcessing: true)
+        : Results.NotFound());
+// Unitys VideoPlayer erkennt Container auf Linux primär an der URL-Endung und
+// hält den extensionlosen API-Pfad andernfalls fälschlich für Matroska/EBML.
+app.MapGet("/api/songs/{id:guid}/video.mp4", async (Guid id, SongVideoService videos, CancellationToken ct) =>
+    await videos.GetFileAsync(id, ct) is { } video
+        ? Results.File(video.Path, "video/mp4", enableRangeProcessing: true)
+        : Results.NotFound());
+app.MapGet("/api/songs/{id:guid}/video.webm", async (Guid id, SongVideoService videos, CancellationToken ct) =>
+    await videos.GetLinuxFileAsync(id, ct) is { } video
+        ? Results.File(video.Path, video.ContentType, enableRangeProcessing: true)
+        : Results.NotFound());
+app.MapGet("/api/songs/{id:guid}/video.android.mp4", async (Guid id, SongVideoService videos, CancellationToken ct) =>
+    await videos.GetAndroidFileAsync(id, ct) is { } video
+        ? Results.File(video.Path, video.ContentType, enableRangeProcessing: true)
+        : Results.NotFound());
+app.MapGet("/api/songs/{id:guid}/video/info", async (Guid id, SongVideoService videos, CancellationToken ct) =>
+    await videos.GetInfoAsync(id, ct) is { } info ? Results.Ok(info) : Results.NotFound());
+app.MapGet("/api/admin/songs/{id:guid}/video/search", async (
+    Guid id, string? query, SongVideoService videos, CancellationToken ct) =>
+{
+    try { return Results.Ok(await videos.SearchYouTubeAsync(id, query ?? string.Empty, ct)); }
+    catch (FileNotFoundException) { return Results.NotFound(); }
+    catch (Exception exception) when (exception is InvalidOperationException or JsonException)
+    {
+        return Results.Problem("Die Video-Suche ist nicht verfügbar: " + exception.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+app.MapPost("/api/admin/songs/{id:guid}/video/select", async (
+    Guid id, SelectSongVideoRequest request, SongVideoService videos, CancellationToken ct) =>
+{
+    try
+    {
+        return await videos.DownloadSelectedAsync(id, request.SelectionToken, request.DownloadAuthorized, ct)
+            is { } info ? Results.Ok(info) : Results.NotFound("Die Videoauswahl ist abgelaufen.");
+    }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+    catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException or IOException)
+    {
+        return Results.Problem("Das Video konnte nicht geladen werden: " + exception.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+app.MapPost("/api/admin/songs/{id:guid}/video/upload", async (
+    Guid id, HttpRequest request, SongVideoService videos, CancellationToken ct) =>
+{
+    if (!request.HasFormContentType) return Results.BadRequest("Eine Videodatei fehlt.");
+    var form = await request.ReadFormAsync(ct);
+    var file = form.Files.GetFile("file");
+    if (file is null) return Results.BadRequest("Eine Videodatei fehlt.");
+    try
+    {
+        await using var stream = file.OpenReadStream();
+        return Results.Ok(await videos.StoreUploadedAsync(id, stream, file.Length, file.FileName, ct));
+    }
+    catch (FileNotFoundException) { return Results.NotFound(); }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+    catch (Exception exception) when (exception is InvalidOperationException or InvalidDataException or IOException)
+    {
+        return Results.Problem("Die Videodatei konnte nicht übernommen werden: " + exception.Message,
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+}).DisableAntiforgery();
+app.MapDelete("/api/admin/songs/{id:guid}/video", async (
+    Guid id, SongVideoService videos, CancellationToken ct) =>
+    await videos.DeleteAsync(id, ct) ? Results.NoContent() : Results.NotFound());
+app.MapPut("/api/admin/songs/{id:guid}/video/offset", async (
+    Guid id, UpdateSongVideoOffsetRequest request, SongVideoService videos, CancellationToken ct) =>
+{
+    try
+    {
+        return await videos.UpdateOffsetAsync(id, request.OffsetMilliseconds, ct) is { } info
+            ? Results.Ok(info) : Results.NotFound();
+    }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
 });
 app.MapGet("/api/songs/{id:guid}/stems", async (Guid id, LibraryRepository repo, CancellationToken ct) =>
     await repo.GetStemAvailabilityAsync(id, ct) is { } stems ? Results.Ok(stems) : Results.NotFound());
@@ -620,6 +755,22 @@ app.MapPut("/api/admin/settings/usdb", async (HttpContext context,
 {
     if (!CanTransmitAdminSecrets(context))
         return Results.BadRequest("USDB-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
+    try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
+    catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+                                      IOException or UnauthorizedAccessException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
+app.MapGet("/api/admin/settings/genius", async (
+    GeniusProviderSettingsService settings, CancellationToken ct) =>
+    Results.Ok(await settings.GetAsync(ct)));
+app.MapPut("/api/admin/settings/genius", async (HttpContext context,
+    UpdateGeniusProviderSettingsRequest request, GeniusProviderSettingsService settings,
+    CancellationToken ct) =>
+{
+    if (!CanTransmitAdminSecrets(context))
+        return Results.BadRequest("Genius-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
     try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
     catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
                                       IOException or UnauthorizedAccessException)

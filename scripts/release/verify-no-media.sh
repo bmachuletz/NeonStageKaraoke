@@ -5,7 +5,7 @@ root=${1:-.}
 [[ -d "$root" ]] || { echo "Guard target does not exist: $root" >&2; exit 2; }
 
 forbidden='\.(mp3|wav|flac|ogg|m4a|aac|wma|lrc|elrc|alignment\.json|stems\.json|lyrics\.json|png|jpg|jpeg|webp|bmp|gif|db|sqlite|sqlite3|ckpt|pt|onnx|safetensors)$'
-allow='(^|/)(site/assets/|lyrics-word-aligner/third_party/SOFA/example\.png|src/Karaoke\.App/Assets/|src/Karaoke\.App\.Android/Resources/drawable/app_icon\.png|src/Karaoke\.Stage\.Unity/Assets/(TextMesh Pro/|NeonStage/Branding/|Resources/NeonStageIcon\.png))'
+allow='(^|/)(site/assets/|src/Karaoke\.App/Assets/|src/Karaoke\.App\.Android/Resources/drawable/app_icon\.png|src/Karaoke\.Stage\.Unity/Assets/(TextMesh Pro/|NeonStage/Branding/|Resources/NeonStageIcon\.png))'
 
 if [[ -d .git && "$root" == "." ]]; then
   mapfile -d '' files < <(git ls-files -z)

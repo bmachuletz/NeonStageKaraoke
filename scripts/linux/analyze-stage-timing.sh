@@ -31,12 +31,15 @@ curl -fsS "$server_url/api/diagnostics/stage-timing?take=$take" | jq -r '
       "Noch keine laufenden Audio-Samples vorhanden."
     else sort_by(.songId) | group_by(.songId)[] |
     . as $samples |
-    stats([$samples[] | 1000 * (.lyricsPositionSeconds - .masterSamplePositionSeconds)]) as $clock |
+    stats([$samples[] | 1000 * ((.lyricsPositionSeconds + (.appliedOutputLatencySeconds // 0)) - .masterSamplePositionSeconds)]) as $clock |
+    stats([$samples[] | 1000 * (.appliedOutputLatencySeconds // 0)]) as $latency |
+    stats([$samples[] | 1000 * (.estimatedOutputLatencySeconds // 0)]) as $estimatedLatency |
     stats([$samples[] | 1000 * .sampleClockCorrectionSeconds]) as $correction |
     stats([$samples[] | 1000 * .stemDifferenceSeconds]) as $stems |
     "Song: \($samples[0].songId)\n" +
     "  Samples: \($samples|length), Gerät: \($samples[0].deviceId)\n" +
-    "  Lyrics minus Master: Ø \($clock.avg|round) ms, \($clock.min|round)…\($clock.max|round) ms, Schwankung \($clock.spread|round) ms\n" +
+    "  Rohuhr-Abweichung (vor Lyrics-Kompensation): Ø \($clock.avg|round) ms, \($clock.min|round)…\($clock.max|round) ms, Schwankung \($clock.spread|round) ms\n" +
+    "  Angewandte Audioausgabelatenz: Ø \($latency.avg|round) ms (DSP-Schätzung Ø \($estimatedLatency.avg|round) ms)\n" +
     "  Sampleclock-Korrektur: Ø \($correction.avg|round) ms, \($correction.min|round)…\($correction.max|round) ms\n" +
     "  Vocals minus Instrumental: Ø \($stems.avg|round) ms, \($stems.min|round)…\($stems.max|round) ms\n"
     end

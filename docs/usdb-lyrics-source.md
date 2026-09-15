@@ -15,10 +15,9 @@ The source order is deliberately fail-open:
 3. automatic `usdb.eu` fallback, version resolution, recording match, and import;
 4. the existing LRCLIB matcher without changed scoring or semantics;
 5. full vocal transcription when no usable lyrics exist;
-6. for a recording-safe UltraStar match: stem separation plus one optional
-   rigid recording offset, without ASR/CTC/AI lyrics alignment;
-7. otherwise Variant 1.2 separation and IPA word/syllable refinement;
-8. the existing review and release gate.
+6. EasyAligner separates the song and aligns the selected human-readable text
+   through the same global German/English CTC path used by every import;
+7. the existing review and release gate.
 
 Any timeout, HTML/schema change, download error, malformed TXT, unsupported
 UltraStar construct, ambiguous match, or duration mismatch leaves the target
@@ -71,11 +70,10 @@ also groups library, connection URL, and download-provider settings.
   carries those syllables as strong, non-manual references into the aligner.
 - `UsdbLyricsSourceService` coordinates candidates, records explicit rejection
   reasons, writes an accepted LRC atomically, and contains all failure handling.
-- `trusted-ultrastar` is an isolated aligner-worker profile. It creates the
-  normal vocal/instrumental artifacts, measures the first vocal onset, and may
-  apply one rigid offset to the complete chart. It preserves UltraStar's small
-  perceptual lead and never changes relative line, word, note, or syllable
-  geometry. A failed recording check falls back to the regular pipeline.
+- `UltraStarLyricsImporter` retains the source hierarchy for editor import and
+  converts it to Enhanced LRC for automated song/folder imports. EasyAligner
+  keeps the visible text but deliberately measures fresh word and syllable
+  windows instead of selecting a separate trusted-chart pipeline.
 - `UsdbEditorLyricsService` owns the explicit editor search, recommended-result
   ranking, single-use selection tokens, and non-destructive version creation.
 

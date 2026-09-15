@@ -1,6 +1,8 @@
 using Karaoke.Contracts;
 using Karaoke.Editor.Core;
 using NeonStage.Presentation;
+using NeonStage.Testing;
+using NeonStage.Timing;
 
 var viewport = new TimelineViewport(100, TimeSpan.FromSeconds(10));
 Assert(viewport.TimeToPixel(TimeSpan.FromSeconds(12)) == 200, "Zeit wird korrekt in Pixel umgerechnet.");
@@ -79,6 +81,28 @@ markerDocument.Lines.Add(legacyMarker);
 Assert(LyricsDocumentImporter.IgnoreStructureMarkers(markerDocument) == 1 &&
        legacyMarker.Text == string.Empty && legacyMarker.Children.Count == 0,
     "Bereits gespeicherte Review-Dokumente werden beim Laden von Strukturmarkern bereinigt.");
+
+const string startOnlyEnhancedLrc = """
+[00:41.54]<00:41.54>träum <00:41.84>weiter. <00:44.90>Ich <00:45.20>hingegen,
+[00:46.06]<00:46.06>träume, <00:47.80>sozusagen,
+[01:47.100]<01:47.100>berühmt <01:48.54>zu <01:48.82>sein.
+""";
+Assert(EnhancedLrcLyricsImporter.LooksLikeEnhancedLrc(startOnlyEnhancedLrc),
+    "Enhanced LRC mit reinen Wort-Startmarken wird sicher erkannt.");
+var startOnlyImport = EnhancedLrcLyricsImporter.Parse(Guid.NewGuid(), startOnlyEnhancedLrc,
+    TimeSpan.FromSeconds(120));
+Assert(startOnlyImport.Lines.Count == 3 &&
+       startOnlyImport.Lines[0].Words is { Count: 4 } importedStartWords &&
+       importedStartWords[2].Start == TimeSpan.FromSeconds(44.9) &&
+       importedStartWords[2].End == TimeSpan.FromSeconds(45.2) &&
+       importedStartWords[3].End == TimeSpan.FromSeconds(46.06) &&
+       startOnlyImport.Lines[2].Words![0].Start == TimeSpan.FromSeconds(107.1),
+    "Wortenden folgen dem nächsten Start, das letzte Wort bleibt in seiner Zeile und drei Dezimalstellen bleiben exakt.");
+var startOnlyDocument = LyricsDocumentImporter.Import(startOnlyImport,
+    modelVersion: "Enhanced LRC", detailedOrigin: SegmentOrigin.ImportedLineLyrics);
+Assert(startOnlyDocument.Lines.SelectMany(line => line.Children)
+       .All(word => word.Origin == SegmentOrigin.ImportedLineLyrics),
+    "Enhanced-LRC-Wörter gelangen als importierte Originaltimings in den Editor.");
 
 var scalableWord = Segment("Hallo", LyricSegmentType.Word, 10, 12);
 var firstSyllable = Segment("Hal", LyricSegmentType.Syllable, 10, 11, scalableWord.Id);
@@ -442,7 +466,20 @@ Assert(duringWord.Lines[0].Progress is > .35 and < .65,
     "Die Editor-Vorschau verwendet den wort- und silbengenauen Stage-Fortschritt.");
 var middleOfSyllable = stagePreview.Evaluate(TimeSpan.FromMilliseconds(1250));
 Assert(Math.Abs(middleOfSyllable.Lines[0].Progress - .3) < .001,
-    "Die Stage-Markierung ist auch mitten in einer Silbe millisekundengenau reproduzierbar.");
+    "Eine lange Silbe füllt sich über ihre vollständige akustische Dauer konstant.");
+var laterInSyllable = stagePreview.Evaluate(TimeSpan.FromMilliseconds(1375));
+Assert(Math.Abs(laterInSyllable.Lines[0].Progress - .45) < .001,
+    "Der sichtbare Fortschritt einer gehaltenen Silbe bleibt bis zum Ende gleichmäßig.");
+var shortSyllableEngine = new StagePresentationEngine([
+    new StagePresentationLine(3, 3.12, "to", [
+        new StagePresentationWord(3, 3.12, "to", [
+            new StagePresentationSyllable(3, 3.12, "to", .84)
+        ], .84)
+    ], null, "Automatic", 0, "Lead")
+]);
+Assert(shortSyllableEngine.Evaluate(3.06).Lines[0].Progress is > .65 and < .85 &&
+       shortSyllableEngine.Evaluate(3.12).Lines[0].Progress == 1,
+    "Eine kurze Silbe springt weich beschleunigt statt hart auf vollständig gefüllt.");
 
 var insertedWord = Segment("toys", LyricSegmentType.Word, 2, 3, imported.Lines[0].Id);
 insertedWord.Children.Add(Segment("toys", LyricSegmentType.Syllable, 2, 3, insertedWord.Id));
@@ -546,6 +583,38 @@ Assert(exactPresentation.Evaluate(.86).Lines[0].Progress == 0 &&
        karaokePresentation.Evaluate(.86).Lines[0].Progress > 0 &&
        karaokePresentation.Evaluate(.86).ShowEntryCue == exactPresentation.Evaluate(.86).ShowEntryCue,
     "Das adaptive Karaoke-Timing bereitet einen Phraseneinsatz früher vor, ohne Einsatzsignal oder kanonische Zeit zu verschieben.");
+Assert(Math.Abs(StageTimingCompensation.EstimateOutputLatencySeconds(1024, 4, 48000) - 0.0853333333) < .000001 &&
+       StageTimingCompensation.LyricsPositionSeconds(10, 200, .0853333333) < 9.915 &&
+       StageTimingCompensation.LyricsPositionSeconds(.04, 200, .0853333333) == 0,
+    "Die Stage verzögert nur ihre Lyrics-Uhr um den Audiopuffer und klemmt den Songanfang sicher auf null.");
+
+var pausedStageFrame = new StageClockFrame(12.5, 12.42, false, .016);
+Assert(pausedStageFrame.PositionSeconds == 12.5 && pausedStageFrame.LyricsPositionSeconds == 12.42 &&
+       pausedStageFrame.DeltaSeconds == 0,
+    "Die zentrale Stage-Uhr friert zeitabhängige Effekte während einer Pause ein.");
+var exportClock = new FrameStageClock();
+exportClock.SetFrame(1432, 60, -.085);
+var exportFrame = exportClock.Capture();
+Assert(Math.Abs(exportFrame.PositionSeconds - 1432d / 60) < .000000001 &&
+       Math.Abs(exportFrame.LyricsPositionSeconds - (1432d / 60 - .085)) < .000000001 &&
+       Math.Abs(exportFrame.DeltaSeconds - 1d / 60) < .000000001,
+    "Die Export-Uhr leitet Songzeit und Delta deterministisch aus Framezahl und FPS ab.");
+var analysisTimeline = new StageAudioAnalysisTimeline([
+    new StageAudioAnalysisPoint(1.0, .2, .4, .6, .8, true),
+    new StageAudioAnalysisPoint(1.1, .8, .6, .4, .2, false)
+]);
+var interpolatedAnalysis = analysisTimeline.Sample(1.05);
+Assert(Math.Abs(interpolatedAnalysis.Energy - .5) < .000001 &&
+       Math.Abs(interpolatedAnalysis.Bass - .5) < .000001 &&
+       interpolatedAnalysis.BeatPulse > .6 &&
+       analysisTimeline.Sample(1.05).BeatPulse == interpolatedAnalysis.BeatPulse,
+    "Die Offline-Audioanalyse interpoliert Frequenzbänder und Beat-Pulse deterministisch für beliebige Frames.");
+Assert(analysisTimeline.Sample(.5).BeatPulse == 0 && analysisTimeline.Sample(2).BeatPulse == 0,
+    "Beat-Pulse erscheinen ausschließlich im definierten Zeitfenster nach einem analysierten Beat.");
+Assert(StageMediaTiming.VideoLeadFrames(.525, 60) == 32 &&
+       StageMediaTiming.VideoSourceStartSeconds(.525) == 0 &&
+       Math.Abs(StageMediaTiming.VideoSourceStartSeconds(-1.25) - 1.25) < .000001,
+    "Positive und negative Video-Offsets werden deterministisch in Leerframes beziehungsweise Quellstart übersetzt.");
 
 var sustainedWord = new StagePresentationWord(10, 11, "Haaaaallo",
     [
@@ -720,6 +789,11 @@ var karaokeProjection = KaraokeTimingProjection.Create(beatProjectionDocument, [
 Assert(karaokeProjection.Lines[0].Children[0].Start == TimeSpan.FromSeconds(1.125) &&
        beatProjectionDocument.Lines[0].Children[0].Start == TimeSpan.FromSeconds(1.08),
     "Die Karaoke-Vorschau quantisiert plausible Grenzen auf musikalische Unterteilungen, ohne den Arbeitsstand zu verändern.");
+var projectedNote = new PitchNoteEvidence(TimeSpan.FromSeconds(1.1), TimeSpan.FromSeconds(1.3), 67, .9, 1);
+beatProjectionDocument.Lines[0].Children[0].Notes.Add(projectedNote);
+var projectionWithPitch = KaraokeTimingProjection.Create(beatProjectionDocument, [1, 1.5, 2]);
+Assert(projectionWithPitch.Lines[0].Children[0].Notes.SequenceEqual([projectedNote]),
+    "Die Karaoke-Vorschau behält Pitch-Noten für dasselbe musikalische Highlight wie die Stage.");
 beatProjectionDocument.Lines[0].Children[0].KaraokeTimingLocked = true;
 var lockedKaraokeProjection = KaraokeTimingProjection.Create(beatProjectionDocument, [1, 1.5, 2]);
 Assert(lockedKaraokeProjection.Lines[0].Children[0].Start == TimeSpan.FromSeconds(1.08) &&
@@ -751,7 +825,7 @@ var exportedEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditor
 });
 Assert(exportedEditorLrc == "[01:01.250]<01:01.250,01:01.800>Sing <01:02.100,01:03.000>loud" + Environment.NewLine,
     "Editor revisions should export their exact word windows as enhanced LRC");
-var manualEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditorDocument
+var manualEditorDocument = new LyricsEditorDocument
 {
     SongId = Guid.NewGuid(),
     Lines =
@@ -760,10 +834,19 @@ var manualEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(new LyricsEditorDo
         {
             Id = Guid.NewGuid(), Type = LyricSegmentType.Line,
             Start = TimeSpan.FromSeconds(10), End = TimeSpan.FromSeconds(12), Text = "Keep timing",
-            IsManuallyAdjusted = true
+            IsManuallyAdjusted = true,
+            Children =
+            [
+                new LyricSegment { Id = Guid.NewGuid(), Type = LyricSegmentType.Word,
+                    Start = TimeSpan.FromSeconds(10), End = TimeSpan.FromSeconds(10.8),
+                    Text = "Keep", IsManuallyAdjusted = true },
+                new LyricSegment { Id = Guid.NewGuid(), Type = LyricSegmentType.Word,
+                    Start = TimeSpan.FromSeconds(11), End = TimeSpan.FromSeconds(12), Text = "timing" }
+            ]
         }
     ]
-});
+};
+var manualEditorLrc = LyricsDocumentLrcExporter.ToEnhancedLrc(manualEditorDocument);
 Assert(manualEditorLrc.StartsWith("[neon-manual:10.0000000,12.0000000]" + Environment.NewLine,
         StringComparison.Ordinal),
     "Manually adjusted editor lines carry an immutable timing range into realignment");
@@ -883,8 +966,100 @@ pitchWord.Children.Add(pitchSyllable);
 pitchLine.Children.Add(pitchWord);
 pitchDocument.Lines.Add(pitchLine);
 Assert(AlignmentPitchEvidence.AttachToSyllables(pitchDocument, structuredPitch) == 1 &&
-       pitchSyllable.Notes.Count == 1,
-    "Noten werden über Zeitüberlappung an vorhandene Silben gebunden, ohne Silben zu erzeugen.");
+       pitchSyllable.Notes is [{ Midi: 67, Contour: null }],
+    "Noten werden kompakt an vorhandene Silben gebunden; der hochaufgelöste Contour bleibt nur im technischen Bericht.");
+var technicalDocument = new LyricsEditorDocument { SongId = Guid.CreateVersion7() };
+var technicalLine = Segment("Don't stop!", LyricSegmentType.Line, 1, 2);
+technicalLine.Children.Add(Segment("Don't", LyricSegmentType.Word, 1, 1.4, technicalLine.Id));
+technicalLine.Children.Add(Segment("stop!", LyricSegmentType.Word, 1.5, 2, technicalLine.Id));
+technicalDocument.Lines.Add(technicalLine);
+Assert(AlignmentTechnicalText.Attach(technicalDocument, """
+{
+  "details": [{
+    "text": "Don't stop!", "technical_text": "dont stop",
+    "words": [
+      { "word": "Don't", "technical_text": "dont" },
+      { "word": "stop!", "technical_text": "stop" }
+    ]
+  }]
+}
+""") == 3 && technicalLine.TechnicalText == "dont stop" &&
+       technicalLine.Children[0].TechnicalText == "dont" &&
+       technicalLine.Text == "Don't stop!",
+    "Technischer CTC-Text wird zusätzlich angehängt, ohne Menschen-Lyrics zu verändern.");
+var technicalProjection = KaraokeTimingProjection.Create(technicalDocument, [1, 1.5, 2]);
+Assert(technicalProjection.Lines[0].TechnicalText == "dont stop" &&
+       technicalProjection.Lines[0].Text == "Don't stop!",
+    "Die Editor-Timingvorschau bewahrt technischen und sichtbaren Text getrennt.");
+var compactPitchDocumentJson = System.Text.Json.JsonSerializer.Serialize(pitchDocument,
+    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+Assert(!compactPitchDocumentJson.Contains("\"segments\"", StringComparison.Ordinal) &&
+       compactPitchDocumentJson.Contains("\"lines\"", StringComparison.Ordinal) &&
+       pitchDocument.Segments.Count() == 3,
+    "Editor-Dokumente persistieren den Segmentbaum nur einmal unter lines; die flache Segments-Ansicht bleibt im Speicher verfügbar.");
+
+var revisionGate = new StageTestRevisionGate();
+Assert(revisionGate.TryApply(1) && revisionGate.TryApply(3) &&
+       !revisionGate.TryApply(2) && !revisionGate.TryApply(3) && revisionGate.AppliedRevision == 3,
+    "Stage-Test-Revisionen sind monoton; veraltete und doppelte Updates werden verworfen.");
+var handshakeSession = Guid.NewGuid().ToString("N");
+var handshakeToken = "a-secure-random-test-token";
+var compatibleHello = new StageTestMessage
+{
+    type = StageTestProtocol.Hello, protocolVersion = StageTestProtocol.Version,
+    sessionId = handshakeSession, token = handshakeToken
+};
+Assert(StageTestProtocol.IsCompatibleHello(compatibleHello, handshakeSession, handshakeToken) &&
+       !StageTestProtocol.IsCompatibleHello(new StageTestMessage
+       {
+           type = StageTestProtocol.Hello, protocolVersion = StageTestProtocol.Version + 1,
+           sessionId = handshakeSession, token = handshakeToken
+       }, handshakeSession, handshakeToken) &&
+       !StageTestProtocol.IsCompatibleHello(null, handshakeSession, handshakeToken),
+    "Der Handshake akzeptiert nur Protokollversion, Sitzung und Token dieser Editor-Session.");
+var stageSong = new SongDto(technicalDocument.SongId, "Human title", "Human artist", "Album", 120, true);
+var stageLyrics = StageTestLyricsMapper.ToLyricsDto(technicalDocument, stageSong, true);
+Assert(stageLyrics.Lines[0].Text == "Don't stop!" && stageLyrics.Lines[0].Words![0].Text == "Don't" &&
+       !stageLyrics.Lines[0].Text.Contains("dont stop", StringComparison.Ordinal),
+    "Der Unity-Live-Test erhält sichtbare Menschen-Lyrics und niemals den technischen CTC-Text.");
+var protocolJson = System.Text.Json.JsonSerializer.Serialize(new StageTestMessage
+{
+    type = StageTestProtocol.ReplaceSongState, sessionId = Guid.NewGuid().ToString("N"), revision = 7,
+    stateJson = System.Text.Json.JsonSerializer.Serialize(new StageTestSongState
+    {
+        songId = stageSong.Id.ToString(), title = stageSong.Title, lyricsJson = "{lyrics}", positionSeconds = 12.5
+    }, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { IncludeFields = true })
+}, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { IncludeFields = true });
+var protocolRoundTrip = System.Text.Json.JsonSerializer.Deserialize<StageTestMessage>(protocolJson,
+    new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { IncludeFields = true });
+Assert(protocolRoundTrip is { type: StageTestProtocol.ReplaceSongState, revision: 7 } &&
+       protocolRoundTrip.stateJson.Contains("Human title", StringComparison.Ordinal),
+    "Vollsync und inkrementelle Nachrichten verwenden ein verlustfreies NDJSON-kompatibles Protokoll.");
+var frozenExportRevision = protocolRoundTrip.revision;
+var exportRequest = new StageTestMessage
+{
+    type = StageTestProtocol.BeginExport, revision = frozenExportRevision, outputPath = "/tmp/song.mp4",
+    width = 1920, height = 1080, framesPerSecond = 60
+};
+Assert(exportRequest.revision == 7 && exportRequest.width == 1920 && exportRequest.framesPerSecond == 60,
+    "Ein MP4-Export bindet Konfiguration und unveränderliche Snapshot-Revision an denselben Auftrag.");
+var replica = new StageTestReplicaState();
+Assert(replica.Apply(new StageTestMessage { type = StageTestProtocol.ReplaceSongState, revision = 4, stateJson = "full" }) &&
+       replica.Apply(new StageTestMessage { type = StageTestProtocol.UpdateLyrics, revision = 5, stateJson = "incremental" }) &&
+       !replica.Apply(new StageTestMessage { type = StageTestProtocol.UpdateLyrics, revision = 4, stateJson = "stale" }) &&
+       replica.StateJson == "incremental",
+    "Vollsync, inkrementelles Update und Stale-Rejection folgen derselben Replica-Zustandslogik.");
+Assert(replica.Apply(new StageTestMessage { type = StageTestProtocol.Play, positionSeconds = 20 }) && replica.Playing &&
+       replica.Apply(new StageTestMessage { type = StageTestProtocol.Pause, positionSeconds = 21 }) && !replica.Playing &&
+       replica.Apply(new StageTestMessage { type = StageTestProtocol.Seek, positionSeconds = 42.25 }) &&
+       replica.PositionSeconds == 42.25 &&
+       replica.Apply(new StageTestMessage { type = StageTestProtocol.Stop }) && replica.PositionSeconds == 0,
+    "Play, Pause, Seek und Stop ergeben einen eindeutigen Test-Stage-Transportzustand.");
+var reconnectedReplica = new StageTestReplicaState();
+Assert(reconnectedReplica.Apply(new StageTestMessage
+       { type = StageTestProtocol.ReplaceSongState, revision = 9, stateJson = replica.StateJson }) &&
+       reconnectedReplica.AppliedRevision == 9,
+    "Eine neue Stage-Verbindung übernimmt den aktuellen Vollzustand unabhängig von früheren Verbindungen.");
 
 if (args is ["--usdx-corpus", var corpusPath])
 {

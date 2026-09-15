@@ -44,7 +44,42 @@ public sealed record ImportUsdbLyricsResultDto(
     double DurationDifferenceSeconds,
     bool AlignmentStarted = false,
     string Source = "usdb.eu");
+public sealed record ReplacementLyricsCandidateDto(
+    Guid SelectionToken,
+    string Source,
+    string SourceId,
+    string Title,
+    string Artist,
+    string? Album,
+    double? DurationSeconds,
+    string? Language,
+    string? Edition,
+    double Score,
+    bool IsRecommended,
+    bool HasSyncedLyrics,
+    bool CanRetrieve = true,
+    string? ExternalUrl = null,
+    bool IsFullTranscript = false);
+public sealed record ReplacementLyricsSourceStatusDto(string Source, int MatchCount, string? Error = null);
+public sealed record ReplacementLyricsSearchDto(
+    string Query,
+    IReadOnlyList<ReplacementLyricsCandidateDto> Items,
+    IReadOnlyList<ReplacementLyricsSourceStatusDto> Sources);
+public sealed record RetrieveReplacementLyricsRequest(Guid SelectionToken);
+public sealed record RetrieveReplacementLyricsResultDto(
+    string Source, string SourceId, string Label, bool AlignmentStarted,
+    bool IsFullTranscript = false);
 public sealed record DeleteSongResultDto(Guid SongId, int DeletedFiles);
+public sealed record RemoveSongsFromStageResultDto(int SongsRemoved);
+public sealed record DeleteAllLyricsVersionsResultDto(int VersionsDeleted, int SongsRemoved);
+public sealed record SongVideoCandidateDto(string SelectionToken, string Provider, string SourceId,
+    string Title, string Channel, double? DurationSeconds, string? ThumbnailUrl, string WebUrl);
+public sealed record SongVideoSearchDto(IReadOnlyList<SongVideoCandidateDto> Items, string ProviderStatus);
+public sealed record SelectSongVideoRequest(string SelectionToken, bool DownloadAuthorized);
+public sealed record SongVideoInfoDto(string Source, string? SourceId, string? SourceUrl, string Title,
+    string? Channel, double? DurationSeconds, long FileSize, DateTimeOffset RetrievedAt,
+    int OffsetMilliseconds = 0);
+public sealed record UpdateSongVideoOffsetRequest(int OffsetMilliseconds);
 public sealed record PagedResultDto<T>(IReadOnlyList<T> Items, int Page, int PageSize, int TotalCount)
 {
     public int TotalPages => TotalCount == 0 ? 0 : (int)Math.Ceiling((double)TotalCount / PageSize);
@@ -84,6 +119,10 @@ public sealed record UpdateUsdbProviderSettingsRequest(
     string AnimuxUsername,
     string? AnimuxPassword = null,
     bool ClearAnimuxCredentials = false);
+public sealed record GeniusProviderSettingsDto(bool Enabled, string BaseUrl, bool HasAccessToken,
+    bool ManagedByEnvironment, string Status);
+public sealed record UpdateGeniusProviderSettingsRequest(bool Enabled, string BaseUrl,
+    string? AccessToken = null, bool ClearAccessToken = false);
 public enum QobuzDownloadQuality
 {
     Mp3_320 = 5,
@@ -222,7 +261,9 @@ public sealed record StageTimingSampleDto(
     int DspBufferLength,
     int DspBufferCount,
     int OutputSampleRate,
-    bool Playing);
+    bool Playing,
+    double EstimatedOutputLatencySeconds = 0,
+    double AppliedOutputLatencySeconds = 0);
 public sealed record VisualizationFrameDto(double TimeSeconds, double Energy, double Bass, double Mid, double High, bool Beat);
 public sealed record SongVisualizationDto(Guid SongId, double FrameRate, IReadOnlyList<VisualizationFrameDto> Frames);
 public sealed record LibraryScanStatusDto(
@@ -251,16 +292,13 @@ public sealed record CreateLyricsVersionRequest(string DocumentJson, string? Ana
     LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false,
     bool PreserveExistingDrafts = false, string? AlignmentReportJson = null);
 public sealed record UpdateLyricsVersionRequest(long ExpectedRevision, string DocumentJson,
-    LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false);
+    LyricsVersionStatus Status = LyricsVersionStatus.InReview, bool AllowTimingConflicts = false,
+    string? AlignmentReportJson = null);
 public sealed record ChangeLyricsVersionStatusRequest(long ExpectedRevision, bool AllowTimingConflicts = false);
 public sealed record LyricsVersionReportDto(Guid VersionId, Guid SongId, long Revision,
     string Title, string Outcome, string Content, bool HasTechnicalAlignmentReport,
     DateTimeOffset CreatedAt);
-public sealed record SongRealignmentRequest(Guid? SourceVersionId = null,
-    bool IncludeEditorBasis = true, bool IncludeOriginalLyrics = true,
-    bool IncludeResearchShadow = false, bool IncludeEditorGuidance = false,
-    bool IncludeBasicPitchAb = false, int? MaximumSongs = null);
-public sealed record SongBasicPitchRequest(Guid? SourceVersionId = null);
+public sealed record SongRealignmentRequest(Guid? SourceVersionId = null, int? MaximumSongs = null);
 public sealed record SongSelectionRealignmentRequest(IReadOnlyList<Guid> SongIds,
     SongRealignmentRequest Alignment);
 public sealed record SongPackageExportRequest(IReadOnlyList<Guid> SongIds);

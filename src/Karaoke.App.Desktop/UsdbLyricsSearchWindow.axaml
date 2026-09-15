@@ -51,7 +51,7 @@
     </Grid>
 
     <CheckBox x:Name="LocalAlignmentCheck" Grid.Row="4" IsChecked="True" Margin="0,14,0,0"
-              Content="Nach dem Import mit Variante 1.2 an die lokale Vocalspur anpassen" />
+              Content="Nach dem Import mit EasyAligner an die lokale Vocalspur anpassen" />
 
     <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,18,0,0">
       <Button Content="Abbrechen" Click="CancelClick" />

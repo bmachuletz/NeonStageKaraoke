@@ -37,6 +37,22 @@ internal sealed class EditorDraftRecovery
         }
         catch (Exception exception) when (exception is IOException or JsonException) { return null; }
     }
+
+    public Task<int> DeleteAllAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!Directory.Exists(_root)) return Task.FromResult(0);
+        var deleted = 0;
+        foreach (var path in Directory.EnumerateFiles(_root, "*", SearchOption.TopDirectoryOnly))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!path.EndsWith(".json", StringComparison.OrdinalIgnoreCase) &&
+                !path.EndsWith(".writing", StringComparison.OrdinalIgnoreCase)) continue;
+            File.Delete(path);
+            deleted++;
+        }
+        return Task.FromResult(deleted);
+    }
 }
 
 internal sealed record RecoveryDraft(DateTimeOffset SavedAt, string DocumentJson,

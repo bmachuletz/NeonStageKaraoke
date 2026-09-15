@@ -1,5 +1,6 @@
 using System;
 using System.Threading.Tasks;
+using NeonStage.Presentation;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -20,8 +21,10 @@ public sealed class StageAudioEngine : MonoBehaviour
     private double _pausedPosition;
     private bool _clockRunning;
     private bool _playbackStarted;
+    private bool _sourcesStarted;
     private bool _completionRaised;
     private double _sampleClockCorrection;
+    private double? _configuredOutputLatencySeconds;
     private readonly float[] _waveform = new float[256];
 
     public event Action? PlaybackEnded;
@@ -51,6 +54,25 @@ public sealed class StageAudioEngine : MonoBehaviour
             return Math.Clamp(position, 0, DurationSeconds);
         }
     }
+    public double EstimatedOutputLatencySeconds
+    {
+        get
+        {
+            AudioSettings.GetDSPBufferSize(out var bufferLength, out var bufferCount);
+            return StageTimingCompensation.EstimateOutputLatencySeconds(
+                bufferLength, bufferCount, AudioSettings.outputSampleRate);
+        }
+    }
+    public double AppliedOutputLatencySeconds =>
+        _configuredOutputLatencySeconds ?? EstimatedOutputLatencySeconds;
+    public double LyricsPositionSeconds => StageTimingCompensation.LyricsPositionSeconds(
+        PositionSeconds, DurationSeconds, AppliedOutputLatencySeconds);
+    public bool UsesAutomaticOutputLatency => _configuredOutputLatencySeconds is null;
+
+    public void ConfigureOutputLatencySeconds(double? seconds) =>
+        _configuredOutputLatencySeconds = seconds is null
+            ? null
+            : Math.Clamp(seconds.Value, 0, StageTimingCompensation.MaximumOutputLatencySeconds);
 
     public StageTimingSampleDto CaptureTiming(string deviceId, string songId)
     {
@@ -67,7 +89,7 @@ public sealed class StageAudioEngine : MonoBehaviour
             capturedAt = DateTime.UtcNow.ToString("O"),
             deviceId = deviceId,
             songId = songId,
-            lyricsPositionSeconds = PositionSeconds,
+            lyricsPositionSeconds = LyricsPositionSeconds,
             dspPositionSeconds = dspPosition,
             masterSamplePositionSeconds = masterPosition,
             vocalSamplePositionSeconds = vocalPosition,
@@ -76,6 +98,8 @@ public sealed class StageAudioEngine : MonoBehaviour
             dspBufferLength = bufferLength,
             dspBufferCount = bufferCount,
             outputSampleRate = AudioSettings.outputSampleRate,
+            estimatedOutputLatencySeconds = EstimatedOutputLatencySeconds,
+            appliedOutputLatencySeconds = AppliedOutputLatencySeconds,
             playing = IsPlaying
         };
     }
@@ -138,6 +162,12 @@ public sealed class StageAudioEngine : MonoBehaviour
 
     public async Task PlayAsync(string masterUrl, string? vocalsUrl)
     {
+        await LoadPausedAsync(masterUrl, vocalsUrl);
+        Resume();
+    }
+
+    public async Task LoadPausedAsync(string masterUrl, string? vocalsUrl)
+    {
         var generation = ++_generation;
         Stop();
         Status = StageLocale.Text("Audiostream wird geladen …", "Loading audio stream …");
@@ -154,19 +184,15 @@ public sealed class StageAudioEngine : MonoBehaviour
 
         _master.clip = clips[0];
         _vocals.clip = clips[1];
-        var dspStart = AudioSettings.dspTime + 0.25;
-        _master.PlayScheduled(dspStart);
-        if (_vocals.clip != null) _vocals.PlayScheduled(dspStart);
         _timelineAnchor = 0;
         _pausedPosition = 0;
-        _dspAnchor = dspStart;
-        _clockRunning = true;
+        _dspAnchor = AudioSettings.dspTime;
+        _clockRunning = false;
         _playbackStarted = false;
+        _sourcesStarted = false;
         _completionRaised = false;
         _sampleClockCorrection = 0;
-        Status = _vocals.clip == null
-            ? StageLocale.Text("Wiedergabe läuft (Master)", "Playback running (master)")
-            : StageLocale.Text("Wiedergabe läuft (Instrumental + Vocals)", "Playback running (instrumental + vocals)");
+        Status = StageLocale.Text("Audio bereit", "Audio ready");
     }
 
     private static async Task<AudioClip?> LoadClipAsync(string url, AudioType audioType)
@@ -195,10 +221,23 @@ public sealed class StageAudioEngine : MonoBehaviour
     public void Resume()
     {
         if (!HasClip || _completionRaised) return;
-        _master.UnPause();
-        _vocals.UnPause();
+        if (!_sourcesStarted)
+        {
+            var dspStart = AudioSettings.dspTime + 0.1;
+            _master.time = (float)_pausedPosition;
+            if (_vocals.clip != null) _vocals.time = (float)_pausedPosition;
+            _master.PlayScheduled(dspStart);
+            if (_vocals.clip != null) _vocals.PlayScheduled(dspStart);
+            _dspAnchor = dspStart;
+            _sourcesStarted = true;
+        }
+        else
+        {
+            _master.UnPause();
+            _vocals.UnPause();
+            _dspAnchor = AudioSettings.dspTime;
+        }
         _timelineAnchor = _pausedPosition;
-        _dspAnchor = AudioSettings.dspTime;
         _clockRunning = true;
         _sampleClockCorrection = 0;
         Status = StageLocale.Text("Wiedergabe läuft", "Playback running");
@@ -223,6 +262,7 @@ public sealed class StageAudioEngine : MonoBehaviour
         _vocals?.Stop();
         _clockRunning = false;
         _playbackStarted = false;
+        _sourcesStarted = false;
         _completionRaised = false;
         _pausedPosition = 0;
         _timelineAnchor = 0;

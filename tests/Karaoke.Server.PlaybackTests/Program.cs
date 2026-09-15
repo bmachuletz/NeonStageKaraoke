@@ -14,13 +14,16 @@ string? adoptionLibraryPath = null;
 string? adoptionDatabasePath = null;
 try
 {
+    VerifyEasyAlignerRequestContract();
     await VerifyUsdbHttpAndMatchingAsync();
     await VerifyLegacyUsdbChartSkipsAiAlignmentAsync();
     await VerifyAnimuxUsdbPreferenceAndFallbackAsync();
     await VerifyUsdbFailureFallsBackCleanlyAsync();
     await VerifyUsdbEditorPickerCreatesIsolatedVersionAsync();
+    await VerifyReplacementLyricsSearchCombinesProvidersAsync();
     VerifyUsdbRecordingTimingDiagnostics();
     await VerifyAlignmentSyllablesSkipDisplayBoundaryLinesAsync();
+    await VerifyAlignmentSyllablesFollowChronologicalRepeatedLinesAsync();
     await VerifyOverlappingAlignmentSnapshotsLandInReviewCategoryAsync();
     await VerifyFirstSongStartsActiveStageAsync();
     var options = Options.Create(new KaraokeOptions { DatabasePath = databasePath });
@@ -170,8 +173,11 @@ try
         Assert(FolderImportService.SelectPipelineRoute(lyricsPath) == FolderImportPipelineRoute.FullTranscript,
             "Eine leere LRC-Datei verhindert den Volltranskript-Fallback nicht.");
         await File.WriteAllTextAsync(lyricsPath, "[00:01.00]Example lyrics");
-        Assert(FolderImportService.SelectPipelineRoute(lyricsPath) == FolderImportPipelineRoute.Variant12,
-            "Mit vorhandenen Lyrics wählt der Ordnerimport Variante 1.2.");
+        Assert(FolderImportService.SelectPipelineRoute(lyricsPath) == FolderImportPipelineRoute.EasyAligner,
+            "Mit vorhandenen Lyrics wählt der Ordnerimport EasyAligner Direct.");
+        Assert(FolderImportService.DefaultImportAlignmentProfile == "easyaligner-global" &&
+               SongImportService.DefaultImportAlignmentProfile == "easyaligner-global",
+            "Datei- und Ordnerimporte verwenden standardmäßig EasyAligner Direct.");
     }
     finally { Directory.Delete(uniqueAudioFolder, recursive: true); }
 
@@ -196,6 +202,12 @@ try
     Assert(savedVersion!.AlignmentReportJson == alignmentReportJson &&
            (await lyricsVersions.GetAllAsync(versionSongId, default)).Single(item => item.Id == savedVersion.Id).HasAlignmentReport,
         "Ein abgeleiteter Editor-Stand behält die Provenienz seines technischen Alignment-Berichts.");
+    var replacementReportJson = """{"quality":{"score":87,"publishable":false}}""";
+    var replacedReportVersion = await lyricsVersions.UpdateAsync(versionSongId, savedVersion.Id,
+        new(savedVersion.Revision, changedEditorJson,
+            AlignmentReportJson: replacementReportJson), default);
+    Assert(replacedReportVersion?.AlignmentReportJson == replacementReportJson,
+        "Ein abgeleiteter Editor-Stand kann eine neue Alignment-Provenienz übernehmen.");
     var archivedVersion = await lyricsVersions.GetAsync(versionSongId, version.Id, default);
     Assert(archivedVersion?.Status == LyricsVersionStatus.Superseded && archivedVersion.DocumentJson == editorJson,
         "Der vorherige Lyrics-Inhalt bleibt unverändert im Versionsarchiv erhalten.");
@@ -205,20 +217,20 @@ try
         new(comparisonJson, Status: LyricsVersionStatus.Generated, PreserveExistingDrafts: true), default);
     var stillCurrentDraft = await lyricsVersions.GetLatestDraftAsync(versionSongId, default);
     Assert(comparisonVersion.Status == LyricsVersionStatus.Generated &&
-           stillCurrentDraft?.Id == savedVersion!.Id && stillCurrentDraft.DocumentJson == changedEditorJson,
+           stillCurrentDraft?.Id == replacedReportVersion!.Id && stillCurrentDraft.DocumentJson == changedEditorJson,
         "Eine erzeugte Alignment-Vergleichsversion ersetzt den aktuellen Editor-Stand nicht.");
-    var reviewed = await lyricsVersions.ChangeStatusAsync(versionSongId, savedVersion!.Id, savedVersion.Revision,
+    var reviewed = await lyricsVersions.ChangeStatusAsync(versionSongId, replacedReportVersion!.Id, replacedReportVersion.Revision,
         LyricsVersionStatus.Reviewed, default);
-    var approved = await lyricsVersions.ChangeStatusAsync(versionSongId, savedVersion.Id, reviewed!.Revision,
+    var approved = await lyricsVersions.ChangeStatusAsync(versionSongId, replacedReportVersion.Id, reviewed!.Revision,
         LyricsVersionStatus.Approved, default);
-    var published = await lyricsVersions.ChangeStatusAsync(versionSongId, savedVersion.Id, approved!.Revision,
+    var published = await lyricsVersions.ChangeStatusAsync(versionSongId, replacedReportVersion.Id, approved!.Revision,
         LyricsVersionStatus.Published, default);
     Assert(published?.Status == LyricsVersionStatus.Published,
         "Lyrics durchlaufen Review, Freigabe und Veröffentlichung mit Revisionen.");
-    Assert(await lyricsVersions.UpdateAsync(versionSongId, savedVersion.Id,
+    Assert(await lyricsVersions.UpdateAsync(versionSongId, replacedReportVersion.Id,
         new(published!.Revision, changedEditorJson), default) is null,
         "Eine veröffentlichte Lyrics-Version ist unveränderlich.");
-    Assert(await lyricsVersions.DeleteAsync(versionSongId, savedVersion.Id, default) == LyricsVersionDeleteResult.Published,
+    Assert(await lyricsVersions.DeleteAsync(versionSongId, replacedReportVersion.Id, default) == LyricsVersionDeleteResult.Published,
         "Die veröffentlichte Stage-Version ist vor dem Löschen geschützt.");
     Assert(await lyricsVersions.DeleteAsync(versionSongId, version.Id, default) == LyricsVersionDeleteResult.Deleted,
         "Ein archivierter Lyrics-Stand kann gezielt gelöscht werden.");
@@ -348,6 +360,19 @@ try
            (await adoptionLibrary.SetReviewStatusAsync(adopted.Id, SongReviewStatus.InReview, default))?.ReviewStatus ==
            SongReviewStatus.InReview,
         "Ein freigegebener Song kann wieder aus der Stage entfernt und in Review gesetzt werden.");
+    await adoptionLibrary.SetReviewStatusAsync(adopted.Id, SongReviewStatus.Approved, default);
+    Assert(await adoptionLibrary.RemoveAllSongsFromStageAsync(default) == 1 &&
+           (await adoptionLibrary.GetAsync(adopted.Id, default))?.ReviewStatus == SongReviewStatus.InReview,
+        "Die globale Stage-Bereinigung entfernt jeden freigegebenen Song vollständig aus der Stage-Auswahl.");
+    var adoptionVersions = new LyricsVersionRepository(adoptionOptions);
+    var adoptionDocument = JsonSerializer.Serialize(new
+        { schemaVersion = 1, songId = adopted.Id, lines = Array.Empty<object>() });
+    await adoptionVersions.CreateAsync(adopted.Id, new(adoptionDocument), default);
+    await adoptionVersions.CreateAsync(adopted.Id,
+        new(adoptionDocument, Status: LyricsVersionStatus.Generated, PreserveExistingDrafts: true), default);
+    Assert(await adoptionVersions.DeleteAllAsync(default) == 2 &&
+           (await adoptionVersions.GetAllAsync(adopted.Id, default)).Count == 0,
+        "Die globale Versionsbereinigung löscht wirklich sämtliche Statusklassen und leert den Versionsspeicher.");
     Assert(await wishlist.RemoveAsync(EventRepository.DefaultEventId, savedWishes[0].Id, default) &&
            (await wishlist.GetAsync(EventRepository.DefaultEventId, default)).Count == 0,
         "Ein nicht verarbeiteter oder fehlgeschlagener Wunsch kann endgültig entfernt werden.");
@@ -410,10 +435,11 @@ try
         lines = new[] { new
         {
             start = "00:00:01", end = "00:00:03", text = "Veralteter Zeilentext",
+            technicalText = "veralteter zeilentext",
             children = new object[]
             {
                 new { type = "Word", start = "00:00:01", end = "00:00:02", text = "Hallo",
-                    confidence = .9, children = Array.Empty<object>() },
+                    technicalText = "halo", confidence = .9, children = Array.Empty<object>() },
                 new { type = "Word", start = "00:00:02", end = "00:00:03", text = "toys",
                     confidence = .9, children = Array.Empty<object>() }
             }
@@ -421,7 +447,28 @@ try
     });
     var mappedRuntime = EditorLyricsRuntimeMapper.Map(enhancedLyrics, editedRuntimeJson);
     Assert(mappedRuntime.Lines[0].Text == "Hallo toys" && mappedRuntime.Lines[0].Words?.Count == 2,
-        "Die Stage bildet den sichtbaren Zeilentext aus eingefügten Editor-Wörtern.");
+        "Die Stage bildet den sichtbaren Zeilentext aus Menschen-Lyrics und ignoriert technischen CTC-Text.");
+
+    var noteRuntimeJson = JsonSerializer.Serialize(new
+    {
+        lines = new[] { new
+        {
+            start = "00:00:01", end = "00:00:03", text = "Ton",
+            children = new object[] { new
+            {
+                type = "Word", start = "00:00:01", end = "00:00:03", text = "Ton",
+                children = new object[] { new
+                {
+                    type = "Syllable", start = "00:00:01", end = "00:00:03", text = "Ton",
+                    notes = new[] { new { start = "00:00:01.1", end = "00:00:02.8", midi = 67, amplitude = .91 } }
+                } }
+            } }
+        } }
+    });
+    var mappedNotes = EditorLyricsRuntimeMapper.Map(enhancedLyrics, noteRuntimeJson)
+        .Lines[0].Words![0].Syllables![0].Notes;
+    Assert(mappedNotes is [{ Midi: 67, Confidence: .91 }],
+        "Die Stage übernimmt die im Editor als Amplitude persistierte Pitch-Konfidenz.");
 
     var sourceMetadata = new AudioMetadata("Mein Song", "Meine Band", "Studioalbum", 200);
     var exactDuration = new LrclibTrack(1, "Mein Song", "Meine Band", "Anderes Album", 200.2, false, null, "[00:01]Text");
@@ -440,6 +487,7 @@ try
 
     Console.WriteLine("Playback-Integrationstests erfolgreich.");
 }
+
 finally
 {
     if (File.Exists(databasePath)) File.Delete(databasePath);
@@ -451,6 +499,14 @@ finally
     if (adoptionLibraryPath is not null && Directory.Exists(adoptionLibraryPath))
         Directory.Delete(adoptionLibraryPath, recursive: true);
     if (adoptionDatabasePath is not null && File.Exists(adoptionDatabasePath)) File.Delete(adoptionDatabasePath);
+}
+
+static void VerifyEasyAlignerRequestContract()
+{
+    var sourceVersion = Guid.CreateVersion7();
+    var request = new SongRealignmentRequest(sourceVersion, 12);
+    Assert(request.SourceVersionId == sourceVersion && request.MaximumSongs == 12,
+        "Der einzige Realignment-Vertrag enthält nur Lyrics-Quelle und optionale Songgrenze.");
 }
 
 static void Assert(bool condition, string message)
@@ -711,6 +767,55 @@ static async Task VerifyUsdbEditorPickerCreatesIsolatedVersionAsync()
     }
 }
 
+static async Task VerifyReplacementLyricsSearchCombinesProvidersAsync()
+{
+    var lrclibHandler = new QueueHttpHandler(JsonResponse("""
+        [{
+          "id": 815,
+          "trackName": "The Nights",
+          "artistName": "Avicii",
+          "albumName": "Stories",
+          "duration": 10.2,
+          "instrumental": false,
+          "plainLyrics": "One day my father told me\nSon, don't let it slip away",
+          "syncedLyrics": "[00:01.00]One day my father told me\n[00:04.00]Son, don't let it slip away"
+        }]
+        """));
+    var service = new ReplacementLyricsService(
+        new PickerUsdbClient(), new TestHttpClientFactory(new HttpClient(lrclibHandler)
+        {
+            BaseAddress = new Uri("https://lrclib.net/")
+        }), Options.Create(new GeniusOptions()), TimeProvider.System,
+        NullLogger<ReplacementLyricsService>.Instance);
+    var song = new SongDto(Guid.NewGuid(), "The Nights", "Avicii", "Stories", 10, true);
+
+    var result = await service.SearchAsync(song, null, default);
+    Assert(result.Items.Any(item => item.Source == "LRCLIB") &&
+           result.Items.Any(item => item.Source.Contains("usdb", StringComparison.OrdinalIgnoreCase)) &&
+           result.Items.Any(item => item.IsFullTranscript) &&
+           result.Sources.Any(item => item.Source == "LRCLIB" && item.MatchCount == 1) &&
+           result.Items.Count(item => item.IsRecommended) == 1 &&
+           result.Items.Single(item => item.IsRecommended).Source == "LRCLIB",
+        "Die Suche nach neuen Lyrics zeigt passende Treffer und Status von USDB und LRCLIB gemeinsam an.");
+    var transcript = result.Items.Single(item => item.IsFullTranscript);
+    var transcriptSelection = await service.RetrieveAsync(song.Id, transcript.SelectionToken, default);
+    Assert(transcriptSelection is { IsFullTranscript: true, Source: "Volltranskript" },
+        "Die virtuelle Lyrics-Quelle startet eindeutig den bestehenden Volltranskript-Weg.");
+    var selected = result.Items.Single(item => item.Source == "LRCLIB");
+    var retrieved = await service.RetrieveAsync(song.Id, selected.SelectionToken, default);
+    Assert(retrieved is { Source: "LRCLIB" } && retrieved.Lyrics.Contains("[00:01.00]", StringComparison.Ordinal),
+        "Die ausgewählte LRCLIB-Fassung wird serverseitig vollständig für EasyAligner bereitgestellt.");
+    Assert(await service.RetrieveAsync(song.Id, selected.SelectionToken, default) is null,
+        "Ein Lyrics-Auswahltoken kann nur einmal verwendet werden.");
+    var usdbSelection = result.Items.First(item => item.Source.Contains("usdb", StringComparison.OrdinalIgnoreCase));
+    var usdbLyrics = await service.RetrieveAsync(song.Id, usdbSelection.SelectionToken, default);
+    Assert(usdbLyrics is { RawExtension: ".txt" } &&
+           usdbLyrics.RawLyrics.StartsWith("#TITLE:", StringComparison.Ordinal) &&
+           usdbLyrics.Lyrics.Contains("<[", StringComparison.Ordinal) == false &&
+           usdbLyrics.Lyrics.Contains('<', StringComparison.Ordinal),
+        "USDB behält die unveränderte UltraStar-Datei neben der für EasyAligner konvertierten LRC.");
+}
+
 static HttpResponseMessage JsonResponse(string content) => new(HttpStatusCode.OK)
 {
     Content = new StringContent(content, Encoding.UTF8, "application/json")
@@ -811,6 +916,70 @@ static async Task VerifyAlignmentSyllablesSkipDisplayBoundaryLinesAsync()
         var syllables = result.Lines[2].Words![0].Syllables!;
         Assert(syllables.Count == 2 && syllables.All(item => item.End > item.Start),
             "Alignment-Silben bleiben nach einer leeren LRC-Anzeigegrenze der richtigen Textzeile zugeordnet.");
+    }
+    finally
+    {
+        if (File.Exists(reportPath)) File.Delete(reportPath);
+    }
+}
+
+static async Task VerifyAlignmentSyllablesFollowChronologicalRepeatedLinesAsync()
+{
+    var songId = Guid.NewGuid();
+    var lyrics = new LyricsDto(songId,
+    [
+        new LyricsLineDto(TimeSpan.FromSeconds(10), "Thunder", TimeSpan.FromSeconds(11), 0,
+        [new LyricsWordDto(TimeSpan.FromSeconds(10), "Thunder", TimeSpan.FromSeconds(11), 0)]),
+        new LyricsLineDto(TimeSpan.FromSeconds(12), "Youve been thunderstruck",
+            TimeSpan.FromSeconds(13), 1,
+        [
+            new LyricsWordDto(TimeSpan.FromSeconds(12), "Youve", TimeSpan.FromSeconds(12.2), 0),
+            new LyricsWordDto(TimeSpan.FromSeconds(12.2), "been", TimeSpan.FromSeconds(12.4), 1),
+            new LyricsWordDto(TimeSpan.FromSeconds(12.4), "thunderstruck", TimeSpan.FromSeconds(13), 2)
+        ]),
+        new LyricsLineDto(TimeSpan.FromSeconds(14), "Thunder", TimeSpan.FromSeconds(15), 2,
+        [new LyricsWordDto(TimeSpan.FromSeconds(14), "Thunder", TimeSpan.FromSeconds(15), 0)])
+    ]);
+    var reportPath = Path.Combine(Path.GetTempPath(),
+        $"neon-repeated-syllables-{Guid.NewGuid():N}.json");
+    try
+    {
+        // The report keeps canonical lyric order, while the rendered LRC is
+        // chronological. The middle line was acoustically placed before the
+        // second identical chorus call.
+        await File.WriteAllTextAsync(reportPath, """
+        {
+          "details": [
+            { "timestamp": 10.0, "text": "Thunder", "words": [
+              { "word": "Thunder", "syllable_confidence": 0.9,
+                "syllables": [{ "text": "Thun", "start": 10.0, "end": 10.4, "confidence": 0.9 },
+                              { "text": "der", "start": 10.5, "end": 11.0, "confidence": 0.9 }] }
+            ]},
+            { "timestamp": 14.0, "text": "Thunder", "words": [
+              { "word": "Thunder", "syllable_confidence": 0.9,
+                "syllables": [{ "text": "Thun", "start": 14.0, "end": 14.4, "confidence": 0.9 },
+                              { "text": "der", "start": 14.5, "end": 15.0, "confidence": 0.9 }] }
+            ]},
+            { "timestamp": 12.0, "text": "You’ve been thunderstruck", "words": [
+              { "word": "Youve", "syllable_confidence": 0.8,
+                "syllables": [{ "text": "Youve", "start": 12.0, "end": 12.2, "confidence": 0.8 }] },
+              { "word": "been", "syllable_confidence": 0.8,
+                "syllables": [{ "text": "been", "start": 12.2, "end": 12.4, "confidence": 0.8 }] },
+              { "word": "thunderstruck", "syllable_confidence": 0.9,
+                "syllables": [{ "text": "thun", "start": 12.4, "end": 12.55, "confidence": 0.9 },
+                              { "text": "der", "start": 12.62, "end": 12.76, "confidence": 0.9 },
+                              { "text": "struck", "start": 12.82, "end": 13.0, "confidence": 0.9 }] }
+            ]}
+          ]
+        }
+        """);
+
+        var result = await LibraryRepository.AddSyllableAlignmentAsync(
+            lyrics, reportPath, CancellationToken.None);
+
+        Assert(result.Lines[1].Words![2].Syllables?.Count == 3
+               && result.Lines[2].Words![0].Syllables?.Count == 2,
+            "Report-Silben folgen bei vertauschten Wiederholungen den akustischen Zeitstempeln.");
     }
     finally
     {
@@ -947,6 +1116,11 @@ sealed class QueueHttpHandler(params HttpResponseMessage[] responses) : HttpMess
         response.RequestMessage = request;
         return Task.FromResult(response);
     }
+}
+
+sealed class TestHttpClientFactory(HttpClient client) : IHttpClientFactory
+{
+    public HttpClient CreateClient(string name) => client;
 }
 
 sealed record ObservedHttpRequest(HttpMethod Method, Uri Uri, Uri? Referrer, bool IsAjax);

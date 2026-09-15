@@ -44,7 +44,14 @@ while IFS= read -r -d '' mp3; do
     # pipeline intermediate. Keep it when the song was imported by a current
     # matcher/editor workflow.
     [[ ! -s "$base.pre-align.lrc" ]] || keep["$base.pre-align.lrc"]=1
+    [[ ! -s "$base.lyrics-source.lrc" ]] || keep["$base.lyrics-source.lrc"]=1
+    [[ ! -s "$base.lyrics-source.txt" ]] || keep["$base.lyrics-source.txt"]=1
+    [[ ! -s "$base.lyrics-source.json" ]] || keep["$base.lyrics-source.json"]=1
     [[ ! -s "$base.transcription.json" ]] || keep["$base.transcription.json"]=1
+    [[ ! -s "$base.video.mp4" ]] || keep["$base.video.mp4"]=1
+    [[ ! -s "$base.video.webm" ]] || keep["$base.video.webm"]=1
+    [[ ! -s "$base.video.android.mp4" ]] || keep["$base.video.android.mp4"]=1
+    [[ ! -s "$base.video.json" ]] || keep["$base.video.json"]=1
   else
     ((incomplete+=1))
   fi

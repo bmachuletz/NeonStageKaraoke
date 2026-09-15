@@ -11,6 +11,8 @@ public sealed record SongImportStatus(bool IsRunning, Guid? JobId, string? Title
 public sealed class SongImportService(IWebHostEnvironment environment, ServerSettingsService settings,
     LibraryRepository library, UsdbLyricsSourceService usdb, ILogger<SongImportService> logger)
 {
+    public const string DefaultImportAlignmentProfile = "easyaligner-global";
+
     private readonly object _gate = new();
     private SongImportStatus _status = new(false, null, null, null, 0, "Bereit", null, null, null, []);
 
@@ -57,7 +59,6 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
         {
             var root = Path.GetFullPath(Path.Combine(environment.ContentRootPath, "..", ".."));
             var fullTranscriptCompleted = false;
-            var trustedUltraStar = false;
             if (useLrclib)
             {
                 Set(5, "UltraStar-Timings werden in USDB gesucht …");
@@ -76,8 +77,6 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
                     Add(output, sourceResult.Source == "USDB"
                         ? $"USDB: kompatible UltraStar-Version {sourceResult.Usdb.VersionId} übernommen."
                         : $"USDB: {sourceResult.Usdb.Reason} Fallback: {sourceResult.Source}.");
-                    trustedUltraStar = sourceResult.Source == "USDB" &&
-                                       sourceResult.Usdb.TrustedDirectCandidate;
                 }
             }
             if (useLrclib && !HasLyrics(lrcPath))
@@ -93,20 +92,11 @@ public sealed class SongImportService(IWebHostEnvironment environment, ServerSet
             }
             else
             {
-                Set(20, trustedUltraStar
-                    ? "Passende UltraStar-Timings · Stems werden ohne AI-Alignment erzeugt …"
-                    : "GPU-Separation und Lyrics-Alignment laufen …");
+                Set(20, "GPU-Separation und EasyAligner laufen …");
                 var script = Path.Combine(root, "scripts", "linux", "align-library.sh");
                 var arguments = new List<string> { script, "--force", "--library",
                     settings.Get().LibraryPath, "--match", Path.GetFileName(audioPath) };
-                if (trustedUltraStar) arguments.AddRange(["--profile", "trusted-ultrastar"]);
                 result = await RunAsync(root, "/bin/bash", output, arguments.ToArray());
-                if (result != 0 && trustedUltraStar)
-                {
-                    Add(output, "UltraStar-Aufnahmeprüfung fehlgeschlagen; reguläres Alignment wird als Fallback gestartet.");
-                    result = await RunAsync(root, "/bin/bash", output, script, "--force", "--library",
-                        settings.Get().LibraryPath, "--match", Path.GetFileName(audioPath));
-                }
             }
             if (result != 0) throw new InvalidOperationException("GPU-Pipeline hat den Song nicht akzeptiert.");
             if (fullTranscriptCompleted) Add(output, "Volltranskript und Wort-/Silbenalignment wurden abgeschlossen.");

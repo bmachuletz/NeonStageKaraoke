@@ -50,16 +50,13 @@ they are not included in the server image or editor AppImage.
 | Pyphen | GPL-2.0-or-later / LGPL-2.1-or-later / MPL-1.1 tri-license; bundled dictionaries retain their individual LibreOffice dictionary notices |
 | ONNX Runtime | MIT |
 | python-audio-separator | MIT; downloaded UVR/separation model weights retain independent author/model terms |
-| Lightning, TensorBoard, NLTK | Apache-2.0 |
-| h5py, pandas, msgspec | BSD-3-Clause |
-| Matplotlib | Matplotlib/PSF-based license plus notices for bundled data and fonts |
-| TextGrid, TensorBoardX, RapidFuzz | MIT |
+| NLTK | Apache-2.0 |
+| msgspec | BSD-3-Clause |
+| RapidFuzz | MIT |
 | EasyAligner 0.3.3 | MIT |
 | stable-ts 2.19.1 | MIT |
 | librosa | ISC; its transitive audio/scientific packages retain their own notices |
-| [Spotify Basic Pitch](https://github.com/spotify/basic-pitch) 0.4.0 | Apache-2.0; used only by the separately built experimental pitch-evidence sidecar. Its bundled ICASSP 2022 model and transitive TensorFlow Lite/scientific dependencies retain their accompanying notices. |
-| Asteroid / asteroid-filterbanks | MIT; used to instantiate the optional MedleyVox duet-separation checkpoint |
-| SOFA 1.0.3 code vendored in `lyrics-word-aligner/third_party/SOFA` | MIT; preserve its bundled LICENSE |
+| Asteroid / asteroid-filterbanks | MIT; retained for EasyAligner package compatibility |
 
 Python packages bring transitive dependencies. A distributed alignment image
 must additionally preserve the license files installed in each exact wheel and
@@ -73,13 +70,11 @@ are ignored and never enter the application releases.
 | Model / family | License / restriction |
 |---|---|
 | Qwen3-ASR and Qwen3 ForcedAligner model revisions used by the pipeline | Apache-2.0 according to their Qwen model cards; pin and retain the exact downloaded model card/revision before redistribution |
+| `jonatasgrosman/wav2vec2-large-xlsr-53-german` and `facebook/wav2vec2-base-960h` | German and English EasyAligner CTC checkpoints; retain and verify each exact downloaded model card/revision before redistribution |
 | Meta `facebook/wav2vec2-xlsr-53-espeak-cv-ft` phoneme checkpoint | Apache-2.0 according to its model card; the downloaded checkpoint is cached separately and is not committed to this repository |
 | OpenAI Whisper code and published model weights | MIT |
 | Silero VAD code/model shipped by its repository | MIT; the cached repository LICENSE is retained locally |
-| torchaudio `MMS_FA` / Meta MMS weights | **CC-BY-NC-4.0**; attribution and the non-commercial restriction apply. Do not use this optional verifier for a commercial deployment without separate permission. |
 | UVR / Roformer separation weights | model-author-specific terms; `python-audio-separator` being MIT does not relicense downloaded weights |
-| `Cyru5/MedleyVox` duet-separation checkpoint, pinned revision `5c9e4e0d909e5a006c992b3422901ed416f4e57f` | **CC-BY-4.0**; model by Carson Evans, derived from the MedleyVox research architecture. Attribution and the model license must accompany any redistributed model pack. The checkpoint is downloaded to the external model cache and is not committed to this repository. |
-| SOFA singing checkpoints and their training datasets | verify and retain the exact checkpoint and dataset-provider terms before redistribution; the MIT code license alone does not establish model/dataset rights |
 
 ## Engine, system tools, integrations, and services
 
@@ -95,6 +90,9 @@ are ignored and never enter the application releases.
 | Sunnify Spotify Downloader | optional, separately installed downloader | GPL-3.0; not vendored or bundled by Neon Stage |
 | Spotify Web API | metadata/search integration | Spotify Developer Terms and branding rules; API access does not license music or lyrics |
 | Qobuz API | optional catalog matching and authorized purchase downloads | Qobuz API/partner and store terms; API access does not grant media rights, and only account-authorized `intent=download` responses are accepted |
+| Genius API | optional lyrics-page discovery | Genius API terms; the official API is used only for metadata and links, and linked lyrics pages are not scraped |
+| YouTube | operator-selected song-video search/source | YouTube terms and content-owner rights; discovery or tool access does not grant download, synchronization, redistribution, or public-performance rights |
+| yt-dlp | optional, checksum-verified external video acquisition tool installed under `.tools` | upstream software license and site terms; not bundled in application releases, and operators must use it only where authorized |
 | LRCLIB API | lyrics lookup | service terms and copyright in individual lyrics remain applicable |
 | [UltraStar Deluxe TXT format](https://github.com/UltraStar-Deluxe/USDX) | optional lyrics import compatibility | UltraStar Deluxe itself is GPL-2.0-or-later. Neon Stage's parser is an independent implementation of the text format; no USDX source code, executable, song, audio, cover, or lyrics data is bundled. Imported user content retains its own rights and terms. |
 | [USDB Syncer](https://github.com/bohning/usdb_syncer) | protocol research reference for optional `usdb.animux.de` interoperability | GPL-3.0-only. Neon Stage neither links, vendors, copies, nor distributes Syncer code; its HTTP adapter is an independent .NET implementation. USDB accounts and downloaded content remain subject to their own terms and rights. |
@@ -111,9 +109,8 @@ downloadable model pack:
    artifact and expose the matching notices from the application or website.
 3. For LGPL components, keep them replaceable where required and provide the
    applicable license, notices, source location, and relinking information.
-4. Do not redistribute MMS under terms incompatible with CC-BY-NC-4.0, and do
-   not redistribute other AI weights until their exact revision and license
-   have been recorded.
+4. Do not redistribute AI weights until their exact revision and license have
+   been recorded.
 5. Do not distribute songs, stems, lyrics, or cover art without explicit
    distribution rights.
 6. Keep Sunnify separately installed and process-isolated; do not incorporate

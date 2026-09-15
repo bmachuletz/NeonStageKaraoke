@@ -23,9 +23,10 @@ internal sealed class SongPackageService(ServerSettingsService settings, Library
     };
     private static readonly HashSet<string> AllowedSidecarSuffixes = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".lrc", ".pre-align.lrc", ".alignment.json", ".instrumental.ogg", ".instrumental.flac",
+        ".lrc", ".pre-align.lrc", ".lyrics-source.lrc", ".lyrics-source.txt", ".lyrics-source.json",
+        ".alignment.json", ".instrumental.ogg", ".instrumental.flac",
         ".vocals.ogg", ".vocals.flac", ".visuals.json", ".cover.jpg", ".stems.json",
-        ".transcription.json"
+        ".transcription.json", ".video.mp4", ".video.webm", ".video.android.mp4", ".video.json"
     };
     private static readonly HashSet<string> AllowedMasterExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -65,7 +66,7 @@ internal sealed class SongPackageService(ServerSettingsService settings, Library
                     {
                         var source = projectFiles[fileIndex];
                         var archivePath = $"{key}/files/{fileIndex + 1:D4}{ArchiveExtension(source.Suffix)}";
-                        var compression = source.Role is "master" or "instrumental" or "vocals" or "cover"
+                        var compression = source.Role is "master" or "instrumental" or "vocals" or "cover" or "video"
                             ? CompressionLevel.NoCompression
                             : CompressionLevel.Optimal;
                         var hash = await AddFileAsync(archive, source.Path, archivePath, compression, ct);
@@ -274,6 +275,8 @@ internal sealed class SongPackageService(ServerSettingsService settings, Library
     {
         ".lrc" => "lyrics", ".instrumental.ogg" or ".instrumental.flac" => "instrumental",
         ".vocals.ogg" or ".vocals.flac" => "vocals", ".cover.jpg" => "cover",
+        ".video.mp4" or ".video.webm" or ".video.android.mp4" => "video",
+        ".video.json" => "video-metadata",
         ".alignment.json" => "alignment", ".visuals.json" => "visualization",
         ".transcription.json" => "transcription", _ => "sidecar"
     };

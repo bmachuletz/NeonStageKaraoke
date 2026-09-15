@@ -1,7 +1,11 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Net;
 using System.Threading.Tasks;
+using NeonStage.Testing;
+using NeonStage.Timing;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -10,15 +14,12 @@ namespace NeonStage.Stage
 
 public sealed class NeonStageBootstrap : MonoBehaviour
 {
-#if UNITY_ANDROID
-    private const string DefaultServer = "http://192.168.178.91:5274";
-#else
     private const string DefaultServer = "http://cloud.hdvtec.de:5274";
-#endif
     // Der Server bevorzugt Unity-kompatible Ogg/Vorbis-Stems. Der Client fällt
     // bei älteren Bibliothekseinträgen sicher auf die MP3-Masterspur zurück.
     private const bool PreparedStemsAreUnityCompatible = true;
     private StageAudioEngine _audio = null!;
+    private IStageClock _clock = null!;
     private string _server = DefaultServer;
     private string _status = "Verbinde mit NeonStage …";
     private string? _loadedSongId;
@@ -46,6 +47,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private float _vocalVolume = 0.35f;
     private readonly StageLyricsEngine _lyrics = new();
     private StageVisualView _visuals = null!;
+    private StageVideoView _video = null!;
     private StageLoadingView _loading = null!;
     private StageReactionView _reactions = null!;
     private float _nextReactionPoll;
@@ -61,6 +63,18 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private Texture2D? _softGlow;
     private Texture2D? _iconBadge;
     private readonly StagePointerInput _pointer = new();
+    private bool _editorTestMode;
+    private bool _editorExportMode;
+    private bool _exportRunning;
+    private bool _exportCancelled;
+    private StageTestSongState? _editorSongState;
+    private StageEditorTestClient? _editorTestClient;
+    private readonly StageTestRevisionGate _editorRevisionGate = new();
+    private float _nextEditorPlaybackState;
+    private int _editorSongLoadGeneration;
+    private string _editorLyricsJson = "";
+    private IReadOnlyList<double> _editorBeatTimes = Array.Empty<double>();
+    private StageAudioAnalysisTimeline _editorAudioAnalysis = StageAudioAnalysisTimeline.Empty;
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
     private static void StartWithoutSceneSetup()
@@ -73,10 +87,19 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     {
         Application.runInBackground = true;
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
+        if (Application.platform == RuntimePlatform.Android)
+        {
+            // The karaoke UI and the 24-fps stage video do not benefit from a
+            // 60-fps render loop on the low-power Shell hardware. The freed GPU
+            // and thermal budget keeps hardware video decoding stable.
+            QualitySettings.vSyncCount = 0;
+            Application.targetFrameRate = 30;
+        }
         ConfigureStageCamera();
         if (FindAnyObjectByType<AudioListener>() == null)
             gameObject.AddComponent<AudioListener>();
         _server = ResolveServer();
+        Debug.Log($"Neon Stage server: {_server}");
         _controllerId = PlayerPrefs.GetString("NeonStage.ControllerId", "");
         if (!Guid.TryParse(_controllerId, out _))
         {
@@ -85,12 +108,28 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             PlayerPrefs.Save();
         }
         _audio = gameObject.AddComponent<StageAudioEngine>();
+        _audio.ConfigureOutputLatencySeconds(ResolveOutputLatencySeconds());
+        _clock = new AudioStageClock(_audio);
         _audio.PlaybackEnded += HandlePlaybackEnded;
         _loading = new StageLoadingView(gameObject);
         _lyrics.Initialize(gameObject);
         _visuals = new StageVisualView(gameObject);
+        _video = new StageVideoView(gameObject);
         _reactions = new StageReactionView(gameObject);
         _visuals.SetSessionActive(false);
+        _editorExportMode = HasArgument("--editor-export");
+        if (TryGetEditorTestSettings(out var testHost, out var testPort, out var testSession, out var testToken))
+        {
+            _editorTestMode = true;
+            Screen.fullScreenMode = FullScreenMode.Windowed;
+            Screen.SetResolution(1280, 720, FullScreenMode.Windowed);
+            _hasActiveSession = true;
+            _visuals.SetSessionActive(true);
+            _status = StageLocale.Text("Warte auf den Lyrics-Editor …", "Waiting for lyrics editor …");
+            _editorTestClient = new StageEditorTestClient(testHost, testPort, testSession, testToken,
+                HandleEditorTestMessage);
+            return;
+        }
         _ = _visuals.LoadQrAsync(_server);
         _ = ClaimControlAsync();
         StartCoroutine(PollQueue());
@@ -128,9 +167,68 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         return true;
     }
 
+    private static bool TryGetEditorTestSettings(out string host, out int port, out string session, out string token)
+    {
+        host = "127.0.0.1";
+        port = 0;
+        session = token = "";
+        var arguments = Environment.GetCommandLineArgs();
+        if (!Array.Exists(arguments, value => value.Equals("--editor-test", StringComparison.OrdinalIgnoreCase) ||
+                                               value.Equals("--editor-export", StringComparison.OrdinalIgnoreCase)))
+            return false;
+        for (var index = 0; index + 1 < arguments.Length; index++)
+        {
+            if (arguments[index].Equals("--editor-test-host", StringComparison.OrdinalIgnoreCase)) host = arguments[index + 1];
+            else if (arguments[index].Equals("--editor-test-port", StringComparison.OrdinalIgnoreCase))
+                int.TryParse(arguments[index + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out port);
+            else if (arguments[index].Equals("--editor-test-session", StringComparison.OrdinalIgnoreCase)) session = arguments[index + 1];
+            else if (arguments[index].Equals("--editor-test-token", StringComparison.OrdinalIgnoreCase)) token = arguments[index + 1];
+        }
+        return IPAddress.TryParse(host, out var address) && IPAddress.IsLoopback(address) &&
+               port is > 0 and <= 65535 && Guid.TryParseExact(session, "N", out _) && token.Length >= 32;
+    }
+
+    private static bool HasArgument(string name) => Array.Exists(Environment.GetCommandLineArgs(),
+        value => value.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    private static double? ResolveOutputLatencySeconds()
+    {
+        var arguments = Environment.GetCommandLineArgs();
+        for (var index = 0; index < arguments.Length; index++)
+        {
+            if (arguments[index].Equals("--stage-audio-latency-ms", StringComparison.OrdinalIgnoreCase) &&
+                index + 1 < arguments.Length && TryLatency(arguments[index + 1], out var argumentLatency))
+                return argumentLatency;
+            const string prefix = "--stage-audio-latency-ms=";
+            if (arguments[index].StartsWith(prefix, StringComparison.OrdinalIgnoreCase) &&
+                TryLatency(arguments[index].Substring(prefix.Length), out argumentLatency))
+                return argumentLatency;
+        }
+
+        if (TryLatency(Environment.GetEnvironmentVariable("NEONSTAGE_AUDIO_LATENCY_MS"), out var environmentLatency))
+            return environmentLatency;
+        return TryLatency(PlayerPrefs.GetString("NeonStage.AudioLatencyMs", "auto"), out var storedLatency)
+            ? storedLatency
+            : null;
+    }
+
+    private static bool TryLatency(string? value, out double? seconds)
+    {
+        seconds = null;
+        if (string.IsNullOrWhiteSpace(value) || value.Trim().Equals("auto", StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!double.TryParse(value.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var milliseconds) ||
+            milliseconds < 0 || milliseconds > 500) return false;
+        seconds = milliseconds / 1000d;
+        return true;
+    }
+
     private void OnDestroy()
     {
+        StageOfflineExporter.CancelActive();
+        _video?.Stop();
         if (_audio != null) _audio.PlaybackEnded -= HandlePlaybackEnded;
+        _editorTestClient?.Dispose();
         _pointer.Dispose();
     }
 
@@ -162,31 +260,231 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
     private void Update()
     {
+        _editorTestClient?.Update();
         _pointer.Update();
         if (Input.GetKeyDown(KeyCode.Escape))
         {
+            if (_editorTestMode) { Application.Quit(); return; }
             _ = ExitStageAsync();
             return;
         }
-        if (Time.unscaledTime >= _nextQrRefresh)
+        // The opaque audio-reactive backdrop uses its own shader render queue.
+        // On Linux/OpenGL it can cover a lower-sorted video canvas despite the
+        // intended Canvas order. A song video is the authoritative backdrop on
+        // every platform, so disable the shader pass while video is active.
+        var videoBackgroundMode = _video.Active;
+        if (!videoBackgroundMode && Time.unscaledTime >= _nextQrRefresh)
         {
             _nextQrRefresh = Time.unscaledTime + 15f;
             _ = _visuals.LoadQrAsync(_server, true);
         }
-        _visuals.Update(_audio);
+        _visuals.SetVideoPerformanceMode(videoBackgroundMode);
+        _lyrics.SetVideoPerformanceMode(Application.platform == RuntimePlatform.Android && videoBackgroundMode);
+        var stageTime = _clock.Capture();
+        StageAudioAnalysisFrame? offlineAnalysis = _exportRunning && _editorAudioAnalysis.HasFrames
+            ? _editorAudioAnalysis.Sample(stageTime.PositionSeconds)
+            : null;
+        _visuals.Update(_audio, stageTime, offlineAnalysis);
+        _video.Update(stageTime);
         _loading.Update();
         _reactions.Update();
-        if (_hasActiveSession && Time.unscaledTime >= _nextReactionPoll)
+        if (!_editorTestMode && _hasActiveSession && Time.unscaledTime >= _nextReactionPoll)
         {
             _nextReactionPoll = Time.unscaledTime + .35f;
             _ = PollReactionsAsync();
         }
-        _lyrics.Update(_audio.PositionSeconds, _visuals.AudioImpact);
-        if (_audio.HasClip && Time.unscaledTime >= _nextTimingReport)
+        _lyrics.Update(stageTime, _visuals.AudioImpact);
+        if (!_editorTestMode && _audio.HasClip && Time.unscaledTime >= _nextTimingReport)
         {
             _nextTimingReport = Time.unscaledTime + 1f;
             _ = ReportTimingAsync();
         }
+        if (_editorTestMode && Time.unscaledTime >= _nextEditorPlaybackState)
+        {
+            _nextEditorPlaybackState = Time.unscaledTime + .5f;
+            _editorTestClient?.Send(StageTestProtocol.PlaybackState, positionSeconds: _audio.PositionSeconds,
+                playing: _audio.IsPlaying);
+        }
+    }
+
+    private void HandleEditorTestMessage(StageTestMessage message)
+    {
+        switch (message.type)
+        {
+            case StageTestProtocol.ReplaceSongState:
+                _ = ApplyEditorSongStateAsync(message);
+                break;
+            case StageTestProtocol.UpdateLyrics:
+                if (_editorExportMode) break; // Export uses the immutable initial snapshot.
+                if (_editorRevisionGate.TryApply(message.revision))
+                {
+                    _editorLyricsJson = message.stateJson;
+                    _lyrics.LoadJson(_editorLyricsJson, _editorBeatTimes, clearView: false);
+                    _editorTestClient?.Send(StageTestProtocol.Applied, message.revision,
+                        _audio.PositionSeconds, _audio.IsPlaying);
+                }
+                break;
+            case StageTestProtocol.Play:
+                if (_audio.HasClip)
+                {
+                    if (Math.Abs(_audio.PositionSeconds - message.positionSeconds) > .08)
+                        _audio.Seek(message.positionSeconds);
+                    _audio.Resume();
+                }
+                break;
+            case StageTestProtocol.Pause:
+                if (_audio.HasClip)
+                {
+                    _audio.Seek(message.positionSeconds);
+                    _audio.Pause();
+                }
+                break;
+            case StageTestProtocol.Stop:
+                if (_audio.HasClip) { _audio.Pause(); _audio.Seek(0); }
+                break;
+            case StageTestProtocol.Seek:
+                if (_audio.HasClip) _audio.Seek(message.positionSeconds);
+                break;
+            case StageTestProtocol.Clock:
+                ApplyEditorClock(message);
+                break;
+            case StageTestProtocol.BeginExport:
+                BeginEditorExport(message);
+                break;
+            case StageTestProtocol.CancelExport:
+                _exportCancelled = true;
+                break;
+            case StageTestProtocol.Shutdown:
+                Application.Quit();
+                break;
+        }
+    }
+
+    private async Task ApplyEditorSongStateAsync(StageTestMessage message)
+    {
+        if (!_editorRevisionGate.TryApply(message.revision)) return;
+        var loadGeneration = ++_editorSongLoadGeneration;
+        try
+        {
+            var state = JsonUtility.FromJson<StageTestSongState>(message.stateJson);
+            if (state == null || !Guid.TryParse(state.songId, out _))
+                throw new InvalidOperationException("Der Editor hat keinen gültigen Songzustand gesendet.");
+            var oldTitle = _songTitle;
+            var oldArtist = _songArtist;
+            _server = state.serverUrl.TrimEnd('/');
+            _editorSongState = state;
+            _loadedSongId = state.songId;
+            _songTitle = state.title;
+            _songArtist = state.artist;
+            _title = $"{state.title} · {state.artist}";
+            _status = StageLocale.Text("Editor-Song wird geladen …", "Loading editor song …");
+            var song = new SongDto { id = state.songId, title = state.title, artist = state.artist };
+            _visuals.BeginSongTransition(song, oldTitle, oldArtist);
+            _visuals.SetStageTheme(state.stageThemeId);
+            _lyrics.SetStageTheme(state.stageThemeId);
+            _editorLyricsJson = state.lyricsJson;
+            _editorBeatTimes = Array.Empty<double>();
+            _lyrics.LoadJson(_editorLyricsJson);
+
+            var coverTask = _visuals.LoadCoverAsync(_server, state.songId);
+            var videoTask = _video.LoadAsync(_server, state.songId);
+            var stemsTask = GetStemsAsync(state.songId);
+            var analysisTask = GetEditorAudioAnalysisAsync(state.songId);
+            await Task.WhenAll(coverTask, videoTask, stemsTask, analysisTask);
+            if (_editorSongLoadGeneration != loadGeneration) return;
+            _editorAudioAnalysis = await analysisTask;
+            _editorBeatTimes = _editorAudioAnalysis.BeatTimes;
+            _lyrics.LoadJson(_editorLyricsJson, _editorBeatTimes, clearView: false);
+            _lyrics.SetVideoBackground(_video.Active);
+            var stems = await stemsTask;
+            var useStems = PreparedStemsAreUnityCompatible && stems.hasInstrumental;
+            var master = useStems
+                ? $"{_server}/api/songs/{state.songId}/stems/instrumental?format=ogg"
+                : $"{_server}/api/songs/{state.songId}/audio";
+            var vocals = useStems && stems.hasVocals
+                ? $"{_server}/api/songs/{state.songId}/stems/vocals?format=ogg"
+                : null;
+            try { await _audio.LoadPausedAsync(master, vocals); }
+            catch when (stems.hasInstrumental)
+            {
+                await _audio.LoadPausedAsync($"{_server}/api/songs/{state.songId}/audio", null);
+            }
+            if (_editorSongLoadGeneration != loadGeneration) return;
+            _audio.Seek(state.positionSeconds);
+            if (state.playing) _audio.Resume();
+            _status = StageLocale.Text("Editor-Test bereit", "Editor test ready");
+            _editorTestClient?.Send(StageTestProtocol.Ready, message.revision,
+                _audio.PositionSeconds, _audio.IsPlaying);
+        }
+        catch (Exception exception)
+        {
+            _status = StageLocale.Text("Editor-Test fehlgeschlagen", "Editor test failed") + ": " + exception.Message;
+            _editorTestClient?.Send(StageTestProtocol.Error, message.revision, details: exception.Message);
+        }
+    }
+
+    private void BeginEditorExport(StageTestMessage request)
+    {
+        if (!_editorExportMode || _exportRunning || _editorSongState == null) return;
+        if (request.revision != _editorRevisionGate.AppliedRevision)
+        {
+            _editorTestClient?.Send(StageTestProtocol.Error, details:
+                "Der angeforderte Exportstand stimmt nicht mit dem geladenen Snapshot überein.");
+            return;
+        }
+        if (request.width is < 320 or > 7680 || request.height is < 180 or > 4320 ||
+            request.framesPerSecond is < 1 or > 120 || string.IsNullOrWhiteSpace(request.outputPath))
+        {
+            _editorTestClient?.Send(StageTestProtocol.Error, details: "Ungültige MP4-Exportparameter.");
+            return;
+        }
+        _exportRunning = true;
+        _exportCancelled = false;
+        _audio.Pause();
+        var offlineVideoPath = _video.DetachForOfflineExport();
+        _lyrics.SetVideoBackground(!string.IsNullOrWhiteSpace(offlineVideoPath));
+        var exportClock = new FrameStageClock();
+        _clock = exportClock;
+        StartCoroutine(StageOfflineExporter.Run(request, _editorSongState, exportClock,
+            offlineVideoPath, _video.OffsetSeconds,
+            () => _exportCancelled,
+            (frame, total) => _editorTestClient?.Send(StageTestProtocol.ExportProgress,
+                positionSeconds: frame / (double)request.framesPerSecond,
+                details: "", frame: frame, totalFrames: total),
+            output =>
+            {
+                _exportRunning = false;
+                _video.CompleteOfflineExport();
+                _editorTestClient?.Send(StageTestProtocol.ExportComplete, details: "", outputPath: output);
+            },
+            error =>
+            {
+                _exportRunning = false;
+                _video.CompleteOfflineExport();
+                _editorTestClient?.Send(StageTestProtocol.Error, details: error);
+            }));
+    }
+
+    private void ApplyEditorClock(StageTestMessage message)
+    {
+        if (!_audio.HasClip) return;
+        if (Math.Abs(_audio.PositionSeconds - message.positionSeconds) > .15)
+            _audio.Seek(message.positionSeconds);
+        if (message.playing && !_audio.IsPlaying) _audio.Resume();
+        else if (!message.playing && _audio.IsPlaying) _audio.Pause();
+    }
+
+    private async Task<StageAudioAnalysisTimeline> GetEditorAudioAnalysisAsync(string songId)
+    {
+        using var request = UnityWebRequest.Get($"{_server}/api/songs/{songId}/visualization");
+        await request.SendWebRequest();
+        if (request.result != UnityWebRequest.Result.Success) return StageAudioAnalysisTimeline.Empty;
+        var visualization = JsonUtility.FromJson<SongVisualizationDto>(request.downloadHandler.text);
+        var points = new List<StageAudioAnalysisPoint>();
+        foreach (var frame in visualization?.frames ?? Array.Empty<VisualizationFrameDto>())
+            points.Add(new StageAudioAnalysisPoint(frame.timeSeconds, frame.energy, frame.bass, frame.mid,
+                frame.high, frame.beat));
+        return new StageAudioAnalysisTimeline(points);
     }
 
     private async Task ReportTimingAsync()
@@ -215,6 +513,16 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                 await eventRequest.SendWebRequest();
                 if (eventRequest.result != UnityWebRequest.Result.Success)
                 {
+                    // A sleeping Android Wi-Fi stack or a brief server restart
+                    // is not evidence that the event was deactivated. Preserve
+                    // the complete paused stage unless the server explicitly
+                    // answers 404.
+                    if (eventRequest.responseCode != 404)
+                    {
+                        _status = StageLocale.Text("Verbindung unterbrochen – Session bleibt erhalten",
+                            "Connection interrupted – keeping session");
+                        return;
+                    }
                     _initialSessionChecked = true;
                     _hasActiveSession = false;
                     _visuals.SetSessionActive(false);
@@ -222,6 +530,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                     _lyrics.SetStageTheme("standard");
                     _activeEventId = null;
                     _loadedSongId = null;
+                    _video.Stop();
+                    _lyrics.SetVideoBackground(false);
                     _loadedQueueEntryId = null;
                     _loadedStartedAt = null;
                     if (_audio.IsPlaying) _audio.Pause();
@@ -284,10 +594,14 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                  !string.Equals(_loadedStartedAt, current.startedAt, StringComparison.Ordinal));
             if (current?.song != null && playbackChanged)
                 _visuals.BeginSongTransition(current.song, _songTitle, _songArtist);
-            await _visuals.SetNextAsync(_server, state?.queue is { Length: > 0 } ? state.queue[0] : null);
+            var nextEntry = state?.queue is { Length: > 0 } ? state.queue[0] : null;
+            await _visuals.SetNextAsync(_server, nextEntry);
+            if (nextEntry?.song != null) _ = _video.PrefetchAsync(_server, nextEntry.song.id);
             if (state == null || current?.song == null)
             {
                 _loadedSongId = null;
+                _video.Stop();
+                _lyrics.SetVideoBackground(false);
                 _loadedQueueEntryId = null;
                 _loadedStartedAt = null;
                 if (_audio.HasClip) _audio.Stop();
@@ -322,9 +636,13 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             _loadedQueueEntryId = current.id;
             _loadedStartedAt = current.startedAt;
             _status = StageLocale.Text("Prüfe vorbereitete Karaoke-Spuren …", "Checking prepared karaoke stems …");
-            await _lyrics.LoadAsync(_server, _loadedSongId);
-            await _visuals.LoadCoverAsync(_server, _loadedSongId);
-            var stems = await GetStemsAsync(_loadedSongId);
+            var lyricsTask = _lyrics.LoadAsync(_server, _loadedSongId);
+            var coverTask = _visuals.LoadCoverAsync(_server, _loadedSongId);
+            var videoTask = _video.LoadAsync(_server, _loadedSongId);
+            var stemsTask = GetStemsAsync(_loadedSongId);
+            await Task.WhenAll(lyricsTask, coverTask, videoTask, stemsTask);
+            _lyrics.SetVideoBackground(_video.Active);
+            var stems = await stemsTask;
             var useStems = PreparedStemsAreUnityCompatible && stems.hasInstrumental;
             var master = useStems
                 ? $"{_server}/api/songs/{_loadedSongId}/stems/instrumental?format=ogg"
@@ -349,6 +667,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         {
             _status = $"Audiofehler: {exception.Message}";
             _loadedSongId = null;
+            _video.Stop();
+            _lyrics.SetVideoBackground(false);
             _loadedQueueEntryId = null;
             _loadedStartedAt = null;
         }
@@ -718,7 +1038,9 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         GUI.matrix = layoutMatrix;
         var infoStyle = new GUIStyle(GUI.skin.label) { fontSize = 13, alignment = TextAnchor.MiddleCenter };
         infoStyle.normal.textColor = new Color(0.64f, 0.55f, 0.7f);
-        GUI.Label(new Rect(40, height - 29, width - 80, 22), $"{_audio.PositionSeconds:0.0}s  ·  {(_ownsControl ? "Steuerung aktiv" : "nur Anzeige")}  ·  {_server}", infoStyle);
+        var syncMode = _audio.UsesAutomaticOutputLatency ? "Auto" : "Fix";
+        GUI.Label(new Rect(40, height - 29, width - 80, 22),
+            $"{_audio.PositionSeconds:0.0}s  ·  Lyrics-Sync {syncMode} {_audio.AppliedOutputLatencySeconds * 1000:0} ms  ·  {(_ownsControl ? "Steuerung aktiv" : "nur Anzeige")}  ·  {_server}", infoStyle);
     }
 
     private void DrawSessionLauncher(float width, float height)

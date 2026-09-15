@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace NeonStage.Presentation
 {
@@ -604,7 +605,7 @@ public sealed class StagePresentationEngine
 
     private static double WordProgress(StagePresentationWord word, double position)
     {
-        if (word.SyllableConfidence < .62 || word.Syllables.Count < 2)
+        if (word.SyllableConfidence < .62 || word.Syllables.Count == 0)
             return Clamp((position - word.Start) / Math.Max(.02, word.End - word.Start));
         var total = 0;
         for (var index = 0; index < word.Syllables.Count; index++)
@@ -613,8 +614,21 @@ public sealed class StagePresentationEngine
         for (var index = 0; index < word.Syllables.Count; index++)
         {
             var syllable = word.Syllables[index];
-            completed += Math.Max(1, syllable.Text.Length) *
-                         Clamp((position - syllable.Start) / Math.Max(.02, syllable.End - syllable.Start));
+            var units = Math.Max(1, syllable.Text.Length);
+            var duration = Math.Max(.02, syllable.End - syllable.Start);
+            var localProgress = Clamp((position - syllable.Start) / duration);
+            // A held syllable must visibly fill for its complete acoustic
+            // duration so the singer is encouraged to sustain the note.
+            // Very short syllables use a duration-dependent ease-out: they
+            // feel like quick game steps without becoming a hard one-frame
+            // jump. From 300 ms onward the progression is strictly linear.
+            if (duration < .30)
+            {
+                var shortness = Clamp((.30 - duration) / .22);
+                var exponent = 1 + 1.2 * shortness;
+                localProgress = 1 - Math.Pow(1 - localProgress, exponent);
+            }
+            completed += units * localProgress;
             if (position < syllable.End) break;
         }
         return completed / Math.Max(1, total);

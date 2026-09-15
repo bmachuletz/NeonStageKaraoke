@@ -28,6 +28,7 @@ else
 fi
 
 export Karaoke__PublicBaseUrl="${NEONSTAGE_PUBLIC_URL:-http://cloud.hdvtec.de:5274}"
+export NEONSTAGE_YT_DLP_PATH="${NEONSTAGE_YT_DLP_PATH:-${PROJECT_ROOT}/.tools/yt-dlp}"
 
 echo "Karaoke-Server wird gestartet …"
 if [[ -n "${Karaoke__LibraryPath:-}" ]]; then
@@ -40,5 +41,6 @@ else
   echo "Einladungsadresse: wird automatisch aus der LAN-IP ermittelt"
 fi
 echo "Datenbank: ${Karaoke__DatabasePath}"
+echo "yt-dlp: ${NEONSTAGE_YT_DLP_PATH}"
 
 exec dotnet run --project "${SERVER_PROJECT}" --no-build

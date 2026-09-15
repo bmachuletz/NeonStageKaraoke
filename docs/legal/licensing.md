@@ -16,8 +16,8 @@ Third-party licenses are independent of that choice. `THIRD_PARTY_NOTICES.md` is
 - Unity package manifest is locked; Unity/package notices accompany the player
 - native VLC notice, LGPL text and source/relinking information accompany each binary distribution
 - AI model cards, revisions, licenses and source URLs are captured separately
-- the optional torchaudio MMS forced-alignment weights are recorded as
-  CC-BY-NC-4.0 and excluded from commercial deployments without permission
+- every downloaded CTC, ASR, phoneme and separation-model revision is recorded
+  with its model card and kept outside application releases
 - website Legal page and packaged application About/Legal view point to the matching release notices
 - dependency vulnerability scan and build/test suite pass
 
@@ -27,10 +27,12 @@ Third-party licenses are independent of that choice. `THIRD_PARTY_NOTICES.md` is
 
 The Sunnify integration downloads and executes a separate GPL-3.0 project. Keep that boundary explicit. Spotify API access does not grant rights to download or redistribute music. Operators must comply with service terms and local copyright law.
 
-The optional `torchaudio.pipelines.MMS_FA` model is published under
-CC-BY-NC-4.0. Its non-commercial restriction is a model-level constraint even
-though torchaudio itself is open-source. Disable `LRC_MMS_VERIFY` or obtain
-separate permission for deployments outside those terms.
+The product alignment path uses EasyAligner with German or English Wav2Vec2 CTC
+models and optionally downloads Qwen, Whisper/stable-ts, phoneme, and
+BS-Roformer weights. Library licenses do not relicense those weights. Record the
+exact revision and terms before distributing an alignment image or model pack;
+model files remain ignored and are never included in the Server, Editor, Stage,
+or GitHub Pages artifacts.
 
 ## Maintaining the register
 

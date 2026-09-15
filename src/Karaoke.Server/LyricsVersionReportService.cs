@@ -116,6 +116,33 @@ internal sealed class LyricsVersionReportService(
                 german ? "Verbesserte Alternativen gewählt" : "Improved alternatives selected");
             AddIntegerMetric(text, engine, "review_lines", german ? "Von der Engine markierte Prüfzeilen" : "Engine review lines");
         }
+        if (TryObject(technical, "lyrics_engine_v3", out var engineV3))
+        {
+            Section(text, german ? "Alternative Wort-Lattice (Engine v3)" :
+                "Alternative word lattice (Engine v3)");
+            AddStringMetric(text, engineV3, "mode", german ? "Modus" : "Mode");
+            AddIntegerMetric(text, engineV3, "proposed_nonbaseline_words",
+                german ? "Vorgeschlagene alternative Wörter" : "Proposed alternative words");
+            AddIntegerMetric(text, engineV3, "changed_boundaries",
+                german ? "Vorgeschlagene geänderte Wortgrenzen" : "Proposed changed word boundaries");
+            AddIntegerMetric(text, engineV3, "mixed_candidate_lines",
+                german ? "Zeilen aus mehreren Timing-Pfaden" : "Lines mixed from multiple timing paths");
+            AddIntegerMetric(text, engineV3, "review_boundaries",
+                german ? "Mehrdeutige Grenzen zur Prüfung" : "Ambiguous boundaries to review");
+            if (TryObject(engineV3, "timing_reference_comparison", out var v3Reference))
+            {
+                AddIntegerMetric(text, v3Reference, "compared_boundaries",
+                    german ? "Mit Enhanced-LRC verglichene Grenzen" :
+                    "Boundaries compared with Enhanced LRC");
+                AddDoubleMetric(text, v3Reference, "baseline_mean_absolute_error_ms",
+                    german ? "Mittlerer Fehler Engine v2" : "Engine v2 mean error", " ms");
+                AddDoubleMetric(text, v3Reference, "proposal_mean_absolute_error_ms",
+                    german ? "Mittlerer Fehler Engine v3" : "Engine v3 mean error", " ms");
+                AddDoubleMetric(text, v3Reference, "mean_absolute_error_improvement_ms",
+                    german ? "Mittlere Verbesserung durch Engine v3" :
+                    "Mean improvement from Engine v3", " ms");
+            }
+        }
         if (TryObject(technical, "phoneme_ctc_alignment", out var phoneme) &&
             TryObject(phoneme, "micro_boundary_refinement", out var micro))
         {

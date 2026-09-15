@@ -545,7 +545,43 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         if (indexed.Path is null) return false;
         if (indexed.Song?.ReviewStatus != SongReviewStatus.InReview)
             throw new InvalidOperationException("Base-Lyrics können nur bearbeitet werden, solange der Song in Review ist.");
+        await WritePreAlignmentLyricsAsync(indexed.Path, lyrics, cancellationToken);
+        changes.Publish("library-changed");
+        return true;
+    }
+
+    internal async Task<bool> WriteRetrievedLyricsSourceAsync(Guid id, RetrievedLyricsSelection selected,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(selected.Lyrics) || string.IsNullOrWhiteSpace(selected.RawLyrics))
+            throw new ArgumentException("Die neu bezogenen Lyrics sind leer.");
+        if (selected.RawExtension is not (".lrc" or ".txt"))
+            throw new ArgumentException("Die Dateiendung der Lyrics-Quelle ist ungültig.");
+        var indexed = await SearchByIdAsync(id, cancellationToken);
+        if (indexed.Path is null) return false;
         var audioPath = ValidateLibraryAudioPath(indexed.Path);
+        var basePath = Path.Combine(Path.GetDirectoryName(audioPath)!, Path.GetFileNameWithoutExtension(audioPath));
+        await WriteTextAtomicallyAsync(basePath + ".lyrics-source" + selected.RawExtension,
+            selected.RawLyrics, cancellationToken);
+        await WriteTextAtomicallyAsync(basePath + ".lyrics-source.json",
+            JsonSerializer.Serialize(new
+            {
+                selected.Source,
+                selected.SourceId,
+                selected.Label,
+                RetrievedAt = DateTimeOffset.UtcNow,
+                File = Path.GetFileName(basePath) + ".lyrics-source" + selected.RawExtension
+            }, new JsonSerializerOptions(JsonSerializerDefaults.Web) { WriteIndented = true }) + Environment.NewLine,
+            cancellationToken);
+        await WritePreAlignmentLyricsAsync(indexed.Path, selected.Lyrics, cancellationToken);
+        changes.Publish("library-changed");
+        return true;
+    }
+
+    private async Task WritePreAlignmentLyricsAsync(string indexedPath, string lyrics,
+        CancellationToken cancellationToken)
+    {
+        var audioPath = ValidateLibraryAudioPath(indexedPath);
         var target = Path.ChangeExtension(audioPath, ".pre-align.lrc");
         if (File.Exists(target))
         {
@@ -563,8 +599,21 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         {
             if (File.Exists(temporary)) File.Delete(temporary);
         }
-        changes.Publish("library-changed");
-        return true;
+    }
+
+    private static async Task WriteTextAtomicallyAsync(string target, string content,
+        CancellationToken cancellationToken)
+    {
+        var temporary = target + "." + Guid.NewGuid().ToString("N") + ".partial";
+        try
+        {
+            await File.WriteAllTextAsync(temporary, content, new UTF8Encoding(false), cancellationToken);
+            File.Move(temporary, target, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(temporary)) File.Delete(temporary);
+        }
     }
 
     private string ValidateLibraryAudioPath(string indexedPath)
@@ -588,6 +637,18 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
         if (await command.ExecuteNonQueryAsync(cancellationToken) != 1) return null;
         changes.Publish("library-changed");
         return await GetAsync(id, cancellationToken);
+    }
+
+    public async Task<int> RemoveAllSongsFromStageAsync(CancellationToken cancellationToken)
+    {
+        await InitializeAsync(cancellationToken);
+        await using var connection = new SqliteConnection(ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        var command = connection.CreateCommand();
+        command.CommandText = "UPDATE songs SET reviewStatus='InReview' WHERE reviewStatus='Approved'";
+        var removed = await command.ExecuteNonQueryAsync(cancellationToken);
+        if (removed > 0) changes.Publish("library-changed");
+        return removed;
     }
 
     public async Task<DeleteSongResultDto?> DeleteSongAsync(Guid id, CancellationToken cancellationToken)
@@ -804,7 +865,8 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
 
             var alignedLines = details.EnumerateArray().ToArray();
             var lines = lyrics.Lines.ToArray();
-            var alignedLineCursor = 0;
+            var unusedAlignedLines = new HashSet<int>(
+                Enumerable.Range(0, alignedLines.Length));
             for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
             {
                 var words = (lines[lineIndex].Words ?? []).ToArray();
@@ -817,21 +879,25 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 if (words.Length == 0 || string.IsNullOrWhiteSpace(lines[lineIndex].Text))
                     continue;
                 var normalizedLine = NormalizeAlignmentText(lines[lineIndex].Text);
-                var alignedLineIndex = -1;
-                for (var candidateIndex = alignedLineCursor;
-                     candidateIndex < alignedLines.Length; candidateIndex++)
-                {
-                    var candidate = alignedLines[candidateIndex];
-                    if (!candidate.TryGetProperty("text", out var candidateText) ||
-                        candidateText.ValueKind != JsonValueKind.String)
-                        continue;
-                    if (NormalizeAlignmentText(candidateText.GetString()) != normalizedLine)
-                        continue;
-                    alignedLineIndex = candidateIndex;
-                    break;
-                }
+                var alignedLineIndex = unusedAlignedLines
+                    .Where(candidateIndex =>
+                    {
+                        var candidate = alignedLines[candidateIndex];
+                        return candidate.TryGetProperty("text", out var candidateText)
+                               && candidateText.ValueKind == JsonValueKind.String
+                               && NormalizeAlignmentText(candidateText.GetString()) == normalizedLine;
+                    })
+                    // Engine-v2 may select repeated lines out of source-array
+                    // order. render_enhanced_lrc writes them chronologically,
+                    // so text cursor matching loses every report row after the
+                    // first inversion. The exact acoustic timestamp safely
+                    // disambiguates identical chorus lines.
+                    .OrderBy(candidateIndex => AlignmentTimestampDistance(
+                        alignedLines[candidateIndex], lines[lineIndex].Start,
+                        candidateIndex, lineIndex))
+                    .FirstOrDefault(-1);
                 if (alignedLineIndex < 0) continue;
-                alignedLineCursor = alignedLineIndex + 1;
+                unusedAlignedLines.Remove(alignedLineIndex);
                 var detail = alignedLines[alignedLineIndex];
                 if (!detail.TryGetProperty("words", out var alignedWords) || alignedWords.ValueKind != JsonValueKind.Array)
                     continue;
@@ -914,6 +980,15 @@ public sealed class LibraryRepository(IOptions<KaraokeOptions> options, ILogger<
                 if (char.IsLetterOrDigit(character))
                     result.Append(char.ToLowerInvariant(character));
             return result.ToString();
+        }
+
+        static double AlignmentTimestampDistance(JsonElement candidate,
+            TimeSpan lineStart, int candidateIndex, int lineIndex)
+        {
+            if (candidate.TryGetProperty("timestamp", out var timestamp)
+                && timestamp.ValueKind == JsonValueKind.Number)
+                return Math.Abs(timestamp.GetDouble() - lineStart.TotalSeconds);
+            return Math.Abs(candidateIndex - lineIndex);
         }
     }
 

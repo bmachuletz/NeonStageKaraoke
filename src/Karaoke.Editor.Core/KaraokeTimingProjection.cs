@@ -82,6 +82,7 @@ public static class KaraokeTimingProjection
         Start = source.Start,
         End = source.End,
         Text = source.Text,
+        TechnicalText = source.TechnicalText,
         Origin = source.Origin,
         Confidence = source.Confidence,
         IsAutomaticallyGenerated = source.IsAutomaticallyGenerated,
@@ -98,6 +99,7 @@ public static class KaraokeTimingProjection
         StageEffect = source.StageEffect,
         VoiceLane = source.VoiceLane,
         VoiceLabel = source.VoiceLabel,
+        Notes = source.Notes.ToList(),
         Children = source.Children.Select(CloneSegment).ToList()
     };
 }

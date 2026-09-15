@@ -174,7 +174,6 @@ while IFS= read -r wish; do
   report_audio_candidate "Audio gefunden · Lyrics werden verarbeitet"
 
   lrc="${destination%.*}.lrc"
-  trusted_ultrastar=0
   echo "USDB-Matching: $destination"
   usdb_payload=$(jq -cn --arg audioPath "$destination" --arg title "$title" --arg artist "$artist" \
     --arg album "$(jq -r '.track.album // empty' <<<"$wish")" \
@@ -184,10 +183,7 @@ while IFS= read -r wish; do
       "$server_url/api/admin/lyrics/resolve-imported"); then
     if [[ $(jq -r '.success // false' <<<"$usdb_result") == true ]]; then
       echo "USDB: UltraStar-Timings wurden als primäre Lyrics-Quelle übernommen."
-      if [[ $(jq -r '.trustedDirectCandidate // false' <<<"$usdb_result") == true ]]; then
-        trusted_ultrastar=1
-        echo "USDB: Aufnahme passt; AI-Lyrics-Alignment wird übersprungen."
-      fi
+      echo "USDB: Die gewählte Textfassung wird anschließend mit EasyAligner ausgerichtet."
     else
       echo "USDB: $(jq -r '.reason // "kein kompatibler Treffer"' <<<"$usdb_result")"
     fi
@@ -218,21 +214,10 @@ while IFS= read -r wish; do
       continue
     fi
   else
-    if ((trusted_ultrastar != 0)); then
-      echo "UltraStar-Direktimport und Stem-Separation: $destination"
-      align_command=("$repo_root/scripts/linux/align-library.sh" --force
-        --library "$destination_dir" --match "$(basename "$destination")"
-        --url "$aligner_url" --profile trusted-ultrastar)
-    else
-      echo "GPU-Wort-/Silbenalignment: $destination"
-      align_command=("$repo_root/scripts/linux/align-library.sh" --force
-        --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url")
-    fi
+    echo "EasyAligner Wort-/Silbenalignment: $destination"
+    align_command=("$repo_root/scripts/linux/align-library.sh" --force
+      --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url")
     if "${align_command[@]}"; then
-      pipeline_complete=1
-    elif ((trusted_ultrastar != 0)) && "$repo_root/scripts/linux/align-library.sh" --force \
-        --library "$destination_dir" --match "$(basename "$destination")" --url "$aligner_url"; then
-      echo "UltraStar-Aufnahmeprüfung war nicht eindeutig; reguläres Alignment wurde verwendet."
       pipeline_complete=1
     else
       report_audio_candidate "Audio gefunden · reguläres Alignment fehlgeschlagen · Volltranskript läuft"

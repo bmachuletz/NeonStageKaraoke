@@ -65,6 +65,30 @@ class StemContrastReleaseTests(unittest.TestCase):
         self.assertEqual(0, result["adjusted_words"])
         self.assertEqual(2.0, line.words[-1]["end"])
 
+    def test_internal_word_before_phrase_pause_can_reject_separator_residue(self):
+        times, instrumental = self._signals()
+        vocals = np.zeros_like(instrumental)
+        sung = (times >= .30) & (times < 1.20)
+        residue = (times >= 1.20) & (times < 1.75)
+        second = (times >= 2.10) & (times < 2.60)
+        vocals[sung] = .30 * np.sin(2 * np.pi * 180 * times[sung])
+        vocals[residue] = .008 * np.sin(2 * np.pi * 220 * times[residue])
+        vocals[second] = .28 * np.sin(2 * np.pi * 195 * times[second])
+        line = SimpleNamespace(manual_adjusted=False, words=[
+            {"word": "Autos", "start": .30, "end": 1.70,
+             "acoustic_end": 1.18, "sustain_extension_ms": 520},
+            {"word": "und", "start": 2.10, "end": 2.28},
+        ])
+
+        result = refine_final_releases_with_stem_contrast(
+            [line], vocals, instrumental, sample_rate=self.sample_rate,
+            mode="select", include_internal_phrase_ends=True)
+
+        self.assertEqual(1, result["adjusted_words"])
+        self.assertTrue(result["details"][0]["phrase_end"])
+        self.assertLessEqual(line.words[0]["end"], 1.30)
+        self.assertEqual(2.28, line.words[1]["end"])
+
 
 if __name__ == "__main__":
     unittest.main()

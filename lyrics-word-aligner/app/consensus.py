@@ -8,7 +8,11 @@ ACOUSTIC_SOURCES = {None, "qwen-forced", "ctc-phoneme-alignment",
                     "mms-forced-alignment",
                     "sofa-singing-alignment",
                     "easyaligner-global",
+                    "easyaligner-global-direct",
+                    "easyaligner-source-guided-local",
+                    "easyaligner-independent-backing-local",
                     "stable-ts-whisper",
+                    "stable-ts-canonical-forced",
                     "targeted-deleted-fragment-qwen",
                     "asr-repetition-anchor", "asr-repetition-activity",
                     "transition-block-qwen", "ipa-collapsed-run-repair",
@@ -105,6 +109,8 @@ def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, fl
                                *, audio: np.ndarray | None = None,
                                sample_rate: int = 16000,
                                release_padding: float = 0.0,
+                               minimum_sung_extension: float = 0.08,
+                               final_bridge_gap: float = 0.68,
                                maximum_extension: float = 1.2,
                                maximum_sung_extension: float = 3.5) -> dict:
     """Keep a held word active through its measured vocal decay.
@@ -194,7 +200,7 @@ def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, fl
                     # A held final vowel can contain a breath/reverb trough.
                     # Internal words retain the strict bridge so this cannot
                     # jump into the following lyric.
-                    bridge_gap=0.68 if is_final else 0.24)
+                    bridge_gap=final_bridge_gap if is_final else 0.24)
             measured_end = max(
                 activity_end, sung_release[0] if sung_release else lexical_end)
             if measured_end <= lexical_end + 0.06:
@@ -207,7 +213,7 @@ def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, fl
             # the operation idempotent: a second pass must evaluate the same
             # lexical boundary and may refine it, but never walk forward by
             # another extension window.
-            if target - current_end < 0.08:
+            if target - current_end < minimum_sung_extension:
                 continue
             word.setdefault("acoustic_end", round(lexical_end, 3))
             word["end"] = round(target, 3)
@@ -224,6 +230,8 @@ def extend_final_word_sustains(lines: list, vocal_activity: list[tuple[float, fl
                                 "confidence": round(sung_release[1], 3) if sung_release else None})
     return {"method": "local-tonal-sustain-release-v5",
             "adjusted_words": len(adjustments), "release_padding_ms": round(release_padding * 1000),
+            "minimum_sung_extension_ms": round(minimum_sung_extension * 1000),
+            "final_bridge_gap_ms": round(final_bridge_gap * 1000),
             "adjustments": adjustments}
 
 

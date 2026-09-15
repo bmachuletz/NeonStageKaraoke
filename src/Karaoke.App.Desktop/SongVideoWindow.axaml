@@ -1,0 +1,53 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="Karaoke.App.Desktop.SongVideoWindow"
+        Title="Video wählen" Width="920" Height="680" MinWidth="760" MinHeight="560"
+        WindowStartupLocation="CenterOwner" Background="#0D1016">
+  <Grid RowDefinitions="Auto,Auto,*,Auto,Auto" Margin="24">
+    <StackPanel>
+      <TextBlock Text="VIDEO FÜR DIE STAGE WÄHLEN" Foreground="#DFFF28" FontSize="22" FontWeight="Bold" />
+      <TextBlock x:Name="SongLabel" Foreground="#C0C6D2" Margin="0,3,0,0" />
+      <TextBlock Text="Das gewählte Video wird lokal gespeichert, stumm normalisiert und in Songpakete aufgenommen. Auf der Stage und im Editor liegt es hinter Lyrics und Bedienelementen."
+                 Foreground="#8993A6" TextWrapping="Wrap" Margin="0,5,0,0" />
+    </StackPanel>
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto,Auto" Margin="0,16,0,10">
+      <TextBox x:Name="QueryBox" Watermark="YouTube nach Titel und Interpret durchsuchen …" KeyDown="QueryKeyDown" />
+      <Button Grid.Column="1" Content="⌕ Vorschläge" Click="SearchClick" Margin="8,0,0,0" />
+      <Button Grid.Column="2" Content="Eigene Videodatei …" Click="UploadClick" Margin="8,0,0,0" />
+    </Grid>
+    <Border Grid.Row="2" Background="#10151D" BorderBrush="#2A303B" BorderThickness="1" CornerRadius="8">
+      <ListBox x:Name="ResultsList" SelectionChanged="ResultSelectionChanged" Background="Transparent" BorderThickness="0">
+        <ListBox.ItemTemplate>
+          <DataTemplate>
+            <Grid ColumnDefinitions="*,Auto" Margin="12,9">
+              <StackPanel>
+                <TextBlock Text="{Binding Title}" FontSize="16" FontWeight="SemiBold" />
+                <TextBlock Text="{Binding Details}" Foreground="#8993A6" FontSize="11" />
+              </StackPanel>
+              <TextBlock Grid.Column="1" Text="YOUTUBE" Foreground="#DFFF28" FontSize="10" FontWeight="Bold"
+                         VerticalAlignment="Center" />
+            </Grid>
+          </DataTemplate>
+        </ListBox.ItemTemplate>
+      </ListBox>
+    </Border>
+    <Grid Grid.Row="3" ColumnDefinitions="Auto,Auto,*,Auto" Margin="0,12,0,0">
+      <Button x:Name="PreviewButton" Content="▶ Vorschau im Browser" Click="PreviewClick" IsEnabled="False" />
+      <CheckBox x:Name="AuthorizationBox" Grid.Column="1" Margin="14,0,0,0"
+                Content="Ich darf dieses Video herunterladen und öffentlich anzeigen" VerticalAlignment="Center" />
+      <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="8">
+        <TextBlock Text="Video-Versatz (ms)" VerticalAlignment="Center" Foreground="#C0C6D2" />
+        <NumericUpDown x:Name="OffsetBox" Minimum="-300000" Maximum="300000" Increment="50" Width="120" Value="0" />
+        <Button Content="Versatz speichern" Click="SaveOffsetClick" />
+      </StackPanel>
+    </Grid>
+    <Grid Grid.Row="4" ColumnDefinitions="Auto,*,Auto,Auto" Margin="0,16,0,0">
+      <ProgressBar x:Name="Progress" Width="150" IsIndeterminate="True" IsVisible="False" Foreground="#DFFF28" />
+      <TextBlock x:Name="StatusLabel" Grid.Column="1" Margin="12,0" Foreground="#8993A6"
+                 TextWrapping="Wrap" VerticalAlignment="Center" />
+      <Button Grid.Column="2" Content="Video entfernen" Click="DeleteClick" Background="#D94762" Foreground="White" />
+      <Button x:Name="SelectButton" Grid.Column="3" Content="Auswahl herunterladen" Click="SelectClick"
+              IsEnabled="False" Margin="8,0,0,0" Background="#DFFF28" Foreground="#11151C" />
+    </Grid>
+  </Grid>
+</Window>

@@ -54,7 +54,10 @@ internal sealed class SongLyricsRecognitionService(
                 WorkingDirectory = root, UseShellExecute = false, RedirectStandardOutput = true,
                 RedirectStandardError = true, CreateNoWindow = true
             };
-            foreach (var argument in new[] { script, "--audio", audioPath, "--language", "auto" })
+            // A deliberately selected full transcript must come from the audio,
+            // even when the song already has an LRC next to it.
+            foreach (var argument in new[]
+                     { script, "--audio", audioPath, "--language", "auto", "--no-canonical" })
                 start.ArgumentList.Add(argument);
             using var process = new Process { StartInfo = start };
             process.OutputDataReceived += (_, args) => Add(output, args.Data);

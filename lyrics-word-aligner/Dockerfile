@@ -27,7 +27,6 @@ RUN python3 -m pip install --break-system-packages -r requirements.txt \
     && rm -rf /var/lib/apt/lists/* /root/.cache/pip
 
 COPY app ./app
-COPY third_party/SOFA ./SOFA
 RUN mkdir -p /data/output /models && chmod -R 777 /data /models
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \

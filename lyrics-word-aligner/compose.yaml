@@ -1,26 +1,6 @@
 name: neon-stage-aligner
 
 services:
-  basic-pitch:
-    image: ${BASIC_PITCH_IMAGE:-neon-stage-basic-pitch:local}
-    build:
-      context: ../basic-pitch-service
-    container_name: basic-pitch-evidence
-    environment:
-      BASIC_PITCH_MAX_UPLOAD_BYTES: ${BASIC_PITCH_MAX_UPLOAD_BYTES:-209715200}
-      BASIC_PITCH_RAW_ONSET_THRESHOLD: ${BASIC_PITCH_RAW_ONSET_THRESHOLD:-0.35}
-      BASIC_PITCH_RAW_ONSET_SPACING_SECONDS: ${BASIC_PITCH_RAW_ONSET_SPACING_SECONDS:-0.04}
-      BASIC_PITCH_ONSET_THRESHOLD: ${BASIC_PITCH_ONSET_THRESHOLD:-0.45}
-      BASIC_PITCH_FRAME_THRESHOLD: ${BASIC_PITCH_FRAME_THRESHOLD:-0.25}
-      BASIC_PITCH_MINIMUM_NOTE_LENGTH_MS: ${BASIC_PITCH_MINIMUM_NOTE_LENGTH_MS:-70}
-      BASIC_PITCH_CONTOUR_THRESHOLD: ${BASIC_PITCH_CONTOUR_THRESHOLD:-0.20}
-      BASIC_PITCH_CONTOUR_STRIDE: ${BASIC_PITCH_CONTOUR_STRIDE:-2}
-      BASIC_PITCH_NOTE_CONTOUR_RADIUS_BINS: ${BASIC_PITCH_NOTE_CONTOUR_RADIUS_BINS:-6}
-      BASIC_PITCH_MAX_CONTOUR_POINTS: ${BASIC_PITCH_MAX_CONTOUR_POINTS:-30000}
-    ports:
-      - "${BASIC_PITCH_PORT:-8091}:8090"
-    restart: unless-stopped
-
   lyrics-aligner:
     image: ${NEON_STAGE_ALIGNER_IMAGE:-neon-stage-aligner:local}
     build: .
@@ -36,127 +16,25 @@ services:
         target: /models
     environment:
       ALIGN_DEVICE: ${ALIGN_DEVICE:-cuda}
-      BASIC_PITCH_URL: ${BASIC_PITCH_URL:-http://basic-pitch:8090}
-      LRC_BASIC_PITCH_ENABLED: ${LRC_BASIC_PITCH_ENABLED:-true}
-      LRC_BASIC_PITCH_DEVICE: ${LRC_BASIC_PITCH_DEVICE:-cpu}
-      LRC_BASIC_PITCH_USE_FOR_ALIGNMENT: ${LRC_BASIC_PITCH_USE_FOR_ALIGNMENT:-true}
-      LRC_BASIC_PITCH_USE_FOR_SEPARATOR_SCORE: ${LRC_BASIC_PITCH_USE_FOR_SEPARATOR_SCORE:-true}
-      BASIC_PITCH_TIMEOUT_SECONDS: ${BASIC_PITCH_TIMEOUT_SECONDS:-300}
-      BASIC_PITCH_MAX_ONSET_SHIFT: ${BASIC_PITCH_MAX_ONSET_SHIFT:-0.18}
-      BASIC_PITCH_MIN_ONSET_SHIFT: ${BASIC_PITCH_MIN_ONSET_SHIFT:-0.045}
-      BASIC_PITCH_MIN_AMPLITUDE: ${BASIC_PITCH_MIN_AMPLITUDE:-0.25}
-      BASIC_PITCH_MIN_RAW_ONSET_CONFIDENCE: ${BASIC_PITCH_MIN_RAW_ONSET_CONFIDENCE:-0.35}
-      LRC_ONSET_CONSENSUS_ENABLED: ${LRC_ONSET_CONSENSUS_ENABLED:-true}
-      LRC_ONSET_CONSENSUS_TOLERANCE_SECONDS: ${LRC_ONSET_CONSENSUS_TOLERANCE_SECONDS:-0.065}
-      LRC_ONSET_CONSENSUS_MIN_ENERGY_RATIO: ${LRC_ONSET_CONSENSUS_MIN_ENERGY_RATIO:-1.6}
-      LRC_ONSET_CONSENSUS_MIN_DELTA_DB: ${LRC_ONSET_CONSENSUS_MIN_DELTA_DB:-3.0}
-      LRC_ONSET_CONSENSUS_STRONG_INDEPENDENT_DB: ${LRC_ONSET_CONSENSUS_STRONG_INDEPENDENT_DB:-12}
-      LRC_LINE_TRANSITION_MAX_EARLY_ONSET_SHIFT: ${LRC_LINE_TRANSITION_MAX_EARLY_ONSET_SHIFT:-0.12}
-      LRC_LINE_TRANSITION_MIN_ONSET_DURATION: ${LRC_LINE_TRANSITION_MIN_ONSET_DURATION:-0.08}
-      BASIC_PITCH_MIN_INDEPENDENT_DB: ${BASIC_PITCH_MIN_INDEPENDENT_DB:-1.5}
-      BASIC_PITCH_VOCAL_RANGE_MARGIN_SEMITONES: ${BASIC_PITCH_VOCAL_RANGE_MARGIN_SEMITONES:-7}
-      BASIC_PITCH_MAX_CONSONANT_LEAD: ${BASIC_PITCH_MAX_CONSONANT_LEAD:-0.12}
-      BASIC_PITCH_MAX_RELEASE_SHIFT: ${BASIC_PITCH_MAX_RELEASE_SHIFT:-0.18}
-      BASIC_PITCH_MIN_RELEASE_SHIFT: ${BASIC_PITCH_MIN_RELEASE_SHIFT:-0.06}
-      BASIC_PITCH_MIN_RELEASE_AMPLITUDE: ${BASIC_PITCH_MIN_RELEASE_AMPLITUDE:-0.30}
-      BASIC_PITCH_MIN_RELEASE_DROP_DB: ${BASIC_PITCH_MIN_RELEASE_DROP_DB:-1.5}
-      BASIC_PITCH_DRIFT_MIN_ANCHORS: ${BASIC_PITCH_DRIFT_MIN_ANCHORS:-6}
-      BASIC_PITCH_DRIFT_MIN_SPAN_SECONDS: ${BASIC_PITCH_DRIFT_MIN_SPAN_SECONDS:-60}
-      BASIC_PITCH_DRIFT_MIN_CHANGE_SECONDS: ${BASIC_PITCH_DRIFT_MIN_CHANGE_SECONDS:-0.08}
-      # Inner word/syllable evidence stays diagnostic until a representative
-      # A/B corpus has been auditioned. select explicitly permits mutation.
-      BASIC_PITCH_INTERNAL_WORD_MODE: ${BASIC_PITCH_INTERNAL_WORD_MODE:-shadow}
-      BASIC_PITCH_INTERNAL_WORD_RADIUS: ${BASIC_PITCH_INTERNAL_WORD_RADIUS:-0.075}
-      BASIC_PITCH_INTERNAL_WORD_MIN_SHIFT: ${BASIC_PITCH_INTERNAL_WORD_MIN_SHIFT:-0.03}
-      BASIC_PITCH_INTERNAL_WORD_MIN_CONFIDENCE: ${BASIC_PITCH_INTERNAL_WORD_MIN_CONFIDENCE:-0.55}
-      BASIC_PITCH_INTERNAL_WORD_MIN_INDEPENDENT_DB: ${BASIC_PITCH_INTERNAL_WORD_MIN_INDEPENDENT_DB:-3.0}
-      BASIC_PITCH_SYLLABLE_MODE: ${BASIC_PITCH_SYLLABLE_MODE:-shadow}
-      BASIC_PITCH_SYLLABLE_RADIUS: ${BASIC_PITCH_SYLLABLE_RADIUS:-0.06}
-      BASIC_PITCH_SYLLABLE_MIN_SHIFT: ${BASIC_PITCH_SYLLABLE_MIN_SHIFT:-0.025}
-      BASIC_PITCH_SYLLABLE_MIN_AMPLITUDE: ${BASIC_PITCH_SYLLABLE_MIN_AMPLITUDE:-0.45}
-      BASIC_PITCH_SYLLABLE_MIN_INDEPENDENT_DB: ${BASIC_PITCH_SYLLABLE_MIN_INDEPENDENT_DB:-3.5}
-      BASIC_PITCH_SYLLABLE_MIN_SEMITONES: ${BASIC_PITCH_SYLLABLE_MIN_SEMITONES:-2}
-      BASIC_PITCH_TIMELINE_MIN_AMPLITUDE: ${BASIC_PITCH_TIMELINE_MIN_AMPLITUDE:-0.25}
-      BASIC_PITCH_TIMELINE_MAX_EVENTS: ${BASIC_PITCH_TIMELINE_MAX_EVENTS:-5000}
-      BASIC_PITCH_WORD_MIN_AMPLITUDE: ${BASIC_PITCH_WORD_MIN_AMPLITUDE:-0.25}
-      BASIC_PITCH_WORD_MAX_ENTRIES: ${BASIC_PITCH_WORD_MAX_ENTRIES:-5000}
-      BASIC_PITCH_REPETITION_MIN_SIMILARITY: ${BASIC_PITCH_REPETITION_MIN_SIMILARITY:-0.72}
-      # Stable-TS obtains Silero VAD through torch.hub. Keep it in the mounted
-      # model directory so a container restart does not redownload GitHub's
-      # archive and run into an avoidable unauthenticated rate limit.
-      TORCH_HOME: ${TORCH_HOME:-/models/torch}
-      LRC_PRE_ROLL: ${LRC_PRE_ROLL:-0.45}
-      LRC_POST_ROLL: ${LRC_POST_ROLL:-0.35}
-      # Small line windows are robust for long tracks and repeated choruses.
-      # Full-song ASR remains active as an independent transcript check.
-      LRC_ALIGNMENT_MODE: ${LRC_ALIGNMENT_MODE:-line-windows}
-      # Prompt-capable ASR receives a deduplicated vocabulary, never the full
-      # lyrics in their expected order.
-      LRC_ASR_PROMPT: ${LRC_ASR_PROMPT:-true}
-      LRC_ASR_MODEL: ${LRC_ASR_MODEL:-Qwen/Qwen3-ASR-1.7B-hf}
-      # Cached models are always loaded without a Hub metadata request. Keep
-      # this true to permit only genuinely missing models to download once.
+      HF_HOME: /models/huggingface
+      MODEL_CACHE: /models
+      TORCH_HOME: /models/torch
       LRC_ALLOW_MODEL_DOWNLOADS: ${LRC_ALLOW_MODEL_DOWNLOADS:-true}
-      # Whisper large-v3 and the forced aligner run in small sequential chunks
-      # so the validated configuration fits an 8 GiB consumer GPU.
-      LRC_STABLE_TS_MODEL: ${LRC_STABLE_TS_MODEL:-large-v3}
-      LRC_STABLE_TS_CHUNK_SECONDS: ${LRC_STABLE_TS_CHUNK_SECONDS:-30}
-      LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS: ${LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS:-3}
-      LRC_ALIGNMENT_BATCH_SIZE: ${LRC_ALIGNMENT_BATCH_SIZE:-1}
-      # Engine v2 keeps alignment paths immutable and evaluates them per line.
-      # select applies only independently supported candidates which measurably
-      # beat the historical pipeline; shadow remains available for diagnostics.
-      LRC_ENGINE_V2_MODE: ${LRC_ENGINE_V2_MODE:-select}
-      LRC_ENGINE_V2_MIN_LINE_IMPROVEMENT: ${LRC_ENGINE_V2_MIN_LINE_IMPROVEMENT:-0.035}
-      # Never replace a stronger Enhanced-LRC editor line with a weaker
-      # automatic result when the exact Stage vocal stem supports the editor.
-      LRC_ENHANCED_INPUT_MIN_IMPROVEMENT: ${LRC_ENHANCED_INPUT_MIN_IMPROVEMENT:-0.06}
-      LRC_ENGINE_V2_SHORT_WINDOW_SECONDS: ${LRC_ENGINE_V2_SHORT_WINDOW_SECONDS:-12}
-      LRC_ENGINE_V2_SHORT_WINDOW_OVERLAP_SECONDS: ${LRC_ENGINE_V2_SHORT_WINDOW_OVERLAP_SECONDS:-3}
-      # Optional editor-guided profile: interpolate robust timing residuals
-      # from manual anchor lines into nearby untouched lines only.
-      LRC_EDITOR_GUIDANCE_MAX_DISTANCE: ${LRC_EDITOR_GUIDANCE_MAX_DISTANCE:-45}
-      LRC_EDITOR_GUIDANCE_MAX_SHIFT: ${LRC_EDITOR_GUIDANCE_MAX_SHIFT:-1.5}
-      # Refine internal syllable boundaries from local multiband changes in
-      # the exact vocal stem. Word windows remain controlled by the aligners.
-      LRC_ACOUSTIC_SYLLABLE_REFINE: ${LRC_ACOUSTIC_SYLLABLE_REFINE:-true}
-      # Independent IPA phone timing on short lyric-line windows. Version 1.3
-      # reprocesses the final sentence placement word by word and accepts only
-      # boundaries confirmed by separate local acoustics.
-      LRC_PHONEME_CTC_REFINE: ${LRC_PHONEME_CTC_REFINE:-true}
+      LRC_STAGE_SEPARATOR_MODEL: ${LRC_STAGE_SEPARATOR_MODEL:-mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt}
+      LRC_EASYALIGNER_MODEL_DE: ${LRC_EASYALIGNER_MODEL_DE:-jonatasgrosman/wav2vec2-large-xlsr-53-german}
+      LRC_EASYALIGNER_MODEL_EN: ${LRC_EASYALIGNER_MODEL_EN:-facebook/wav2vec2-base-960h}
+      LRC_EASYALIGNER_PHONEME_VERIFY: ${LRC_EASYALIGNER_PHONEME_VERIFY:-true}
+      LRC_EASYALIGNER_BACKING_RECOVERY: ${LRC_EASYALIGNER_BACKING_RECOVERY:-true}
+      LRC_EASYALIGNER_BACKING_RECOVERY_MODEL: ${LRC_EASYALIGNER_BACKING_RECOVERY_MODEL:-model_bs_roformer_ep_317_sdr_12.9755.ckpt}
+      LRC_EASYALIGNER_PHONEME_MAX_CTC_CONFIDENCE: ${LRC_EASYALIGNER_PHONEME_MAX_CTC_CONFIDENCE:-0.55}
       LRC_PHONEME_CTC_MODEL: ${LRC_PHONEME_CTC_MODEL:-facebook/wav2vec2-xlsr-53-espeak-cv-ft}
-      # Clean-room primary path for lyrics without trustworthy line times.
-      # XLSR emissions are produced in bounded GPU chunks, while one global
-      # monotone CTC path places the complete known text without LRC anchors.
-      LRC_GLOBAL_PHONEME_MODE: ${LRC_GLOBAL_PHONEME_MODE:-primary}
-      LRC_GLOBAL_PHONEME_CHUNK_SECONDS: ${LRC_GLOBAL_PHONEME_CHUNK_SECONDS:-24}
-      LRC_GLOBAL_PHONEME_CONTEXT_SECONDS: ${LRC_GLOBAL_PHONEME_CONTEXT_SECONDS:-1.2}
       LRC_PHONEME_PROMOTION_MIN_CONFIDENCE: ${LRC_PHONEME_PROMOTION_MIN_CONFIDENCE:-0.50}
       LRC_PHONEME_PROMOTION_MIN_EVIDENCE: ${LRC_PHONEME_PROMOTION_MIN_EVIDENCE:-0.60}
       LRC_PHONEME_PROMOTION_MAX_SHIFT: ${LRC_PHONEME_PROMOTION_MAX_SHIFT:-0.14}
-      # Variant 1.2: class-aware 2.5/5/10 ms DSP features plus a local monotone
-      # duration path. Use shadow to measure candidates without applying them.
-      LRC_MICRO_BOUNDARY_MODE: ${LRC_MICRO_BOUNDARY_MODE:-select}
-      LRC_MICRO_BOUNDARY_SEARCH_RADIUS: ${LRC_MICRO_BOUNDARY_SEARCH_RADIUS:-0.055}
-      LRC_MICRO_BOUNDARY_MIN_IMPROVEMENT: ${LRC_MICRO_BOUNDARY_MIN_IMPROVEMENT:-0.08}
-      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
-      LRC_ASR_PROMPT_MAX_CHARS: ${LRC_ASR_PROMPT_MAX_CHARS:-1600}
-      LRC_STABLE_TS_PROMPT_MAX_CHARS: ${LRC_STABLE_TS_PROMPT_MAX_CHARS:-700}
-      # Analysis and Stage use independent separators. Original-mix blending
-      # is an explicit analysis candidate/fallback, never a Stage source.
-      LRC_ANALYSIS_SEPARATOR_ENABLED: ${LRC_ANALYSIS_SEPARATOR_ENABLED:-true}
-      LRC_ANALYSIS_SEPARATOR_MODELS: ${LRC_ANALYSIS_SEPARATOR_MODELS:-model_bs_roformer_ep_317_sdr_12.9755.ckpt,model_mel_band_roformer_ep_3005_sdr_11.4360.ckpt}
-      LRC_STAGE_SEPARATOR_MODEL: ${LRC_STAGE_SEPARATOR_MODEL:-mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt}
-      LRC_SEPARATOR_A_B_MODELS: ${LRC_SEPARATOR_A_B_MODELS:-}
-      LRC_STAGE_STEM_MIN_IMPROVEMENT: ${LRC_STAGE_STEM_MIN_IMPROVEMENT:-0.05}
-      LRC_STEM_HYBRID_DIAGNOSTICS: ${LRC_STEM_HYBRID_DIAGNOSTICS:-true}
-      LRC_ORIGINAL_MIX_BLEND_MODE: ${LRC_ORIGINAL_MIX_BLEND_MODE:-fallback}
-      LRC_ORIGINAL_MIX_BLEND_RATIO: ${LRC_ORIGINAL_MIX_BLEND_RATIO:-0.15}
-      LRC_EVIDENCE_FUSION_MODE: ${LRC_EVIDENCE_FUSION_MODE:-shadow}
-      LRC_PYIN_ENABLED: ${LRC_PYIN_ENABLED:-true}
-      LRC_PYIN_REPORT_MAX_POINTS: ${LRC_PYIN_REPORT_MAX_POINTS:-12000}
-      # Normal tracks keep the complete-song path. Only unusually long tracks
-      # use bounded windows; ownership intervals deduplicate the overlaps.
+      LRC_STABLE_TS_MODEL: ${LRC_STABLE_TS_MODEL:-large-v3}
+      LRC_STABLE_TS_CHUNK_SECONDS: ${LRC_STABLE_TS_CHUNK_SECONDS:-30}
+      LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS: ${LRC_STABLE_TS_CHUNK_OVERLAP_SECONDS:-3}
+      LRC_ASR_MODEL: ${LRC_ASR_MODEL:-Qwen/Qwen3-ASR-1.7B-hf}
       LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS: ${LRC_TRANSCRIPTION_CHUNK_THRESHOLD_SECONDS:-300}
       LRC_TRANSCRIPTION_CHUNK_SECONDS: ${LRC_TRANSCRIPTION_CHUNK_SECONDS:-20}
       LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS: ${LRC_TRANSCRIPTION_CHUNK_OVERLAP_SECONDS:-2}
@@ -165,30 +43,9 @@ services:
       LRC_TRANSCRIPTION_LINE_GAP: ${LRC_TRANSCRIPTION_LINE_GAP:-0.9}
       LRC_TRANSCRIPTION_LINE_WORDS: ${LRC_TRANSCRIPTION_LINE_WORDS:-11}
       LRC_TRANSCRIPTION_LINE_CHARS: ${LRC_TRANSCRIPTION_LINE_CHARS:-64}
-      LRC_ASR_EXTRA_CONTEXT: ${LRC_ASR_EXTRA_CONTEXT:-}
-      # Additive candidate selection always preserves the historical baseline
-      # as fallback and requires a measurable improvement from alternatives.
-      LRC_ALIGNMENT_CANDIDATES: ${LRC_ALIGNMENT_CANDIDATES:-true}
-      LRC_ALIGNMENT_CANDIDATE_BLEND: ${LRC_ALIGNMENT_CANDIDATE_BLEND:-true}
-      LRC_ALIGNMENT_BLEND_RATIOS: ${LRC_ALIGNMENT_BLEND_RATIOS:-0.10}
-      LRC_ALIGNMENT_MIN_IMPROVEMENT: ${LRC_ALIGNMENT_MIN_IMPROVEMENT:-0.01}
-      # Applied only when explicitly enabled and tonal activity is sufficient;
-      # hard-capped to 10% by configuration validation.
-      LRC_ALIGNMENT_WEIGHT_PITCH_QUALITY: ${LRC_ALIGNMENT_WEIGHT_PITCH_QUALITY:-0.08}
-      LRC_ALIGNMENT_CANDIDATE_ORIGINAL: ${LRC_ALIGNMENT_CANDIDATE_ORIGINAL:-false}
-      LRC_ALIGNMENT_KEEP_CANDIDATES: ${LRC_ALIGNMENT_KEEP_CANDIDATES:-false}
-      # Optional duet detector. It runs only on short windows around explicit
-      # non-lexical/backing-vocal candidates and never mutates lyrics in shadow
-      # mode. The checkpoint is downloaded lazily into the persistent cache.
-      LRC_MEDLEYVOX_ENABLED: ${LRC_MEDLEYVOX_ENABLED:-true}
-      LRC_MEDLEYVOX_MODE: ${LRC_MEDLEYVOX_MODE:-promote}
-      LRC_MEDLEYVOX_MAX_WINDOW_SECONDS: ${LRC_MEDLEYVOX_MAX_WINDOW_SECONDS:-12}
-      LRC_MEDLEYVOX_MAX_WINDOWS: ${LRC_MEDLEYVOX_MAX_WINDOWS:-12}
-      LRC_MEDLEYVOX_CHUNK_SECONDS: ${LRC_MEDLEYVOX_CHUNK_SECONDS:-3}
-      LRC_MEDLEYVOX_CHUNK_OVERLAP_SECONDS: ${LRC_MEDLEYVOX_CHUNK_OVERLAP_SECONDS:-1}
-      LRC_MEDLEYVOX_PROMOTION_MIN_SCORE: ${LRC_MEDLEYVOX_PROMOTION_MIN_SCORE:-0.42}
-      LRC_MEDLEYVOX_PROMOTION_MIN_MARGIN: ${LRC_MEDLEYVOX_PROMOTION_MIN_MARGIN:-0.08}
-      LRC_MEDLEYVOX_IDENTITY_MIN_MARGIN: ${LRC_MEDLEYVOX_IDENTITY_MIN_MARGIN:-0.035}
+      LRC_ORIGINAL_MIX_BLEND_MODE: ${LRC_ORIGINAL_MIX_BLEND_MODE:-fallback}
+      LRC_ORIGINAL_MIX_BLEND_RATIO: ${LRC_ORIGINAL_MIX_BLEND_RATIO:-0.15}
+      PYTORCH_CUDA_ALLOC_CONF: ${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}
     deploy:
       resources:
         reservations:
@@ -197,6 +54,3 @@ services:
               count: 1
               capabilities: [gpu]
     restart: unless-stopped
-    depends_on:
-      basic-pitch:
-        condition: service_healthy

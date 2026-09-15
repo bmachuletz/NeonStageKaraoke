@@ -178,13 +178,14 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         var revision = await NextRevisionAsync(connection, (SqliteTransaction)transaction, songId, ct);
         var insert = connection.CreateCommand();
         insert.Transaction = (SqliteTransaction)transaction;
-        insert.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,alignmentReportJson,createdAt,updatedAt) SELECT $id,$song,$revision,$status,$json,analysisRunId,alignmentReportJson,$created,$updated FROM lyrics_versions WHERE id=$previousId AND songId=$song";
+        insert.CommandText = "INSERT INTO lyrics_versions(id,songId,revision,status,documentJson,analysisRunId,alignmentReportJson,createdAt,updatedAt) SELECT $id,$song,$revision,$status,$json,analysisRunId,COALESCE($report, alignmentReportJson),$created,$updated FROM lyrics_versions WHERE id=$previousId AND songId=$song";
         insert.Parameters.AddWithValue("$id", newId.ToString());
         insert.Parameters.AddWithValue("$previousId", versionId.ToString());
         insert.Parameters.AddWithValue("$song", songId.ToString());
         insert.Parameters.AddWithValue("$revision", revision);
         insert.Parameters.AddWithValue("$status", request.Status.ToString());
         insert.Parameters.AddWithValue("$json", request.DocumentJson);
+        insert.Parameters.AddWithValue("$report", (object?)request.AlignmentReportJson ?? DBNull.Value);
         insert.Parameters.AddWithValue("$created", now.ToString("O"));
         insert.Parameters.AddWithValue("$updated", now.ToString("O"));
         await insert.ExecuteNonQueryAsync(ct);
@@ -213,6 +214,28 @@ internal sealed class LyricsVersionRepository(IOptions<KaraokeOptions> options)
         return await delete.ExecuteNonQueryAsync(ct) == 1
             ? LyricsVersionDeleteResult.Deleted
             : LyricsVersionDeleteResult.NotFound;
+    }
+
+    public async Task<int> DeleteAllAsync(CancellationToken ct)
+    {
+        await EnsureInitializedAsync(ct);
+        int deleted;
+        await using (var connection = await OpenAsync(ct))
+        {
+            var command = connection.CreateCommand();
+            command.CommandText = "DELETE FROM lyrics_versions";
+            deleted = await command.ExecuteNonQueryAsync(ct);
+        }
+
+        // DELETE entfernt die Inhalte logisch; VACUUM gibt den dadurch frei
+        // gewordenen Platz auch tatsächlich an das Dateisystem zurück.
+        await using (var connection = await OpenAsync(ct))
+        {
+            var vacuum = connection.CreateCommand();
+            vacuum.CommandText = "VACUUM";
+            await vacuum.ExecuteNonQueryAsync(ct);
+        }
+        return deleted;
     }
 
     public async Task<LyricsVersionDto?> ChangeStatusAsync(Guid songId, Guid versionId,

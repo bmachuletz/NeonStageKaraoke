@@ -3,5 +3,13 @@
     <ProjectReference Include="../Karaoke.Contracts/Karaoke.Contracts.csproj" />
     <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/StagePresentationEngine.cs"
              Link="Presentation/StagePresentationEngine.cs" />
+    <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/StageTimingCompensation.cs"
+             Link="Presentation/StageTimingCompensation.cs" />
+    <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/StageClock.cs"
+             Link="Presentation/StageClock.cs" />
+    <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/StageAudioAnalysis.cs"
+             Link="Presentation/StageAudioAnalysis.cs" />
+    <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/StageTestProtocol.cs"
+             Link="StageTesting/StageTestProtocol.cs" />
   </ItemGroup>
 </Project>

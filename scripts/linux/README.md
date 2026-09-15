@@ -112,10 +112,9 @@ Die gleiche Pipeline steht im Lyrics Editor unter
 werden aus ID3-Tags und FLAC-Metadaten aus Vorbis Comments gelesen. Das
 ursprüngliche Audioformat bleibt als Master erhalten. Lyrics werden in dieser
 Reihenfolge gesucht: benachbarte `.lrc`/`.txt`, eingebettete Tag-Lyrics,
-anschließend LRCLIB. Ein gefundener Text läuft durch Variante 1.2 mit
-IPA-Wort-/Silbenalignment. Gibt es überhaupt keinen verwertbaren Text, erzeugt
-der GPU-Worker automatisch ein Volltranskript mit Wortgrenzen und führt dieses
-danach ebenfalls durch Variante 1.2. Anschließend folgen Review-Status und
+anschließend LRCLIB. Ein gefundener Text läuft durch EasyAligner. Gibt es
+überhaupt keinen verwertbaren Text, erzeugt der GPU-Worker automatisch ein
+Volltranskript und führt dieses danach ebenfalls durch EasyAligner. Anschließend folgen Review-Status und
 Bibliotheksaktualisierung.
 
 ## Stage-Timing untersuchen

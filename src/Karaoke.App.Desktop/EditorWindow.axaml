@@ -4,7 +4,7 @@
         x:Class="Karaoke.App.Desktop.EditorWindow"
         Title="Neon Stage · Lyrics Timing Editor"
         Icon="avares://Karaoke.App/Assets/neon-stage-icon.png"
-        Width="1500" Height="900" MinWidth="1050" MinHeight="680"
+        Width="1500" Height="1000" MinWidth="1050" MinHeight="760"
         Background="#0D1016">
   <Grid RowDefinitions="58,*,34">
     <Border Grid.Row="0" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,0,0,1" Padding="16,8">
@@ -19,11 +19,19 @@
         </StackPanel>
         <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="7">
           <Button Content="＋ Neues Lied" Click="NewSongClick" Background="#FF3CBD" />
+          <Button Content="Bearbeiten ▾" ToolTip.Tip="Bibliothek und Stage bearbeiten">
+            <Button.Flyout><MenuFlyout>
+              <MenuItem Header="Alle Songs von der Stage entfernen" Click="RemoveAllSongsFromStageClick" />
+              <MenuItem Header="Alle Versionen aller Songs löschen" Click="DeleteAllLyricsVersionsClick" />
+            </MenuFlyout></Button.Flyout>
+          </Button>
           <Button Content="Verwaltung ▾" ToolTip.Tip="Wünsche, Events und Admin-Portal">
             <Button.Flyout><MenuFlyout>
               <MenuItem Header="Wünsche und Downloads" Click="OpenWishlistConsoleClick" />
               <MenuItem Header="Audio-Ordner (MP3/FLAC) importieren …" Click="OpenFolderImportConsoleClick" />
+              <MenuItem Header="Neue Lyrics beziehen …" Click="RetrieveNewLyricsClick" />
               <MenuItem Header="USDB auf Lyrics prüfen …" Click="SearchUsdbLyricsClick" />
+              <MenuItem Header="Enhanced-LRC importieren …" Click="ImportEnhancedLrcLyricsClick" />
               <MenuItem Header="UltraStar-Lyrics importieren …" Click="ImportUltraStarLyricsClick" />
               <MenuItem Header="Lyrics vollständig aus Audio erkennen …" Click="RecognizeLyricsClick" />
               <MenuItem Header="Base-Lyrics anzeigen / bearbeiten …" Click="EditBaseLyricsClick" />
@@ -47,14 +55,16 @@
             <Button.Flyout><MenuFlyout>
               <MenuItem Header="Ausgewählte Songs neu alignen" Click="RealignSongClick" />
               <MenuItem Header="Gesamte Bibliothek neu alignen …" Click="RealignAllSongsClick" />
-              <Separator />
-              <MenuItem Header="Basic-Pitch ausführen" Click="BasicPitchOnlyClick"
-                        ToolTip.Tip="Analysiert den geladenen Song-Stand mit Basic Pitch, ohne ASR oder Forced Alignment neu auszuführen. Das Ergebnis wird als Review-Stand gespeichert." />
+              <MenuItem Header="Laufende Alignments abbrechen" Click="CancelRealignmentClick" />
               <Separator />
               <MenuItem Header="Globalen Lyrics-Versatz anwenden …" Click="GlobalLyricsOffsetClick" />
             </MenuFlyout></Button.Flyout>
           </Button>
           <Button Content="Speichern" Click="SaveDraftClick" ToolTip.Tip="Aktuellen Arbeitsstand lokal und auf dem Server sichern" />
+          <Button Content="{Binding StageTestActionLabel}" Click="ToggleStageTestClick"
+                  ToolTip.Tip="Aktuellen Editor-Stand in der echten Unity-Stage testen" Background="#45E6D0" Foreground="#11151C" />
+          <Button Content="{Binding Mp4ExportActionLabel}" Click="ExportMp4Click"
+                  ToolTip.Tip="Aktuellen Editor-Stand mit dem echten Unity-Stage-Renderer exportieren" />
           <Button Content="◴ Versionen" Click="ToggleVersionsClick" ToolTip.Tip="Gespeicherte Lyrics-Stände verwalten" />
           <Button Content="{Binding SongReleaseActionLabel}" Click="ApproveSongClick" Background="#DFFF28" Foreground="#11151C" />
           <Button Content="🗑 Song löschen" Click="DeleteSongClick" Background="#D94762" Foreground="White" />
@@ -84,7 +94,15 @@
           </Border>
           <ListBox x:Name="SongList" Grid.Row="4" ItemsSource="{Binding FilteredSongs}"
                    SelectionMode="Multiple" SelectionChanged="SongSelectionChanged"
+                   PointerPressed="SongListPointerPressed"
                    ToolTip.Tip="Strg+Klick: einzelne Songs auswählen · Shift+Klick: Bereich auswählen">
+            <ListBox.ContextMenu>
+              <ContextMenu Placement="Pointer">
+                <MenuItem Header="Neue Lyrics beziehen …" Click="RetrieveNewLyricsClick" />
+                <MenuItem Header="Video wählen …" Click="SelectSongVideoClick" />
+                <MenuItem Header="Video entfernen" Click="RemoveSongVideoClick" />
+              </ContextMenu>
+            </ListBox.ContextMenu>
             <ListBox.ItemTemplate>
               <DataTemplate>
                 <StackPanel Margin="4,6">
@@ -111,11 +129,17 @@
         </Grid>
       </Border>
 
-      <Grid Grid.Column="1" RowDefinitions="250,*,64">
+      <Grid Grid.Column="1">
+        <Grid.RowDefinitions>
+          <RowDefinition Height="3*" MinHeight="340" />
+          <RowDefinition Height="5" />
+          <RowDefinition Height="2*" MinHeight="180" />
+          <RowDefinition Height="64" />
+        </Grid.RowDefinitions>
         <Border Background="#08040F" BorderBrush="#2A303B" BorderThickness="0,0,0,1">
           <Grid RowDefinitions="28,*">
             <Grid ColumnDefinitions="*,Auto,Auto,Auto" Margin="10,0">
-              <TextBlock Text="UNITY-STAGE LIVE-VORSCHAU" Foreground="#8993A6" FontSize="10"
+              <TextBlock Text="UNITY-STAGE LIVE-VORSCHAU · 16:9" Foreground="#8993A6" FontSize="10"
                          VerticalAlignment="Center" />
               <CheckBox Grid.Column="1" Content="Wahrnehmungs-Vorlauf · 80 ms"
                         IsChecked="{Binding PerceptualLeadEnabled}" VerticalAlignment="Center"
@@ -133,15 +157,20 @@
                         Margin="14,0,0,0" FontSize="10" Foreground="#DFFF28"
                         ToolTip.Tip="Steuert die Füllgeschwindigkeit mit Basic-Pitch-Noten: singen läuft weiter, klare Pausen halten, neue Einsätze springen. Ohne belastbare Noten bleibt das lineare Highlight." />
             </Grid>
-            <local:StageLyricsPreviewControl Grid.Row="1" Document="{Binding TimingPreviewDocument}" Position="{Binding Playhead}"
+            <local:VlcBitmapVideoView x:Name="EditorVideoView" Grid.Row="1" IsVisible="{Binding HasSongVideo}" />
+            <local:StageLyricsPreviewControl x:Name="LyricsPreview" Grid.Row="1" Document="{Binding TimingPreviewDocument}" Position="{Binding Playhead}"
                                              Revision="{Binding PreviewRevision}"
             PerceptualLeadEnabled="{Binding PerceptualLeadEnabled}"
                                              KaraokeTimingEnabled="{Binding KaraokeTimingEnabled}"
-                                             MusicalHighlightEnabled="{Binding MusicalHighlightEnabled}" />
+                                             MusicalHighlightEnabled="{Binding MusicalHighlightEnabled}"
+                                             HasVideoBackground="{Binding HasSongVideo}" />
           </Grid>
         </Border>
-        <local:EditorTimelineControl Grid.Row="1" x:Name="Timeline" Document="{Binding TimingPreviewDocument}" Waveform="{Binding Waveform}"
+        <GridSplitter Grid.Row="1" Height="5" ResizeDirection="Rows" Background="#2A303B"
+                      HorizontalAlignment="Stretch" />
+        <local:EditorTimelineControl Grid.Row="2" x:Name="Timeline" Document="{Binding TimingPreviewDocument}" Waveform="{Binding Waveform}"
                                      PitchEvidence="{Binding PitchEvidence}"
+                                     ShowTechnicalText="{Binding ShowTechnicalLyrics}"
                                      EditingEnabled="True"
                                      Playhead="{Binding Playhead}" Revision="{Binding TimelineRevision}">
           <local:EditorTimelineControl.ContextMenu>
@@ -163,10 +192,11 @@
             </ContextMenu>
           </local:EditorTimelineControl.ContextMenu>
         </local:EditorTimelineControl>
-        <Border Grid.Row="2" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0">
+        <Border Grid.Row="3" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0">
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
             <Button Content="◀" ToolTip.Tip="Zurück" />
             <Button Content="▶ / Ⅱ" Click="PlayPauseClick" MinWidth="82" />
+            <Button Content="■" Click="StopPlaybackClick" ToolTip.Tip="Wiedergabe stoppen" />
             <Button Content="▶ Grenze" Click="PlayBoundaryClick" ToolTip.Tip="300 ms vor und nach der ausgewählten Grenze als Loop" />
             <Button Content="{Binding LoopLabel}" Click="ToggleLoopClick" ToolTip.Tip="Bereich mit Shift + Ziehen markieren" />
             <TextBlock Text="TEMPO" Foreground="#8993A6" FontSize="10" FontWeight="SemiBold"
@@ -188,8 +218,13 @@
           <TextBlock Text="{Binding SelectedSegmentTiming}" FontFamily="monospace" Foreground="#DFFF28" TextWrapping="Wrap" />
           <TextBlock Text="{Binding SelectedSegmentDetails}"
                      TextWrapping="Wrap" Foreground="#AAB2C1" />
+          <CheckBox Content="TECHNISCHEN CTC-TEXT ANZEIGEN"
+                    IsVisible="{Binding HasTechnicalLyrics}"
+                    IsChecked="{Binding ShowTechnicalLyrics}"
+                    Foreground="#45E6D0"
+                    ToolTip.Tip="Zeigt exakt die normalisierte Textfassung, die der Aligner verarbeitet. Stage und Export verwenden weiterhin die Menschen-Lyrics." />
           <TextBox Text="{Binding SelectedSegmentText, Mode=OneWay}" Watermark="Zeilen-, Wort- oder Silbentext"
-                   IsEnabled="{Binding CanDeleteSegment}" LostFocus="SegmentTextLostFocus" />
+                   IsEnabled="{Binding CanEditDisplayedSegmentText}" LostFocus="SegmentTextLostFocus" />
           <StackPanel IsVisible="{Binding CanEditLine}" Spacing="6">
             <TextBlock Text="STAGE-DARSTELLUNG" Foreground="#8993A6" FontSize="10" FontWeight="SemiBold" />
             <TextBlock Text="Die Außenränder des Zeilenbalkens steuern Einblendzeit und Nachlauf. Wort- und Silbenzeiten bleiben unverändert."
@@ -241,9 +276,13 @@
     </Grid>
 
     <Border Grid.Row="2" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0" Padding="12,0">
-      <Grid ColumnDefinitions="*,Auto">
+      <Grid ColumnDefinitions="*,Auto,Auto">
         <TextBlock Text="{Binding Status}" VerticalAlignment="Center" Foreground="#AAB2C1" />
-        <TextBlock Grid.Column="1" Text="{Binding ServerAddress}" VerticalAlignment="Center" Foreground="#677185" />
+        <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center">
+          <TextBlock Text="{Binding StageTestStatus}" Foreground="#45E6D0" />
+          <TextBlock Text="{Binding Mp4ExportStatus}" Foreground="#DFFF28" FontSize="11" />
+        </StackPanel>
+        <TextBlock Grid.Column="2" Text="{Binding ServerAddress}" VerticalAlignment="Center" Foreground="#677185" />
       </Grid>
     </Border>
     <Border x:Name="ConsolePanel" Grid.Row="0" Grid.RowSpan="3" HorizontalAlignment="Stretch" VerticalAlignment="Bottom"
@@ -308,7 +347,7 @@
           <StackPanel>
             <TextBlock Text="MP3- UND FLAC-DATEIEN AUS EINEM ORDNER VERARBEITEN" Foreground="#FF3CBD" FontFamily="monospace"
                        FontSize="17" FontWeight="Bold" />
-            <TextBlock Text="Metadaten → Sidecar/Tag/LRCLIB oder Volltranskript → Variante 1.2 → Review"
+            <TextBlock Text="Metadaten → Sidecar/Tag/LRCLIB oder Volltranskript → EasyAligner → Review"
                        Foreground="#AAB2C1" Margin="0,4,0,12" />
           </StackPanel>
           <Grid Grid.Row="1" ColumnDefinitions="*,Auto">

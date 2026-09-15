@@ -65,7 +65,7 @@ class SyllableAlignmentTests(unittest.TestCase):
         self.assertEqual(8.6, parts[-1]["end"])
         self.assertEqual(800, parts[-1]["sustain_extension_ms"])
 
-    def test_ipa_vowel_nuclei_define_sung_syllable_boundaries(self):
+    def test_ipa_vowel_nuclei_define_separated_articulation_windows(self):
         line = SimpleNamespace(words=[{
             "word": "Leben", "start": 1.0, "end": 2.0,
             "phoneme_confidence": 0.82,
@@ -82,9 +82,40 @@ class SyllableAlignmentTests(unittest.TestCase):
 
         parts = line.words[0]["syllables"]
         self.assertEqual(1, summary["phoneme_nucleus_splits"])
-        self.assertEqual("phoneme-syllable-onsets-v1.1", line.words[0]["syllable_method"])
+        self.assertEqual(1, summary["phoneme_vowel_articulation_windows"])
+        self.assertEqual("phoneme-vowel-articulation-windows-v1",
+                         line.words[0]["syllable_method"])
         self.assertEqual(1.55, parts[0]["end"])
-        self.assertEqual("phoneme-syllable-onset", parts[0]["boundary_source"])
+        self.assertEqual(1.64, parts[1]["start"])
+        self.assertEqual("phoneme-vowel-articulation-window",
+                         parts[0]["boundary_source"])
+
+    def test_unterschreib_uses_short_vowel_windows_with_real_gaps(self):
+        line = SimpleNamespace(words=[{
+            "word": "unterschreib", "start": 49.601, "end": 51.104,
+            "phoneme_confidence": 0.383,
+            "phonemes": [
+                {"phone": "ʊ", "start": 49.601, "end": 49.822},
+                {"phone": "n", "start": 49.822, "end": 50.343},
+                {"phone": "t", "start": 50.363, "end": 50.423},
+                {"phone": "ɜ", "start": 50.443, "end": 50.603},
+                {"phone": "ʃ", "start": 50.623, "end": 50.683},
+                {"phone": "r", "start": 50.683, "end": 50.743},
+                {"phone": "aɪ", "start": 50.763, "end": 51.084},
+            ],
+        }])
+
+        summary = enrich_lines_with_syllables([line], "de")
+
+        parts = line.words[0]["syllables"]
+        self.assertEqual(["un", "ter", "schreib"],
+                         [part["text"] for part in parts])
+        self.assertEqual([(49.601, 49.822), (50.443, 50.603),
+                          (50.763, 51.104)],
+                         [(part["start"], part["end"]) for part in parts])
+        self.assertGreater(parts[1]["start"] - parts[0]["end"], 0.60)
+        self.assertGreater(parts[2]["start"] - parts[1]["end"], 0.15)
+        self.assertEqual(1, summary["phoneme_vowel_articulation_windows"])
 
     def test_truncated_phone_path_cannot_collapse_final_syllable(self):
         line = SimpleNamespace(words=[{
@@ -130,8 +161,10 @@ class SyllableAlignmentTests(unittest.TestCase):
         self.assertEqual(12.0, word["end"])
         self.assertEqual(["so", "zu", "sa", "gen"],
                          [item["text"] for item in word["syllables"]])
-        self.assertAlmostEqual(10.30, word["syllables"][0]["end"], places=2)
-        self.assertAlmostEqual(10.71, word["syllables"][1]["end"], places=2)
+        self.assertAlmostEqual(10.29, word["syllables"][0]["end"], places=2)
+        self.assertAlmostEqual(10.38, word["syllables"][1]["start"], places=2)
+        self.assertAlmostEqual(10.67, word["syllables"][1]["end"], places=2)
+        self.assertAlmostEqual(10.79, word["syllables"][2]["start"], places=2)
 
     def test_english_ipa_nuclei_correct_pyphen_away_and_apart(self):
         line = SimpleNamespace(words=[
@@ -167,7 +200,7 @@ class SyllableAlignmentTests(unittest.TestCase):
                          line.words[0]["syllable_split_source"])
         self.assertEqual(1, summary["phoneme_corrected_text_splits"])
 
-    def test_textual_syllable_onset_selects_only_its_consonant_from_a_cluster(self):
+    def test_vowel_windows_do_not_paint_through_an_internal_consonant_cluster(self):
         line = SimpleNamespace(words=[{
             "word": "Fenster", "start": 2.0, "end": 3.0,
             "phoneme_confidence": 0.86,
@@ -185,7 +218,8 @@ class SyllableAlignmentTests(unittest.TestCase):
 
         parts = line.words[0]["syllables"]
         self.assertEqual(["Fens", "ter"], [part["text"] for part in parts])
-        self.assertEqual(2.61, parts[0]["end"])
+        self.assertEqual(2.42, parts[0]["end"])
+        self.assertEqual(2.70, parts[1]["start"])
 
     def test_punctuation_is_preserved(self):
         line = SimpleNamespace(words=[{"word": "(gehen),", "start": 1.0, "end": 1.8}])
@@ -203,6 +237,7 @@ class SyllableAlignmentTests(unittest.TestCase):
 
         self.assertEqual(["Träum"], [
             part["text"] for part in line.words[0]["syllables"]])
+        self.assertGreaterEqual(line.words[0]["syllable_confidence"], 0.62)
         self.assertEqual(["Bäu", "me"], [
             part["text"] for part in line.words[1]["syllables"]])
 
