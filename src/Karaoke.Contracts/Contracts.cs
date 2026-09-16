@@ -2,6 +2,38 @@ namespace Karaoke.Contracts;
 
 public enum SongReviewStatus { InReview, Approved }
 public enum SongLibraryCategory { KaraokeReady, WithoutLyrics }
+public enum OnlineRole { Listener = 0, Singer = 1 }
+public sealed record OnlineJoinRequest(string RoomId, string ParticipantId, string DisplayName,
+    OnlineRole Role = OnlineRole.Listener);
+public sealed record OnlineRoleRequest(OnlineRole Role);
+public sealed record OnlineParticipantDto(string ParticipantId, string DisplayName, OnlineRole Role,
+    DateTimeOffset LastSeenAt);
+public sealed record OnlineRoomStateDto(string RoomId, string ParticipantId, OnlineRole Role,
+    IReadOnlyList<OnlineParticipantDto> Participants);
+public sealed record OnlineRoomSessionDto(bool Enabled, string Provider, string ServerUrl, string RoomId,
+    string ParticipantId, OnlineRole Role, string AccessToken, DateTimeOffset ExpiresAt,
+    IReadOnlyList<OnlineParticipantDto> Participants);
+public sealed record OnlineConfigurationDto(bool Enabled, string Provider, string ServerUrl,
+    string Status);
+public sealed record OnlineServerSettingsDto(
+    bool Enabled,
+    string Provider,
+    string ServerUrl,
+    string ApiKey,
+    bool HasApiSecret,
+    string RoomPrefix,
+    bool ManagedByEnvironment,
+    bool Configured,
+    string Status);
+public sealed record UpdateOnlineServerSettingsRequest(
+    bool Enabled,
+    string ServerUrl,
+    string ApiKey,
+    string? ApiSecret,
+    string RoomPrefix,
+    bool ClearApiSecret = false);
+public sealed record OnlineServerTestResultDto(bool Success, string Message, int? HttpStatusCode,
+    long ElapsedMilliseconds);
 public sealed record SongDto(Guid Id, string Title, string Artist, string Album, double DurationSeconds,
     bool HasLyrics, bool IsQueued = false, bool HasCover = false,
     SongReviewStatus ReviewStatus = SongReviewStatus.InReview,

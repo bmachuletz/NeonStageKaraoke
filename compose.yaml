@@ -14,6 +14,12 @@ services:
       Karaoke__LibraryPath: /library
       Karaoke__DatabasePath: /data/karaoke.db
       Karaoke__PublicBaseUrl: ${NEON_STAGE_PUBLIC_URL:-http://cloud.hdvtec.de:5274}
+      Online__Enabled: ${ONLINE_ENABLED:-false}
+      Online__Provider: LiveKit
+      Online__ServerUrl: ${LIVEKIT_URL:-}
+      Online__ApiKey: ${LIVEKIT_API_KEY:-}
+      Online__ApiSecret: ${LIVEKIT_API_SECRET:-}
+      Online__RoomPrefix: ${LIVEKIT_ROOM_PREFIX:-neonstage-}
       Spotify__ClientId: ${SPOTIFY_CLIENT_ID:-}
       Spotify__ClientSecret: ${SPOTIFY_CLIENT_SECRET:-}
       Spotify__RedirectUri: ${SPOTIFY_REDIRECT_URI:-http://127.0.0.1:5274/api/spotify/callback}

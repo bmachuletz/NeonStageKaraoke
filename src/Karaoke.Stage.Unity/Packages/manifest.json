@@ -1,4 +1,11 @@
 {
+  "scopedRegistries": [
+    {
+      "name": "OpenUPM",
+      "url": "https://package.openupm.com",
+      "scopes": [ "io.livekit" ]
+    }
+  ],
   "dependencies": {
     "com.unity.collab-proxy": "2.12.4",
     "com.unity.ide.rider": "3.0.38",
@@ -8,11 +15,14 @@
     "com.unity.timeline": "1.8.12",
     "com.unity.ugui": "2.5.0",
     "com.unity.modules.adaptiveperformance": "1.0.0",
+    "com.unity.modules.androidjni": "1.0.0",
     "com.unity.modules.physicscore2d": "1.0.0",
+    "com.unity.modules.screencapture": "1.0.0",
     "com.unity.modules.vectorgraphics": "1.0.0",
     "com.unity.modules.unitywebrequest": "1.0.0",
     "com.unity.modules.unitywebrequestaudio": "1.0.0",
     "com.unity.modules.unitywebrequesttexture": "1.0.0",
-    "com.unity.modules.video": "1.0.0"
+    "com.unity.modules.video": "1.0.0",
+    "io.livekit.livekit-sdk": "2.0.0"
   }
 }

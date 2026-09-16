@@ -1,8 +1,10 @@
 using Karaoke.Contracts;
 using Karaoke.Editor.Core;
+using NeonStage.Online;
 using NeonStage.Presentation;
 using NeonStage.Testing;
 using NeonStage.Timing;
+using StageOnlineRole = NeonStage.Online.OnlineRole;
 
 var viewport = new TimelineViewport(100, TimeSpan.FromSeconds(10));
 Assert(viewport.TimeToPixel(TimeSpan.FromSeconds(12)) == 200, "Zeit wird korrekt in Pixel umgerechnet.");
@@ -1061,6 +1063,44 @@ Assert(reconnectedReplica.Apply(new StageTestMessage
        reconnectedReplica.AppliedRevision == 9,
     "Eine neue Stage-Verbindung übernimmt den aktuellen Vollzustand unabhängig von früheren Verbindungen.");
 
+var singerRoute = OnlineAudioRouting.For(StageOnlineRole.Singer);
+Assert(singerRoute.BroadcastContains(OnlineAudioBus.Music) &&
+       singerRoute.BroadcastContains(OnlineAudioBus.Microphone) &&
+       !singerRoute.BroadcastContains(OnlineAudioBus.Remote),
+    "Der Online-Broadcast enthält Musik und Mikrofon, aber niemals Remote-Audio.");
+var listenerRoute = OnlineAudioRouting.For(StageOnlineRole.Listener);
+Assert(listenerRoute.LocalOutput == OnlineAudioBus.Remote && listenerRoute.BroadcastOutput == OnlineAudioBus.None,
+    "Ein Listener hört ausschließlich Remote-Audio und sendet keinen Broadcast.");
+
+var onlineState = new OnlinePartyStateMachine();
+onlineState.BeginJoin();
+onlineState.Connected(StageOnlineRole.Listener,
+[
+    new OnlineParticipantInfo("a", "Standort A", StageOnlineRole.Singer),
+    new OnlineParticipantInfo("b", "Standort B", StageOnlineRole.Listener)
+]);
+Assert(!onlineState.CanBecomeSinger("b"), "Ein zweiter Standort kann nicht gleichzeitig Singer werden.");
+onlineState.ReplaceParticipants([new OnlineParticipantInfo("b", "Standort B", StageOnlineRole.Listener)]);
+Assert(onlineState.CanBecomeSinger("b"), "Nach Freigabe der Rolle kann ein Listener Singer werden.");
+onlineState.BeginReconnect();
+Assert(onlineState.ConnectionState == OnlineConnectionState.Reconnecting,
+    "Ein Verbindungsverlust erzeugt einen nachvollziehbaren Reconnecting-Zustand.");
+onlineState.Connected(StageOnlineRole.Listener, onlineState.Participants);
+onlineState.BeginLeave();
+onlineState.Left();
+Assert(onlineState.ConnectionState == OnlineConnectionState.Disconnected &&
+       onlineState.Participants.Count == 0 && onlineState.LocalRole == StageOnlineRole.Listener,
+    "Leave setzt Rollen- und Teilnehmerzustand vollständig zurück.");
+var transportCleanup = new RecordingOnlineTransport();
+await transportCleanup.ConnectAsync(new OnlineTransportConnection("wss://example.test", "token", "PARTY", "site-b",
+    StageOnlineRole.Listener), CancellationToken.None);
+await transportCleanup.StartPublishingAsync(CancellationToken.None);
+await transportCleanup.StopPublishingAsync(CancellationToken.None);
+await transportCleanup.DisconnectAsync(CancellationToken.None);
+transportCleanup.Dispose();
+Assert(!transportCleanup.IsConnected && !transportCleanup.IsPublishing && transportCleanup.Disposed,
+    "Disconnect und Dispose räumen einen Online-Transport reproduzierbar auf.");
+
 if (args is ["--usdx-corpus", var corpusPath])
 {
     var files = Directory.EnumerateFiles(corpusPath, "*.txt", SearchOption.AllDirectories).ToArray();
@@ -1105,4 +1145,24 @@ static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException("Test fehlgeschlagen: " + message);
     Console.WriteLine("OK: " + message);
+}
+
+sealed class RecordingOnlineTransport : IOnlineAudioTransport
+{
+    public bool IsConnected { get; private set; }
+    public bool IsPublishing { get; private set; }
+    public bool Disposed { get; private set; }
+    public event Action? ParticipantsChanged;
+    public event Action? ConnectionLost;
+    public event Action? Reconnecting;
+    public event Action? Reconnected;
+    public Task ConnectAsync(OnlineTransportConnection connection, CancellationToken cancellationToken)
+    { IsConnected = true; return Task.CompletedTask; }
+    public Task StartPublishingAsync(CancellationToken cancellationToken)
+    { IsPublishing = true; return Task.CompletedTask; }
+    public Task StopPublishingAsync(CancellationToken cancellationToken)
+    { IsPublishing = false; return Task.CompletedTask; }
+    public Task DisconnectAsync(CancellationToken cancellationToken)
+    { IsPublishing = false; IsConnected = false; return Task.CompletedTask; }
+    public void Dispose() { IsPublishing = false; IsConnected = false; Disposed = true; }
 }

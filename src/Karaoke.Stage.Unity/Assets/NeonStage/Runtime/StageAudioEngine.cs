@@ -28,6 +28,7 @@ public sealed class StageAudioEngine : MonoBehaviour
     private readonly float[] _waveform = new float[256];
 
     public event Action? PlaybackEnded;
+    public event Action<float[], int, int>? BroadcastMusicRead;
     public string Status { get; private set; } = "Audio bereit";
     public bool IsPlaying => _master != null && _master.isPlaying;
     public bool HasClip => _master != null && _master.clip != null;
@@ -127,8 +128,14 @@ public sealed class StageAudioEngine : MonoBehaviour
 
     private void Awake()
     {
-        _master = gameObject.AddComponent<AudioSource>();
-        _vocals = gameObject.AddComponent<AudioSource>();
+        var musicBus = new GameObject("Music Bus");
+        musicBus.transform.SetParent(transform, false);
+        var vocalBus = new GameObject("Vocal Reference Bus");
+        vocalBus.transform.SetParent(transform, false);
+        _master = musicBus.AddComponent<AudioSource>();
+        _vocals = vocalBus.AddComponent<AudioSource>();
+        musicBus.AddComponent<StageAudioTap>().AudioRead +=
+            (samples, channels, rate) => BroadcastMusicRead?.Invoke(samples, channels, rate);
         _master.playOnAwake = false;
         _vocals.playOnAwake = false;
         _master.volume = 0.85f;

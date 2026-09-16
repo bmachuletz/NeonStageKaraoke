@@ -15,7 +15,7 @@ Neon Stage release artifacts contain application binaries only. They never conta
 7. creates SHA-256 checksums;
 8. uploads workflow artifacts and, for tags, attaches them to a GitHub Release.
 
-The separate manually dispatched `unity-stage-release.yml` workflow builds the Linux Stage AppImage with GameCI. Configure `UNITY_LICENSE`, `UNITY_EMAIL`, and `UNITY_PASSWORD` as encrypted repository secrets first. Its optional `release_tag` input attaches the result to an existing GitHub Release. Never store a Unity license, keystore, password, Spotify secret, or signing key in the repository. See the [official GameCI builder documentation](https://game.ci/docs/github/builder/) for current licensing instructions.
+The separate manually dispatched `unity-stage-release.yml` workflow always builds the Linux Stage AppImage with GameCI. Optional inputs add native macOS ARM64 and Windows x64 jobs on appropriately labelled self-hosted Unity runners. Configure `UNITY_LICENSE`, `UNITY_EMAIL`, and `UNITY_PASSWORD` as encrypted repository secrets before using GameCI. Its optional `release_tag` input attaches the Linux result to an existing GitHub Release. Never store a Unity license, keystore, password, Spotify secret, LiveKit secret, or signing key in the repository. See the [official GameCI builder documentation](https://game.ci/docs/github/builder/) for current licensing instructions.
 
 ## Local release preparation
 
@@ -41,6 +41,9 @@ Unity builds:
 ```bash
 ./scripts/linux/build-unity-stage-linux.sh
 ./scripts/linux/build-unity-stage-android.sh
+# Run on the corresponding host platform:
+./scripts/macos/build-unity-stage-macos.sh
+# PowerShell: scripts/windows/build-unity-stage-windows.ps1
 ```
 
 Run the media guard against `src/Karaoke.Stage.Unity/Builds` before packaging it.
@@ -60,6 +63,8 @@ are never bundled into the server image.
 - `stage-linux-x64`: unpacked Unity player; no songs or server state
 - `stage-android-armv7`: Android package for 32-bit devices such as the tested Ikarao hardware
 - `stage-android-arm64`: Android package for modern 64-bit devices
+- `NeonStage-Stage-macOS-arm64.zip`: native Apple-Silicon application bundle
+- `stage-windows-x64`: native Windows x64 Unity player directory
 
 Published packages must include `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Android signing happens only in the protected CI/release environment.
 
@@ -83,8 +88,8 @@ KARAOKE_SERVER=http://127.0.0.1:5274 artifacts/NeonStage-Stage-x86_64.AppImage
 ## Container deployment
 
 Copy `.env.example` to the untracked `.env`, configure the absolute library
-path, Spotify client ID, Spotify client secret, and the exact registered
-redirect URL, then run `docker compose up -d --build server`. Compose mounts
+path and data path, then optionally add Spotify or Online-Karaoke credentials.
+Run `docker compose up -d --build server`. Compose mounts
 the private library and `KARAOKE_DATA_PATH`; neither is copied into the image.
 The public web portal, administration portal, editor API, audio streams, event
 state and SQLite persistence are served from the same ASP.NET Core container.

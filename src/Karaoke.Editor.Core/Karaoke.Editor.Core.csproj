@@ -11,5 +11,7 @@
              Link="Presentation/StageAudioAnalysis.cs" />
     <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/StageTestProtocol.cs"
              Link="StageTesting/StageTestProtocol.cs" />
+    <Compile Include="../Karaoke.Stage.Unity/Assets/NeonStage/Shared/OnlinePartyState.cs"
+             Link="Online/OnlinePartyState.cs" />
   </ItemGroup>
 </Project>

@@ -10,6 +10,74 @@ Unity stage · Mobile guest portal · Events · GPU lyrics alignment · Millisec
 
 Neon Stage is a self-hosted karaoke system. Guests join from an event QR code, search the released library, manage the queue, request missing tracks, and send live reactions to the singer. The Unity stage mixes instrumental and vocal stems and renders word- and syllable-timed lyrics. The desktop editor provides sample-stable playback and detailed manual review.
 
+## What works today
+
+Neon Stage is already an end-to-end system rather than a standalone lyrics
+player. A single server coordinates every screen while media remains on the
+operator's machine.
+
+| Area | Current capability |
+|---|---|
+| Party operation | Planned events and instant sessions, invitation links and QR codes, mobile guest portal, released-library search, queue management, song requests, and live reactions |
+| Stage | Unity 6 player for Linux, Android/ARM32, Windows x64, and macOS ARM64 with synchronized instrumental/vocal stems, independent levels, video backgrounds, reactive shaders, word/syllable highlighting, and DSP-clock timing |
+| Lyrics production | Avalonia editor with waveform editing, loops, undo/redo, version/review workflow, Enhanced LRC and UltraStar import, live windowed Stage testing, and deterministic MP4 export |
+| Song preparation | MP3/FLAC folder import, preserved original masters, portable song packages, LRCLIB/USDB source selection, full transcription fallback, vocal separation, and EasyAligner word timing |
+| Automation | German and English global CTC models, adaptive backing-vocal recovery, batch realignment, quality gates, technical/human lyric views, and explicit release approval |
+| Online MVP | Self-hosted LiveKit rooms with one Singer location and multiple Listener stages, short-lived role-scoped tokens, music plus up to two microphone inputs, and a single-host Docker stack |
+
+Automatically prepared songs always enter review. Nothing becomes visible to
+guests or the Stage until an operator explicitly releases a lyrics version.
+
+## Get a running system quickly
+
+### 1. Start the server and web portals
+
+The shortest reproducible path uses Docker Compose. Docker, Git, an existing
+host directory for the private karaoke library, and a writable data directory
+are sufficient for the server and both web portals.
+
+```bash
+git clone https://github.com/bmachuletz/NeonStageKaraoke.git
+cd NeonStageKaraoke
+cp .env.example .env
+mkdir -p data
+# Edit .env and set at least:
+# KARAOKE_LIBRARY_PATH=/absolute/path/to/your/karaoke/library
+# KARAOKE_DATA_PATH=./data
+# NEON_STAGE_PUBLIC_URL=http://YOUR-LAN-IP:5274
+docker compose up -d --build server
+docker compose ps
+curl http://127.0.0.1:5274/api/health
+```
+
+Open `http://SERVER:5274/admin.html` to prepare or activate an event. The guest
+portal is served from `http://SERVER:5274/`. Use the server's LAN address in
+`NEON_STAGE_PUBLIC_URL` when phones need to open the generated QR invitation.
+Spotify, Qobuz, USDB credentials, CUDA alignment, and Online-Karaoke are
+optional; the server starts without them.
+
+### 2. Add the Stage and editor
+
+Use reviewed artifacts from [GitHub Releases](https://github.com/bmachuletz/NeonStageKaraoke/releases)
+when available, or build the clients from this checkout. A local Unity 6
+installation is required only for building the Stage.
+
+```bash
+# Native .NET applications
+./scripts/linux/build.sh
+./scripts/linux/start-desktop.sh http://127.0.0.1:5274
+
+# Unity Stage
+./scripts/linux/build-unity-stage-linux.sh
+./scripts/linux/start-unity-stage.sh http://127.0.0.1:5274
+```
+
+For Android/ARM32 use `./scripts/linux/build-unity-stage-android.sh`. Complete
+Linux AppImages can be produced with `./scripts/build-appimages.sh`; add
+`--skip-stage` on a machine without Unity. Existing complete song packages can
+be imported and played without the CUDA stack. Preparing or realigning new
+material requires the separately managed aligner described below.
+
 > Status: active development. This is not yet a polished end-user release.
 
 > **Development disclosure:** A large part of Neon Stage has been created
@@ -20,22 +88,6 @@ Neon Stage is a self-hosted karaoke system. Guests join from an event QR code, s
 
 If Neon Stage is useful to you and you would like to support its continued
 development: [Support Neon Stage on Ko-fi](https://ko-fi.com/Z6Q023YEX5).
-
-## Features
-
-- Responsive guest and administration portals with planned events and ad-hoc sessions
-- Shareable event links and QR codes
-- Library search, queue management, requests, combined Spotify/Qobuz catalog search, and LRCLIB matching
-- Font-independent heart, smile, thumbs-up, applause, and fire reactions
-- Unity 6 stage for Linux and Android, including ARM32
-- Synchronized instrumental/vocal playback with independent levels
-- Word and optional syllable timing, lyric effects, reactive visuals, and transitions
-- CUDA EasyAligner pipeline with source separation, German/English global CTC,
-  optional full transcription, adaptive backing-vocal recovery, and quality gates
-- Avalonia editor with waveform, live windowed Unity Stage test, deterministic
-  MP4 export, loops, undo/redo, Enhanced LRC and UltraStar Deluxe TXT import,
-  review states, portable song packages, and batch realignment
-- German UI for German locales and English UI for other locales where supported
 
 ## Screens
 
@@ -90,7 +142,7 @@ CUDA aligner ◀── jobs from server/scripts ──────────�
 
 Network latency can delay a command reaching the stage, but it does not continuously drive lyric highlighting: after media is prepared, Unity derives audio and lyric position from its local synchronized playback clock.
 
-## Quick start
+## Local development workflow
 
 Requirements: .NET 10, FFmpeg, LibVLC, Unity 6 for stage builds, Docker, and optionally NVIDIA Container Toolkit plus a CUDA GPU.
 
@@ -111,7 +163,7 @@ library and SQLite state stay on the host as bind mounts.
 
 ```bash
 cp .env.example .env
-# Edit .env: library path, Spotify client ID/secret and the registered redirect URL
+# Edit .env: set the library/data paths; integrations are optional
 docker compose up -d --build server
 docker compose ps
 curl http://127.0.0.1:5274/api/health
@@ -130,6 +182,29 @@ run in the container. GPU alignment, MP3/FLAC-folder ingestion, and request down
 processing remain host/worker jobs because their CUDA models and downloader
 toolchains are not release payloads. Run the documented worker scripts against
 the container URL when those operations are needed.
+
+### Optional Online-Karaoke with LiveKit
+
+The Online-Karaoke MVP connects Stage devices at different locations. One
+Stage joins as **Singer** and publishes the locally mixed song plus up to two
+microphone inputs; any number of **Listener** stages receive that single audio
+track without starting local playback. The server issues short-lived,
+role-scoped LiveKit tokens and guarantees that only one Singer owns a room.
+
+1. Start the documented [single-host LiveKit stack](deploy/livekit/README.md),
+   or use an existing LiveKit deployment.
+2. Open **Settings → Online-Karaoke** in the desktop editor, enter the WSS URL,
+   API key, API secret, and room prefix, then use **Test LiveKit connection**.
+3. On the Stage, press `F8` or click/tap the broadcast microphone icon. Use the
+   same room name on all locations and select Singer or Listener.
+
+The broadcast brackets are gray while offline and colored after a successful
+connection. LiveKit credentials remain server-side; they are never sent to a
+Stage. If an Android karaoke box exposes two physical radio microphones as one
+multichannel system input, Neon Stage preserves that complete input. If the OS
+exposes two separate microphone devices, both are captured and mixed with
+headroom. See the [Online-Karaoke architecture and operating guide](docs/online-karaoke.md)
+for ports, audio routing, security, logs, and current MVP limits.
 
 ### Configure Spotify Web API access
 
@@ -330,6 +405,8 @@ the result only when the operator creates a new version.
 | Start server | `./scripts/linux/start-server.sh /library/path` |
 | Start editor | `./scripts/linux/start-desktop.sh [server-url]` |
 | Start Linux stage | `./scripts/linux/start-unity-stage.sh [server-url]` |
+| Build macOS Stage | `./scripts/macos/build-unity-stage-macos.sh` (on macOS) |
+| Build Windows Stage | `scripts/windows/build-unity-stage-windows.ps1` |
 | Build Android stage | `./scripts/linux/build-unity-stage-android.sh` |
 | Match library lyrics | `./scripts/linux/match-library-lrc.sh` |
 | Align library | `./scripts/linux/align-library.sh --force` |
@@ -339,7 +416,7 @@ the result only when the operator creates a new version.
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |
 | Verify release contents | `./scripts/release/verify-no-media.sh` |
 
-More examples: [`scripts/linux/README.md`](scripts/linux/README.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md), and the detailed [music-reactive background shader guide](docs/background-shaders.md).
+More examples: [`scripts/linux/README.md`](scripts/linux/README.md), the [Online-Karaoke MVP](docs/online-karaoke.md), the [self-hosted LiveKit stack](deploy/livekit/README.md), the [macOS/Apple-Silicon build guide](docs/macos-build.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md), and the detailed [music-reactive background shader guide](docs/background-shaders.md).
 
 ## Release builds
 

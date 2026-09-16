@@ -15,6 +15,7 @@ string? adoptionDatabasePath = null;
 try
 {
     VerifyEasyAlignerRequestContract();
+    await VerifyOnlineRoomAndTokenContractAsync();
     await VerifyUsdbHttpAndMatchingAsync();
     await VerifyLegacyUsdbChartSkipsAiAlignmentAsync();
     await VerifyAnimuxUsdbPreferenceAndFallbackAsync();
@@ -1069,6 +1070,71 @@ static void WriteTestWave(string path)
     writer.Write("data"u8.ToArray()); writer.Write(dataSize); writer.Write(new byte[dataSize]);
 }
 
+static async Task VerifyOnlineRoomAndTokenContractAsync()
+{
+    var configured = Options.Create(new OnlineOptions
+    {
+        Enabled = true,
+        Provider = "LiveKit",
+        ServerUrl = "wss://livekit.example.test",
+        ApiKey = "public-key",
+        ApiSecret = "super-secret",
+        RoomPrefix = "test-"
+    });
+    var database = Path.Combine(Path.GetTempPath(), $"neon-stage-online-{Guid.NewGuid():N}.db");
+    var settings = new OnlineSettingsService(
+        Options.Create(new KaraokeOptions { DatabasePath = database }), configured,
+        new TestHttpClientFactory(new HttpClient()), TimeProvider.System);
+    await settings.InitializeAsync(default);
+    var rooms = new OnlineRoomRegistry(settings, TimeProvider.System);
+    var singer = rooms.Join(new OnlineJoinRequest("PARTY", "site-a", "Standort A", OnlineRole.Singer));
+    rooms.Join(new OnlineJoinRequest("PARTY", "site-b", "Standort B", OnlineRole.Listener));
+    var denied = false;
+    try { rooms.ChangeRole("PARTY", "site-b", OnlineRole.Singer); }
+    catch (OnlineSingerConflictException) { denied = true; }
+    Assert(denied, "Der Server weist einen zweiten gleichzeitigen Online-Singer atomar ab.");
+
+    rooms.ChangeRole("PARTY", "site-a", OnlineRole.Listener);
+    var takeover = rooms.ChangeRole("PARTY", "site-b", OnlineRole.Singer);
+    Assert(takeover.Role == OnlineRole.Singer, "Nach der Rollenfreigabe kann ein Listener Singer werden.");
+    var token = new LiveKitTokenIssuer(settings, TimeProvider.System).Issue(takeover).AccessToken;
+    var payloadPart = token.Split('.')[1].Replace('-', '+').Replace('_', '/');
+    payloadPart = payloadPart.PadRight(payloadPart.Length + (4 - payloadPart.Length % 4) % 4, '=');
+    using var payload = JsonDocument.Parse(Convert.FromBase64String(payloadPart));
+    Assert(payload.RootElement.GetProperty("video").GetProperty("canPublish").GetBoolean(),
+        "Das kurzlebige Singer-Token besitzt eine Publish-Berechtigung.");
+    Assert(!payload.RootElement.ToString().Contains("super-secret", StringComparison.Ordinal),
+        "Das LiveKit-Secret gelangt niemals in Token-Payload oder Client-Konfiguration.");
+    rooms.Leave("PARTY", "site-b");
+    var remaining = rooms.Heartbeat("PARTY", "site-a");
+    Assert(remaining.Participants.Count == 1 && remaining.Participants[0].Role == OnlineRole.Listener,
+        "Leave räumt den Teilnehmer und seine Singer-Rolle auf.");
+
+    var saved = await settings.UpdateAsync(new(true, "wss://new-livekit.example.test",
+        "new-key", "new-secret", "changed-"), default);
+    Assert(saved.Configured && saved.HasApiSecret && settings.Current.ServerUrl.Contains("new-livekit"),
+        "LiveKit-Einstellungen werden gespeichert und gelten ohne Serverneustart.");
+    Assert(!JsonSerializer.Serialize(saved).Contains("new-secret", StringComparison.Ordinal),
+        "Das LiveKit-Secret wird nie an den Editor zurückgegeben.");
+    var restarted = new OnlineSettingsService(
+        Options.Create(new KaraokeOptions { DatabasePath = database }),
+        Options.Create(new OnlineOptions()), new TestHttpClientFactory(new HttpClient()), TimeProvider.System);
+    await restarted.InitializeAsync(default);
+    Assert(restarted.Current.ApiSecret == "new-secret" && restarted.Current.RoomPrefix == "changed-",
+        "Die LiveKit-Konfiguration bleibt nach einem Serverneustart erhalten.");
+    var probeHandler = new LiveKitProbeHandler();
+    var probeSettings = new OnlineSettingsService(
+        Options.Create(new KaraokeOptions { DatabasePath = database + ".probe" }), configured,
+        new TestHttpClientFactory(new HttpClient(probeHandler)), TimeProvider.System);
+    var probe = await probeSettings.TestAsync(new(true, "wss://livekit.example.test",
+        "public-key", "super-secret", "test-"), default);
+    Assert(probe.Success && probeHandler.RequestUri?.AbsoluteUri ==
+           "https://livekit.example.test/twirp/livekit.RoomService/ListRooms" &&
+           probeHandler.AuthorizationScheme == "Bearer",
+        "Der LiveKit-Test prüft die authentifizierte Room-API statt nur den offenen Port.");
+    File.Delete(Path.ChangeExtension(database, null) + ".online-settings.json");
+}
+
 sealed class TestHubContext : IHubContext<KaraokeHub>
 {
     public IHubClients Clients { get; } = new TestHubClients();
@@ -1115,6 +1181,23 @@ sealed class QueueHttpHandler(params HttpResponseMessage[] responses) : HttpMess
         var response = _responses.Dequeue();
         response.RequestMessage = request;
         return Task.FromResult(response);
+    }
+}
+
+sealed class LiveKitProbeHandler : HttpMessageHandler
+{
+    public Uri? RequestUri { get; private set; }
+    public string? AuthorizationScheme { get; private set; }
+
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,
+        CancellationToken cancellationToken)
+    {
+        RequestUri = request.RequestUri;
+        AuthorizationScheme = request.Headers.Authorization?.Scheme;
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"rooms\":[]}", Encoding.UTF8, "application/json")
+        });
     }
 }
 

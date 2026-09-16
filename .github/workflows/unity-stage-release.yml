@@ -1,4 +1,4 @@
-name: Unity Linux stage AppImage
+name: Unity stage desktop builds
 
 on:
   workflow_dispatch:
@@ -7,6 +7,16 @@ on:
         description: Optional existing GitHub Release tag to attach the AppImage to
         required: false
         type: string
+      build_macos:
+        description: Build native Apple-Silicon .app on a macOS ARM64 Unity runner
+        required: false
+        default: false
+        type: boolean
+      build_windows:
+        description: Build Windows x64 on a Windows Unity runner
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -49,3 +59,35 @@ jobs:
           files: |
             NeonStage-Stage-x86_64.AppImage
             SHA256SUMS-Stage
+
+  unity-macos-stage:
+    if: inputs.build_macos
+    runs-on: [self-hosted, macOS, ARM64, unity]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject media and local runtime data
+        run: bash scripts/release/verify-no-media.sh
+      - name: Build native Apple-Silicon Stage
+        run: scripts/macos/build-unity-stage-macos.sh
+      - name: Package app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent "src/Karaoke.Stage.Unity/Builds/macOS/NeonStage Karaoke.app" NeonStage-Stage-macOS-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-stage-unity-macos-arm64
+          path: NeonStage-Stage-macOS-arm64.zip
+
+  unity-windows-stage:
+    if: inputs.build_windows
+    runs-on: [self-hosted, Windows, X64, unity]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject media and local runtime data
+        shell: bash
+        run: bash scripts/release/verify-no-media.sh
+      - name: Build Windows x64 Stage
+        shell: pwsh
+        run: scripts/windows/build-unity-stage-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neon-stage-unity-windows-x64
+          path: src/Karaoke.Stage.Unity/Builds/Windows/

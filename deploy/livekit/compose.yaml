@@ -1,0 +1,28 @@
+name: neonstage-livekit
+
+# Single-host default: one LiveKit process, no Redis and no cluster state.
+# Host networking avoids an additional Docker-NAT layer for WebRTC.
+services:
+  livekit:
+    image: livekit/livekit-server:v1.12.0
+    container_name: neonstage-livekit
+    command: --config /etc/livekit.yaml
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ${LIVEKIT_CONFIG_PATH:-./runtime/livekit.yaml}:/etc/livekit.yaml:ro
+
+  # Enable this profile only when this stack owns public TCP ports 80/443.
+  # It uses the same SNI-aware Caddy-L4 layout as LiveKit's official generator.
+  edge:
+    image: livekit/caddyl4:v2.11.3
+    container_name: neonstage-livekit-edge
+    command: run --config /etc/caddy.yaml --adapter yaml
+    network_mode: host
+    restart: unless-stopped
+    profiles: ["managed-tls"]
+    depends_on:
+      - livekit
+    volumes:
+      - ./runtime/caddy.yaml:/etc/caddy.yaml:ro
+      - ./runtime/caddy-data:/data

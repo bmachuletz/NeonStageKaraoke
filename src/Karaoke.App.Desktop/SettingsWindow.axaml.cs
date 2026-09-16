@@ -10,6 +10,7 @@ public partial class SettingsWindow : Window
     private readonly Uri _serverAddress;
     private bool _managedByEnvironment;
     private bool _geniusManagedByEnvironment;
+    private bool _onlineManagedByEnvironment;
 
     public SettingsWindow() : this(new Uri(
         (Environment.GetEnvironmentVariable("NEONSTAGE_SERVER_URL") ??
@@ -39,11 +40,13 @@ public partial class SettingsWindow : Window
             var libraryTask = _http.GetFromJsonAsync<LibrarySettingsDto>("/api/settings/library");
             var usdbTask = _http.GetFromJsonAsync<UsdbProviderSettingsDto>("/api/admin/settings/usdb");
             var geniusTask = _http.GetFromJsonAsync<GeniusProviderSettingsDto>("/api/admin/settings/genius");
+            var onlineTask = _http.GetFromJsonAsync<OnlineServerSettingsDto>("/api/admin/settings/online");
             var nvencTask = EditorExportSettings.DetectNvencAsync();
-            await Task.WhenAll(libraryTask, usdbTask, geniusTask);
+            await Task.WhenAll(libraryTask, usdbTask, geniusTask, onlineTask);
             var library = await libraryTask ?? throw new InvalidDataException("Missing library settings.");
             var usdb = await usdbTask ?? throw new InvalidDataException("Missing USDB settings.");
             var genius = await geniusTask ?? throw new InvalidDataException("Missing Genius settings.");
+            var online = await onlineTask ?? throw new InvalidDataException("Missing online settings.");
             LibraryPathBox.Text = library.LibraryPath;
             UsdbEnabledBox.IsChecked = usdb.Enabled;
             UsdbBaseUrlBox.Text = usdb.BaseUrl;
@@ -66,6 +69,18 @@ public partial class SettingsWindow : Window
                 : Text("Client Access Token eingeben", "Enter client access token");
             GeniusStatusText.Text = genius.Status;
             SetGeniusManagedState(genius.ManagedByEnvironment);
+            OnlineEnabledBox.IsChecked = online.Enabled;
+            LiveKitServerUrlBox.Text = online.ServerUrl;
+            LiveKitApiKeyBox.Text = online.ApiKey;
+            LiveKitApiSecretBox.Text = string.Empty;
+            LiveKitApiSecretBox.Watermark = online.HasApiSecret
+                ? Text("Gespeichertes Secret vorhanden · leer lassen zum Behalten",
+                    "Stored secret present · leave blank to keep")
+                : Text("LiveKit API-Secret eingeben", "Enter LiveKit API secret");
+            LiveKitRoomPrefixBox.Text = online.RoomPrefix;
+            LiveKitStatusText.Text = online.Status;
+            LiveKitStatusText.Foreground = Avalonia.Media.Brushes.MediumTurquoise;
+            SetOnlineManagedState(online.ManagedByEnvironment);
             var exportSettings = EditorExportSettings.Load();
             VideoEncoderBox.SelectedIndex = exportSettings.VideoEncoder switch
             {
@@ -121,6 +136,12 @@ public partial class SettingsWindow : Window
                         ClearGeniusAccessTokenBox.IsChecked == true));
                 await EnsureSuccessAsync(geniusResponse);
             }
+            if (!_onlineManagedByEnvironment)
+            {
+                using var onlineResponse = await _http.PutAsJsonAsync("/api/admin/settings/online",
+                    CreateOnlineRequest());
+                await EnsureSuccessAsync(onlineResponse);
+            }
             new EditorExportSettings(VideoEncoderBox.SelectedIndex switch
             {
                 1 => EditorVideoEncoderMode.Software,
@@ -129,6 +150,7 @@ public partial class SettingsWindow : Window
             }).Save();
             ClearAnimuxCredentialsBox.IsChecked = false;
             ClearGeniusAccessTokenBox.IsChecked = false;
+            ClearLiveKitApiSecretBox.IsChecked = false;
             await LoadAsync();
             StatusText.Text = Text("Einstellungen wurden auf dem Server gespeichert.",
                 "Settings were saved on the server.");
@@ -160,6 +182,43 @@ public partial class SettingsWindow : Window
         finally { SetBusy(false); }
     }
 
+    private async void TestLiveKitClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        SetBusy(true);
+        LiveKitStatusText.Text = Text("LiveKit-Verbindung wird geprüft …",
+            "Testing LiveKit connection …");
+        LiveKitStatusText.Foreground = Avalonia.Media.Brushes.MediumTurquoise;
+        try
+        {
+            using var response = await _http.PostAsJsonAsync("/api/admin/settings/online/test",
+                CreateOnlineRequest());
+            await EnsureSuccessAsync(response);
+            var result = await response.Content.ReadFromJsonAsync<OnlineServerTestResultDto>()
+                ?? throw new InvalidDataException("Missing LiveKit test result.");
+            LiveKitStatusText.Text = result.Success
+                ? $"{result.Message} ({result.ElapsedMilliseconds} ms)"
+                : result.Message;
+            LiveKitStatusText.Foreground = result.Success
+                ? Avalonia.Media.Brushes.MediumTurquoise
+                : Avalonia.Media.Brushes.Orange;
+        }
+        catch (Exception exception)
+        {
+            LiveKitStatusText.Text = Text("LiveKit-Test fehlgeschlagen: ",
+                "LiveKit test failed: ") + exception.Message;
+            LiveKitStatusText.Foreground = Avalonia.Media.Brushes.Orange;
+        }
+        finally { SetBusy(false); }
+    }
+
+    private UpdateOnlineServerSettingsRequest CreateOnlineRequest() => new(
+        OnlineEnabledBox.IsChecked == true,
+        LiveKitServerUrlBox.Text?.Trim() ?? string.Empty,
+        LiveKitApiKeyBox.Text?.Trim() ?? string.Empty,
+        NullIfEmpty(LiveKitApiSecretBox.Text),
+        LiveKitRoomPrefixBox.Text?.Trim() ?? string.Empty,
+        ClearLiveKitApiSecretBox.IsChecked == true);
+
     private void SetManagedState(bool managed)
     {
         _managedByEnvironment = managed;
@@ -181,7 +240,22 @@ public partial class SettingsWindow : Window
                 "Genius is managed by server environment variables.");
     }
 
-    private void SetBusy(bool busy) => SaveButton.IsEnabled = !busy;
+    private void SetOnlineManagedState(bool managed)
+    {
+        _onlineManagedByEnvironment = managed;
+        OnlineEnabledBox.IsEnabled = LiveKitServerUrlBox.IsEnabled = LiveKitApiKeyBox.IsEnabled =
+            LiveKitApiSecretBox.IsEnabled = LiveKitRoomPrefixBox.IsEnabled =
+                ClearLiveKitApiSecretBox.IsEnabled = !managed;
+        if (managed)
+            LiveKitStatusText.Text = Text("LiveKit wird durch Server-Umgebungsvariablen verwaltet. Die Verbindung kann hier getestet werden.",
+                "LiveKit is managed by server environment variables. You can test the connection here.");
+    }
+
+    private void SetBusy(bool busy)
+    {
+        SaveButton.IsEnabled = !busy;
+        TestLiveKitButton.IsEnabled = !busy;
+    }
     private static async Task EnsureSuccessAsync(HttpResponseMessage response)
     {
         if (!response.IsSuccessStatusCode)

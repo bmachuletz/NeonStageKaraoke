@@ -9,6 +9,8 @@ RUN dotnet restore src/Karaoke.Server/Karaoke.Server.csproj
 
 COPY src/Karaoke.Contracts/ src/Karaoke.Contracts/
 COPY src/Karaoke.Editor.Core/ src/Karaoke.Editor.Core/
+COPY src/Karaoke.App/Assets/neon-stage-icon.png src/Karaoke.App/Assets/neon-stage-icon.png
+COPY src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/ src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/
 COPY src/Karaoke.Server/ src/Karaoke.Server/
 RUN dotnet publish src/Karaoke.Server/Karaoke.Server.csproj -c Release --no-restore -o /publish
 

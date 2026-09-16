@@ -19,6 +19,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     // bei älteren Bibliothekseinträgen sicher auf die MP3-Masterspur zurück.
     private const bool PreparedStemsAreUnityCompatible = true;
     private StageAudioEngine _audio = null!;
+    private OnlineStageController? _online;
     private IStageClock _clock = null!;
     private string _server = DefaultServer;
     private string _status = "Verbinde mit NeonStage …";
@@ -130,6 +131,9 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                 HandleEditorTestMessage);
             return;
         }
+        _online = gameObject.AddComponent<OnlineStageController>();
+        _online.Initialize(_server, _audio);
+        _online.RoleChanged += HandleOnlineRoleChanged;
         _ = _visuals.LoadQrAsync(_server);
         _ = ClaimControlAsync();
         StartCoroutine(PollQueue());
@@ -253,15 +257,34 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             // A transport command owns the playback state until the server has
             // acknowledged it. Otherwise the one-second poll can immediately
             // undo the local pause/resume feedback with an older server state.
-            if (!_commandRunning) _ = RefreshQueueAsync();
+            if (!_commandRunning && !(_online?.IsListener ?? false)) _ = RefreshQueueAsync();
             yield return new WaitForSecondsRealtime(1f);
         }
+    }
+
+    private void HandleOnlineRoleChanged(NeonStage.Online.OnlineRole role)
+    {
+        if (role != NeonStage.Online.OnlineRole.Listener) return;
+        _audio.Stop();
+        _video.Stop();
+        _lyrics.SetVideoBackground(false);
+        // A later Singer handoff must reload and seek the current song instead
+        // of resuming a clip that was deliberately stopped in Listener mode.
+        _loadedSongId = null;
+        _loadedQueueEntryId = null;
+        _loadedStartedAt = null;
     }
 
     private void Update()
     {
         _editorTestClient?.Update();
         _pointer.Update();
+        if (_pointer.Released && _online != null)
+        {
+            var onlineScale = Mathf.Max(1f,
+                Mathf.Min(Screen.width / 1280f, Screen.height / 720f));
+            _online.HandlePointerRelease(_pointer.Position, Screen.width, onlineScale);
+        }
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             if (_editorTestMode) { Application.Quit(); return; }
@@ -504,6 +527,11 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
     private async Task RefreshQueueAsync()
     {
+        if (_online?.IsListener == true)
+        {
+            _audio.Stop();
+            return;
+        }
         if (_refreshing) return;
         _refreshing = true;
         try
@@ -968,6 +996,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         if (!_hasActiveSession)
         {
             DrawSessionLauncher(width, height);
+            DrawOnlineGui();
             return;
         }
         GUI.color = Color.white;
@@ -1041,6 +1070,18 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         var syncMode = _audio.UsesAutomaticOutputLatency ? "Auto" : "Fix";
         GUI.Label(new Rect(40, height - 29, width - 80, 22),
             $"{_audio.PositionSeconds:0.0}s  ·  Lyrics-Sync {syncMode} {_audio.AppliedOutputLatencySeconds * 1000:0} ms  ·  {(_ownsControl ? "Steuerung aktiv" : "nur Anzeige")}  ·  {_server}", infoStyle);
+        DrawOnlineGui();
+    }
+
+    private void DrawOnlineGui()
+    {
+        if (_online == null) return;
+        var matrix = GUI.matrix;
+        GUI.matrix = Matrix4x4.identity;
+        var scale = Mathf.Max(1f, Mathf.Min(Screen.width / 1280f, Screen.height / 720f));
+        _online.DrawGui(Screen.width, scale,
+            rect => Event.current.type == EventType.Repaint && _pointer.ConsumeClick(rect));
+        GUI.matrix = matrix;
     }
 
     private void DrawSessionLauncher(float width, float height)

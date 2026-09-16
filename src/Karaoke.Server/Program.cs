@@ -23,6 +23,7 @@ builder.Services.Configure<SpotifyOptions>(builder.Configuration.GetSection("Spo
 builder.Services.Configure<QobuzOptions>(builder.Configuration.GetSection("Qobuz"));
 builder.Services.Configure<UsdbOptions>(builder.Configuration.GetSection("Usdb"));
 builder.Services.Configure<GeniusOptions>(builder.Configuration.GetSection("Genius"));
+builder.Services.Configure<OnlineOptions>(builder.Configuration.GetSection("Online"));
 builder.Services.PostConfigure<UsdbOptions>(options =>
 {
     if (!Path.IsPathFullyQualified(options.CachePath))
@@ -78,6 +79,9 @@ builder.Services.AddSingleton<PublicServerUrlResolver>();
 builder.Services.AddSingleton<WishlistProcessingService>();
 builder.Services.AddSingleton<UsdbProviderSettingsService>();
 builder.Services.AddSingleton<GeniusProviderSettingsService>();
+builder.Services.AddSingleton<OnlineSettingsService>();
+builder.Services.AddSingleton<OnlineRoomRegistry>();
+builder.Services.AddSingleton<LiveKitTokenIssuer>();
 builder.Services.AddSingleton<UsdbClient>();
 builder.Services.AddSingleton<AnimuxUsdbClient>();
 builder.Services.AddSingleton<IUsdbClient, PreferredUsdbClient>();
@@ -111,6 +115,54 @@ app.MapGet("/api/admin/settings/genius/callback", () => Results.Content(
 app.MapGet("/e/{token}", (string token, IWebHostEnvironment environment) =>
     Results.File(Path.Combine(environment.WebRootPath, "index.html"), "text/html"));
 app.MapHub<KaraokeHub>("/hubs/karaoke");
+app.MapGet("/api/online/config", (OnlineSettingsService configured) =>
+{
+    var online = configured.Current;
+    return Results.Ok(new OnlineConfigurationDto(
+        online.IsConfigured,
+        online.Provider,
+        online.IsConfigured ? online.ServerUrl : string.Empty,
+        online.IsConfigured ? "Bereit" : "Online-Karaoke ist nicht konfiguriert"));
+});
+app.MapPost("/api/online/rooms/join", (OnlineJoinRequest request, OnlineRoomRegistry rooms,
+    LiveKitTokenIssuer tokens, OnlineSettingsService configured) =>
+{
+    if (!configured.Current.IsConfigured)
+        return Results.Problem("Online-Karaoke ist auf diesem Server nicht konfiguriert.", statusCode: 503);
+    try
+    {
+        var participantId = string.IsNullOrWhiteSpace(request.ParticipantId)
+            ? Guid.NewGuid().ToString("N")
+            : request.ParticipantId;
+        var state = rooms.Join(request with { ParticipantId = participantId });
+        return Results.Ok(tokens.Issue(state));
+    }
+    catch (OnlineSingerConflictException exception) { return Results.Conflict(exception.Message); }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+});
+app.MapPut("/api/online/rooms/{roomId}/participants/{participantId}/role",
+    (string roomId, string participantId, OnlineRoleRequest request, OnlineRoomRegistry rooms,
+        LiveKitTokenIssuer tokens, OnlineSettingsService configured) =>
+    {
+        if (!configured.Current.IsConfigured)
+            return Results.Problem("Online-Karaoke ist auf diesem Server nicht konfiguriert.", statusCode: 503);
+        try { return Results.Ok(tokens.Issue(rooms.ChangeRole(roomId, participantId, request.Role))); }
+        catch (OnlineSingerConflictException exception) { return Results.Conflict(exception.Message); }
+        catch (KeyNotFoundException exception) { return Results.NotFound(exception.Message); }
+        catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+    });
+app.MapPost("/api/online/rooms/{roomId}/participants/{participantId}/heartbeat",
+    (string roomId, string participantId, OnlineRoomRegistry rooms) =>
+    {
+        try { return Results.Ok(rooms.Heartbeat(roomId, participantId)); }
+        catch (KeyNotFoundException exception) { return Results.NotFound(exception.Message); }
+    });
+app.MapDelete("/api/online/rooms/{roomId}/participants/{participantId}",
+    (string roomId, string participantId, OnlineRoomRegistry rooms) =>
+    {
+        rooms.Leave(roomId, participantId);
+        return Results.NoContent();
+    });
 app.MapGet("/api/changes/stream", async (HttpContext context, ChangeFeedService changes, CancellationToken ct) =>
 {
     context.Response.Headers.CacheControl = "no-cache";
@@ -778,6 +830,41 @@ app.MapPut("/api/admin/settings/genius", async (HttpContext context,
         return Results.BadRequest(exception.Message);
     }
 });
+app.MapGet("/api/admin/settings/online", async (
+    OnlineSettingsService settings, CancellationToken ct) =>
+    Results.Ok(await settings.GetAsync(ct)));
+app.MapPut("/api/admin/settings/online", async (HttpContext context,
+    UpdateOnlineServerSettingsRequest request, OnlineSettingsService settings, CancellationToken ct) =>
+{
+    if (!CanTransmitAdminSecrets(context))
+        return Results.BadRequest("LiveKit-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
+    try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
+    catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+                                      IOException or UnauthorizedAccessException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
+app.MapPost("/api/admin/settings/online/test", async (HttpContext context,
+    UpdateOnlineServerSettingsRequest request, OnlineSettingsService settings, CancellationToken ct) =>
+{
+    // Testing an already stored/environment-managed secret does not transmit it
+    // over the request. Keep the transport guard when the user enters a new one.
+    if (!string.IsNullOrWhiteSpace(request.ApiSecret) && !CanTransmitAdminSecrets(context))
+        return Results.BadRequest("LiveKit-Zugangsdaten dürfen nur lokal oder über HTTPS getestet werden.");
+    try { return Results.Ok(await settings.TestAsync(request with { Enabled = true }, ct)); }
+    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+    {
+        return Results.Ok(new OnlineServerTestResultDto(false,
+            "Zeitüberschreitung: LiveKit hat innerhalb von 10 Sekunden nicht geantwortet.", null, 10000));
+    }
+    catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
+                                      HttpRequestException)
+    {
+        return Results.Ok(new OnlineServerTestResultDto(false,
+            "LiveKit-Verbindung fehlgeschlagen: " + exception.Message, null, 0));
+    }
+});
 app.MapPost("/api/admin/settings/usdb/test", async (AnimuxUsdbClient animux, CancellationToken ct) =>
 {
     try
@@ -851,6 +938,7 @@ app.MapDelete("/api/wishlist/{id:guid}", async (Guid id, string? eventToken, Wis
 // before the queue endpoint has ever been called.
 await app.Services.GetRequiredService<UsdbProviderSettingsService>().InitializeAsync(CancellationToken.None);
 await app.Services.GetRequiredService<QobuzPluginSettingsService>().InitializeAsync(CancellationToken.None);
+await app.Services.GetRequiredService<OnlineSettingsService>().InitializeAsync(CancellationToken.None);
 await app.Services.GetRequiredService<QueueService>().InitializeAsync(CancellationToken.None);
 
 app.Run();

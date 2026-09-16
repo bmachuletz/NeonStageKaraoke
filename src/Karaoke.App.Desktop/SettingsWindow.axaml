@@ -36,6 +36,50 @@
         </StackPanel></ScrollViewer>
       </TabItem>
 
+      <TabItem Header="Online-Karaoke">
+        <ScrollViewer><StackPanel Margin="18" Spacing="13">
+          <TextBlock Text="LIVEKIT-SERVER" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <CheckBox x:Name="OnlineEnabledBox" Content="Online-Karaoke über LiveKit aktivieren"
+                    FontWeight="SemiBold" />
+          <Grid ColumnDefinitions="*,*" ColumnSpacing="10">
+            <StackPanel>
+              <TextBlock Text="PROVIDER" Foreground="#8993A6" FontSize="10" />
+              <TextBox Text="LiveKit" IsReadOnly="True" />
+            </StackPanel>
+            <StackPanel Grid.Column="1">
+              <TextBlock Text="ROOM-PRÄFIX" Foreground="#8993A6" FontSize="10" />
+              <TextBox x:Name="LiveKitRoomPrefixBox" Watermark="neonstage-" />
+            </StackPanel>
+          </Grid>
+          <StackPanel>
+            <TextBlock Text="SERVER-URL" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="LiveKitServerUrlBox" Watermark="wss://livekit.example.org" />
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="API-KEY" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="LiveKitApiKeyBox" />
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="API-SECRET" Foreground="#8993A6" FontSize="10" />
+            <TextBox x:Name="LiveKitApiSecretBox" PasswordChar="●"
+                     Watermark="Leer lassen = gespeichertes Secret behalten" />
+          </StackPanel>
+          <CheckBox x:Name="ClearLiveKitApiSecretBox" Content="Gespeichertes LiveKit-Secret löschen" />
+          <StackPanel Orientation="Horizontal" Spacing="10">
+            <Button x:Name="TestLiveKitButton" Content="LiveKit-Verbindung testen"
+                    Click="TestLiveKitClick" />
+          </StackPanel>
+          <Border Padding="12" CornerRadius="7" Background="#171D28">
+            <StackPanel Spacing="5">
+              <TextBlock x:Name="LiveKitStatusText" Foreground="#45E6D0"
+                         FontFamily="monospace" TextWrapping="Wrap" />
+              <TextBlock Text="Der Test authentifiziert sich an der LiveKit-Room-API. Das API-Secret wird ausschließlich auf dem Karaoke-Server gespeichert und nie wieder an den Editor übertragen."
+                         Foreground="#AAB2C1" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+
       <TabItem Header="Lyrics-Quellen">
         <ScrollViewer><StackPanel Margin="18" Spacing="13">
           <CheckBox x:Name="UsdbEnabledBox" Content="USDB als Lyrics-Quelle aktivieren" FontWeight="SemiBold" />

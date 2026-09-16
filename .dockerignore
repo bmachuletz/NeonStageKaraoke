@@ -11,6 +11,14 @@
 !src/Karaoke.Contracts/**
 !src/Karaoke.Editor.Core/
 !src/Karaoke.Editor.Core/**
+!src/Karaoke.App/
+!src/Karaoke.App/Assets/
+!src/Karaoke.App/Assets/neon-stage-icon.png
+!src/Karaoke.Stage.Unity/
+!src/Karaoke.Stage.Unity/Assets/
+!src/Karaoke.Stage.Unity/Assets/NeonStage/
+!src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/
+!src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/*.cs
 **/bin/
 **/obj/
 **/data/

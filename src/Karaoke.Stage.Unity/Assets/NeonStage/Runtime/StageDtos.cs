@@ -40,6 +40,58 @@ public sealed class StemAvailabilityDto
 }
 
 [Serializable]
+public sealed class OnlineConfigurationDto
+{
+    public bool enabled;
+    public string provider = "";
+    public string serverUrl = "";
+    public string status = "";
+}
+
+[Serializable]
+public sealed class OnlineParticipantDto
+{
+    public string participantId = "";
+    public string displayName = "";
+    public int role;
+}
+
+[Serializable]
+public sealed class OnlineRoomSessionDto
+{
+    public bool enabled;
+    public string provider = "";
+    public string serverUrl = "";
+    public string roomId = "";
+    public string participantId = "";
+    public int role;
+    public string accessToken = "";
+    public string expiresAt = "";
+    public OnlineParticipantDto[] participants = Array.Empty<OnlineParticipantDto>();
+}
+
+[Serializable]
+public sealed class OnlineRoomStateDto
+{
+    public string roomId = "";
+    public string participantId = "";
+    public int role;
+    public OnlineParticipantDto[] participants = Array.Empty<OnlineParticipantDto>();
+}
+
+[Serializable]
+public sealed class OnlineJoinRequestDto
+{
+    public string roomId = "";
+    public string participantId = "";
+    public string displayName = "";
+    public int role;
+}
+
+[Serializable]
+public sealed class OnlineRoleRequestDto { public int role; }
+
+[Serializable]
 public sealed class SongVideoInfoDto
 {
     public int offsetMilliseconds;
