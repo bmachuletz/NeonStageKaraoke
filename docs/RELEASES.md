@@ -34,6 +34,13 @@ The upload is accepted only when `gh auth status` succeeds and the exact source
 commit is already present on a remote branch; the script never silently pushes
 source changes.
 
+Git-ignored operator/customer branding under Unity's private `Resources`
+directory is temporarily moved outside `Assets` during a release player build
+and restored immediately afterwards, including after normal build failures.
+This prevents local venue artwork from entering public Android or desktop Stage
+players while retaining it for ordinary local builds. An interrupted move is
+recovered automatically by the next Stage build.
+
 ### Version and build numbers
 
 - Product versions use Semantic Versioning: start with `0.1.0`, later use

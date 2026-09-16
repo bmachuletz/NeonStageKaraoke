@@ -104,3 +104,4 @@ src/Karaoke.Stage.Unity/Assets/Resources/BackgroundShaders/Private/
 src/Karaoke.Stage.Unity/Assets/Resources/BackgroundShaders/Private.meta
 src/Karaoke.Stage.Unity/Assets/Resources/Branding/
 src/Karaoke.Stage.Unity/Assets/Resources/Branding.meta
+.release-private-assets/

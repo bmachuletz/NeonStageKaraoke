@@ -32,7 +32,7 @@ public static class NeonStageAndroidBuild
         EditorUserBuildSettings.buildAppBundle = false;
 
         Directory.CreateDirectory("Builds/Android");
-        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+        var report = BuildReleasePlayer(new BuildPlayerOptions
         {
             scenes = new[] { ScenePath },
             locationPathName = "Builds/Android/NeonStage-ShellS2-arm32.apk",
@@ -53,7 +53,7 @@ public static class NeonStageAndroidBuild
         PlayerSettings.productName = "Neon Stage Karaoke";
         PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Standalone, "de.neonstage.stage");
         Directory.CreateDirectory("Builds/Linux");
-        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+        var report = BuildReleasePlayer(new BuildPlayerOptions
         {
             scenes = new[] { ScenePath },
             locationPathName = "Builds/Linux/NeonStage",
@@ -76,7 +76,7 @@ public static class NeonStageAndroidBuild
         var universal = Environment.GetEnvironmentVariable("NEONSTAGE_MACOS_UNIVERSAL") == "1";
         PlayerSettings.SetArchitecture(NamedBuildTarget.Standalone, universal ? 2 : 1);
         Directory.CreateDirectory("Builds/macOS");
-        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+        var report = BuildReleasePlayer(new BuildPlayerOptions
         {
             scenes = new[] { ScenePath },
             locationPathName = "Builds/macOS/NeonStage Karaoke.app",
@@ -98,7 +98,7 @@ public static class NeonStageAndroidBuild
         PlayerSettings.productName = "Neon Stage Karaoke";
         PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Standalone, "de.neonstage.stage");
         Directory.CreateDirectory("Builds/Windows");
-        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
+        var report = BuildReleasePlayer(new BuildPlayerOptions
         {
             scenes = new[] { ScenePath },
             locationPathName = "Builds/Windows/NeonStage.exe",
@@ -135,6 +135,59 @@ public static class NeonStageAndroidBuild
     private static bool IsReleaseBuild() =>
         string.Equals(Environment.GetEnvironmentVariable("NEONSTAGE_RELEASE_BUILD"), "1",
             StringComparison.Ordinal);
+
+    private static BuildReport BuildReleasePlayer(BuildPlayerOptions options)
+    {
+        var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        var privateAssets = Path.Combine(Application.dataPath, "Resources", "Branding");
+        var privateMeta = privateAssets + ".meta";
+        var holdingRoot = Path.Combine(projectRoot, ".release-private-assets");
+        var heldAssets = Path.Combine(holdingRoot, "Branding");
+        var heldMeta = Path.Combine(holdingRoot, "Branding.meta");
+
+        // Recover a previous interrupted release before starting a new one.
+        if (Directory.Exists(heldAssets))
+        {
+            if (Directory.Exists(privateAssets))
+                throw new BuildFailedException("Privates Branding liegt gleichzeitig im Projekt und im Release-Zwischenspeicher.");
+            Directory.CreateDirectory(Path.GetDirectoryName(privateAssets)!);
+            Directory.Move(heldAssets, privateAssets);
+            if (File.Exists(heldMeta)) File.Move(heldMeta, privateMeta);
+            if (Directory.Exists(holdingRoot) && Directory.GetFileSystemEntries(holdingRoot).Length == 0)
+                Directory.Delete(holdingRoot);
+            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+        }
+
+        if (!IsReleaseBuild()) return BuildPipeline.BuildPlayer(options);
+
+        var moved = false;
+        try
+        {
+            if (Directory.Exists(privateAssets))
+            {
+                Directory.CreateDirectory(holdingRoot);
+                Directory.Move(privateAssets, heldAssets);
+                if (File.Exists(privateMeta)) File.Move(privateMeta, heldMeta);
+                moved = true;
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                Debug.Log("Privates Branding wurde für den öffentlichen Release-Build ausgeschlossen.");
+            }
+            return BuildPipeline.BuildPlayer(options);
+        }
+        finally
+        {
+            if (moved)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(privateAssets)!);
+                Directory.Move(heldAssets, privateAssets);
+                if (File.Exists(heldMeta)) File.Move(heldMeta, privateMeta);
+                if (Directory.Exists(holdingRoot) && Directory.GetFileSystemEntries(holdingRoot).Length == 0)
+                    Directory.Delete(holdingRoot);
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                Debug.Log("Privates Branding wurde nach dem Release-Build wiederhergestellt.");
+            }
+        }
+    }
 
     private static void ConfigureAndroidSigning()
     {
