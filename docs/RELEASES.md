@@ -20,11 +20,110 @@ The separate manually dispatched `unity-stage-release.yml` workflow always build
 ## Local release preparation
 
 ```bash
-./scripts/release/verify-no-media.sh
-dotnet test Karaoke.slnx -c Release
-./scripts/build-appimages.sh
-./scripts/release/verify-no-media.sh artifacts
+./scripts/release/build-release.sh --platform linux
 ```
+
+This is the preferred release entry point. It performs the source media guard,
+Release build and both executable test suites; embeds one version/build identity
+in .NET and Unity; builds the selected platforms; adds license and notice files;
+creates `RELEASE-METADATA.txt` and `SHA256SUMS`; checks the result; and only then
+increments `release-version.env`. Finally it asks whether the complete release
+should be created and uploaded using the authenticated GitHub CLI (`gh`). Use
+`--no-publish` for a guaranteed local-only build or `--publish` for automation.
+The upload is accepted only when `gh auth status` succeeds and the exact source
+commit is already present on a remote branch; the script never silently pushes
+source changes.
+
+### Version and build numbers
+
+- Product versions use Semantic Versioning: start with `0.1.0`, later use
+  `0.1.1` for fixes, `0.2.0` for a meaningful feature milestone, and `1.0.0`
+  when the public contract is considered stable.
+- `BUILD` is a positive, monotonically increasing package revision. The checked
+  in initial state is build `0`; the first successful release is build `1`.
+- Every platform produced for the same release uses the same pair, for example
+  `0.1.0`, build `1`. Artifact folders and GitHub tags use the unambiguous form
+  `v0.1.0-build.1`.
+- A new `--version 0.2.0` starts that product version at build `1`. A second
+  native host can build the already reserved number with `--reuse-build` after
+  the updated `release-version.env` has been committed and pulled there.
+
+Examples:
+
+```bash
+# Linux: Server, Editor and Unity Stage AppImages
+./scripts/release/build-release.sh --platform linux
+
+# Linux plus a production-signed Android/ARMv7 APK
+./scripts/release/build-release.sh --platform linux,android
+
+# On the matching hosts, reuse the same release identity
+./scripts/release/build-release.sh --platform macos --reuse-build
+./scripts/release/build-release.sh --platform windows --reuse-build
+
+# Preview validation, paths and next number without changing anything
+./scripts/release/build-release.sh --platform linux --dry-run
+```
+
+macOS players must be built on macOS and Windows players on Windows. The script
+rejects unsupported host/target combinations instead of silently producing a
+different artifact. Linux can additionally build the Android target when the
+Unity Android module is installed.
+
+The Windows target creates three portable, self-contained archives with the
+same release identity:
+
+- `NeonStage-Server-…-windows-x64.zip` with the ASP.NET Core runtime, web
+  portals, `ffmpeg.exe`, license files, and a launcher using per-user data paths;
+- `NeonStage-LyricsEditor-…-windows-x64.zip` with the .NET runtime, LibVLC and
+  its plugins, `ffmpeg.exe`, licenses, and a server-aware launcher;
+- `NeonStage-Stage-…-windows-x64.zip` with the compiled Unity player and license
+  notices.
+
+Install a Windows FFmpeg build and make `ffmpeg.exe` available through `PATH`,
+or set `FFMPEG_EXE=C:\path\to\ffmpeg.exe` before starting the release. Use
+`--skip-unity` when only the Windows Server and Editor should be produced. The
+native PowerShell component packager can also be called directly by tooling as
+`scripts/windows/build-release.ps1`; the cross-platform entry point remains
+`scripts/release/build-release.sh` because it owns numbering, checksums, and the
+optional GitHub upload. The Stage builder discovers a normal Unity Hub
+installation automatically; `UNITY_EDITOR=C:\path\to\Unity.exe` overrides it.
+
+The initial Windows ZIPs are portable but not Authenticode-signed, so Windows
+SmartScreen may show an unknown-publisher warning. Code signing can be added
+later through a protected certificate/CI secret without changing the versioning
+or package layout; private keys must never enter the repository.
+
+### Android signing
+
+Production Android builds require these environment variables; the keystore and
+passwords must remain outside Git:
+
+```bash
+export NEONSTAGE_ANDROID_KEYSTORE=/absolute/private/path/neonstage.keystore
+export NEONSTAGE_ANDROID_KEYALIAS=neonstage
+export NEONSTAGE_ANDROID_KEYSTORE_PASS='...'
+export NEONSTAGE_ANDROID_KEYALIAS_PASS='...'
+./scripts/release/build-release.sh --platform linux,android
+```
+
+`--allow-debug-android-signing` exists only for installable test packages. It is
+not appropriate for a public upgrade chain because later APKs must use the same
+protected signing key.
+
+### May compiled Unity players be published?
+
+Yes, in general: Unity's current Editor Software Terms explicitly permit the
+Unity Runtime to be distributed as an integrated part of a project, subject to
+the applicable subscription/tier, fee, project-use and other terms. They also
+state that Unity 6 project runtimes have no additional runtime fee or revenue
+share when those conditions are met. This permission covers the compiled
+Neon Stage player—not the Unity Editor, Hub, SDK installation, license files, or
+build caches. Package-specific and third-party terms still apply. Keep
+`THIRD_PARTY_NOTICES.md` with every release and review the current
+[Unity Editor Software Terms](https://unity.com/legal/editor-terms-of-service/software)
+before publication. This repository documentation is operational guidance, not
+individual legal advice.
 
 Individual packages can be rebuilt with `build-server-appimage.sh`, `build-editor-appimage.sh`, or `build-stage-appimage.sh`. Set `NEONSTAGE_SKIP_UNITY_BUILD=1` when a current Unity Linux player already exists in `src/Karaoke.Stage.Unity/Builds/Linux`.
 
@@ -65,8 +164,11 @@ are never bundled into the server image.
 - `stage-android-arm64`: Android package for modern 64-bit devices
 - `NeonStage-Stage-macOS-arm64.zip`: native Apple-Silicon application bundle
 - `stage-windows-x64`: native Windows x64 Unity player directory
+- `NeonStage-Server-…-windows-x64.zip`: self-contained Windows x64 server with FFmpeg and launcher
+- `NeonStage-LyricsEditor-…-windows-x64.zip`: self-contained Windows x64 editor with LibVLC, FFmpeg, and launcher
+- `NeonStage-Stage-…-windows-x64.zip`: portable Windows x64 Unity Stage
 
-Published packages must include `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Android signing happens only in the protected CI/release environment.
+Published packages must include `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Android signing uses protected CI secrets or the local release environment variables documented above; signing material is never stored in the repository or artifact folder.
 
 ## Running the Linux AppImages
 

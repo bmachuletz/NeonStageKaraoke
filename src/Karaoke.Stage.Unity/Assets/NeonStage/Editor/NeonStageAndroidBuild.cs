@@ -27,6 +27,7 @@ public static class NeonStageAndroidBuild
         PlayerSettings.Android.forceInternetPermission = true;
         PlayerSettings.Android.forceSDCardPermission = false;
         PlayerSettings.Android.buildApkPerCpuArchitecture = false;
+        ConfigureAndroidSigning();
         ApplyAndroidIcon();
         EditorUserBuildSettings.buildAppBundle = false;
 
@@ -36,7 +37,7 @@ public static class NeonStageAndroidBuild
             scenes = new[] { ScenePath },
             locationPathName = "Builds/Android/NeonStage-ShellS2-arm32.apk",
             target = BuildTarget.Android,
-            options = BuildOptions.Development
+            options = IsReleaseBuild() ? BuildOptions.None : BuildOptions.Development
         });
         if (report.summary.result != BuildResult.Succeeded)
             throw new BuildFailedException($"Shell-S2-Build fehlgeschlagen: {report.summary.result}");
@@ -116,6 +117,46 @@ public static class NeonStageAndroidBuild
         PlayerSettings.companyName = "NeonStage";
         PlayerSettings.SplashScreen.backgroundColor = new Color(.025f, .004f, .045f);
         PlayerSettings.SplashScreen.show = true;
+
+        var version = Environment.GetEnvironmentVariable("NEONSTAGE_VERSION");
+        if (!string.IsNullOrWhiteSpace(version))
+            PlayerSettings.bundleVersion = version.Trim();
+
+        var buildText = Environment.GetEnvironmentVariable("NEONSTAGE_BUILD_NUMBER");
+        if (!string.IsNullOrWhiteSpace(buildText))
+        {
+            if (!int.TryParse(buildText, out var buildNumber) || buildNumber < 1)
+                throw new BuildFailedException("NEONSTAGE_BUILD_NUMBER muss eine positive Ganzzahl sein.");
+            PlayerSettings.Android.bundleVersionCode = buildNumber;
+            PlayerSettings.macOS.buildNumber = buildNumber.ToString();
+        }
+    }
+
+    private static bool IsReleaseBuild() =>
+        string.Equals(Environment.GetEnvironmentVariable("NEONSTAGE_RELEASE_BUILD"), "1",
+            StringComparison.Ordinal);
+
+    private static void ConfigureAndroidSigning()
+    {
+        var keystore = Environment.GetEnvironmentVariable("NEONSTAGE_ANDROID_KEYSTORE");
+        if (string.IsNullOrWhiteSpace(keystore)) return;
+
+        var alias = Environment.GetEnvironmentVariable("NEONSTAGE_ANDROID_KEYALIAS");
+        var keystorePassword = Environment.GetEnvironmentVariable("NEONSTAGE_ANDROID_KEYSTORE_PASS");
+        var aliasPassword = Environment.GetEnvironmentVariable("NEONSTAGE_ANDROID_KEYALIAS_PASS");
+        if (string.IsNullOrWhiteSpace(alias) || string.IsNullOrEmpty(keystorePassword) ||
+            string.IsNullOrEmpty(aliasPassword))
+            throw new BuildFailedException("Für Android-Release-Signing fehlen Alias oder Passwörter.");
+
+        var absoluteKeystore = Path.GetFullPath(keystore);
+        if (!File.Exists(absoluteKeystore))
+            throw new BuildFailedException($"Android-Keystore nicht gefunden: {absoluteKeystore}");
+
+        PlayerSettings.Android.useCustomKeystore = true;
+        PlayerSettings.Android.keystoreName = absoluteKeystore;
+        PlayerSettings.Android.keystorePass = keystorePassword;
+        PlayerSettings.Android.keyaliasName = alias;
+        PlayerSettings.Android.keyaliasPass = aliasPassword;
     }
 
     private static void ApplyMacMicrophoneUsageDescription(string appPath)

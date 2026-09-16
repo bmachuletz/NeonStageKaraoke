@@ -27,7 +27,9 @@
       <tr><td>stage-linux-x64</td><td>Unity stage player (licensed build environment)</td></tr>
       <tr><td>stage-android-armv7 / arm64</td><td>Android stage builds for compatible karaoke hardware</td></tr>
       <tr><td>NeonStage-Stage-macOS-arm64.zip</td><td>Native Apple-Silicon Unity Stage app</td></tr>
-      <tr><td>stage-windows-x64</td><td>Native Windows x64 Unity Stage player</td></tr>
+      <tr><td>NeonStage-Server-…-windows-x64.zip</td><td>Self-contained Windows server with FFmpeg and launcher</td></tr>
+      <tr><td>NeonStage-LyricsEditor-…-windows-x64.zip</td><td>Self-contained Windows editor with LibVLC, FFmpeg, and launcher</td></tr>
+      <tr><td>NeonStage-Stage-…-windows-x64.zip</td><td>Native Windows x64 Unity Stage player</td></tr>
     </tbody></table>
 
     <h2>Run the editor AppImage</h2>
@@ -52,8 +54,13 @@ curl http://127.0.0.1:5274/api/health</code></pre>
       <li>Tagged artifacts are attached to a GitHub Release.</li>
     </ol>
 
+    <h2>One numbered local build</h2>
+    <pre><code>./scripts/release/build-release.sh --platform linux
+./scripts/release/build-release.sh --platform linux,android</code></pre>
+    <p>Product versions start at <code>0.1.0</code>; a separate shared build number starts at 1 and identifies every platform artifact from the same run. After tests, packaging, license collection, media checks, and SHA-256 generation, the script asks whether it should create the matching prerelease and upload all files through the authenticated GitHub CLI.</p>
+
     <h2>Unity builds</h2>
-    <p>Unity Linux and Android artifacts require a protected licensed CI environment. Optional macOS ARM64 and Windows x64 workflow jobs use appropriately labelled self-hosted Unity runners. Android signing credentials, Unity licenses, and other platform secrets belong in encrypted repository secrets, never in source control. Operators may also build locally using the platform scripts documented in the repository.</p>
+    <p>Unity's current terms generally permit distributing the compiled runtime as part of a project when the applicable tier and terms are satisfied. The Unity Editor, Hub, license files, and build caches are never release artifacts. Unity Linux and Android artifacts require a protected licensed build environment. Optional macOS ARM64 and Windows x64 jobs use appropriately labelled self-hosted Unity runners. Android signing credentials, Unity licenses, and other platform secrets belong in encrypted repository secrets, never in source control.</p>
     <h2>Before installation</h2>
     <p>Verify the SHA-256 checksum, read the release notes, and configure your own server URL and empty local library. Media is added only by the operator after installation and remains outside the application directory.</p>
     <div class="actions"><a class="primary" href="index.html">Back to Neon Stage</a><a class="secondary" href="legal.html">Licensing &amp; legal</a></div>

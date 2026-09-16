@@ -22,8 +22,15 @@ publish="$work/publish"
 mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
   "$appdir/usr/share/icons/hicolor/256x256/apps" "$appdir/usr/share/doc/neon-stage/licenses"
 
+version_args=()
+if [[ -n ${NEONSTAGE_VERSION:-} ]]; then
+  version_args+=("-p:Version=$NEONSTAGE_VERSION")
+  if [[ -n ${NEONSTAGE_BUILD_NUMBER:-} ]]; then
+    version_args+=("-p:InformationalVersion=$NEONSTAGE_VERSION+build.$NEONSTAGE_BUILD_NUMBER")
+  fi
+fi
 dotnet publish "$project" -c Release -r linux-x64 --self-contained true \
-  -p:DebugType=None -p:DebugSymbols=false -o "$publish"
+  -p:DebugType=None -p:DebugSymbols=false "${version_args[@]}" -o "$publish"
 cp -a "$publish/." "$appdir/usr/bin/"
 cp -L "$ffmpeg" "$appdir/usr/bin/ffmpeg"
 rm -f "$appdir/usr/bin/libcoreclrtraceptprovider.so" \

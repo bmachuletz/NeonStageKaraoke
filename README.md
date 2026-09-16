@@ -406,7 +406,7 @@ the result only when the operator creates a new version.
 | Start editor | `./scripts/linux/start-desktop.sh [server-url]` |
 | Start Linux stage | `./scripts/linux/start-unity-stage.sh [server-url]` |
 | Build macOS Stage | `./scripts/macos/build-unity-stage-macos.sh` (on macOS) |
-| Build Windows Stage | `scripts/windows/build-unity-stage-windows.ps1` |
+| Build Windows Server, Editor and Stage | `./scripts/release/build-release.sh --platform windows` (on Windows) |
 | Build Android stage | `./scripts/linux/build-unity-stage-android.sh` |
 | Match library lyrics | `./scripts/linux/match-library-lrc.sh` |
 | Align library | `./scripts/linux/align-library.sh --force` |
@@ -415,12 +415,37 @@ the result only when the operator creates a new version.
 | Import a local MP3/FLAC folder | `./scripts/linux/process-audio-folder.sh /path/to/audio` |
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |
 | Verify release contents | `./scripts/release/verify-no-media.sh` |
+| Build a versioned release | `./scripts/release/build-release.sh --platform linux` |
 
 More examples: [`scripts/linux/README.md`](scripts/linux/README.md), the [Online-Karaoke MVP](docs/online-karaoke.md), the [self-hosted LiveKit stack](deploy/livekit/README.md), the [macOS/Apple-Silicon build guide](docs/macos-build.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md), and the detailed [music-reactive background shader guide](docs/background-shaders.md).
 
 ## Release builds
 
-Release artifacts, supported platforms, checksums, signing expectations, and the GitHub workflow are documented in [`docs/RELEASES.md`](docs/RELEASES.md). Every release job runs the media guard before packaging and again against produced artifacts.
+Release artifacts, supported platforms, version/build numbering, checksums,
+signing expectations, optional GitHub upload, and the GitHub workflow are
+documented in [`docs/RELEASES.md`](docs/RELEASES.md). Every release job runs the
+media guard before packaging and again against produced artifacts.
+
+Create the first local release as product version `0.1.0`, build `1`:
+
+```bash
+# Linux Server, Editor and Unity Stage; asks before uploading with gh
+./scripts/release/build-release.sh --platform linux
+
+# Linux plus signed Android/ARMv7 in one numbered release
+./scripts/release/build-release.sh --platform linux,android
+
+# On Windows: self-contained Server, Editor and Unity Stage ZIPs
+./scripts/release/build-release.sh --platform windows --reuse-build
+```
+
+The product version follows Semantic Versioning, while the monotonically
+increasing build number distinguishes rebuilt artifacts without pretending that
+the product gained a new feature version. `release-version.env` begins at
+`VERSION=0.1.0` and `BUILD=0`; only a successful build changes it to build `1`.
+The script creates `artifacts/releases/v0.1.0-build.1/`, generates SHA-256
+checksums, and then asks whether it should create the matching prerelease and
+upload all files through the authenticated GitHub CLI (`gh`).
 
 Build all three self-contained Linux AppImages locally:
 

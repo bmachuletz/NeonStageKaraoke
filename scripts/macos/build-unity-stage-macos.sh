@@ -11,6 +11,7 @@ if [[ -z "$unity_editor" || ! -x "$unity_editor" ]]; then
   exit 2
 fi
 
+mkdir -p "$repo_root/Builds"
 "$unity_editor" -batchmode -quit \
   -projectPath "$repo_root/src/Karaoke.Stage.Unity" \
   -executeMethod NeonStage.Stage.Editor.NeonStageAndroidBuild.BuildMacOS \
