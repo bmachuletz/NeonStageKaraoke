@@ -38,9 +38,13 @@ public sealed class ConfirmRealignSongWindow : Window
                 new TextBlock { Text = scope, Foreground = Brush.Parse("#C0C6D2") },
                 new TextBlock
                 {
-                    Text = EditorLocale.German
-                        ? "Verwendet die vorhandene Lyrics-Quelle und berechnet den globalen deutschen oder englischen CTC-Pfad auf dem Vocal-Stem."
-                        : "Uses the existing lyrics source and computes the global German or English CTC path on the vocal stem.",
+                    Text = string.IsNullOrWhiteSpace(title) && songCount is null
+                        ? EditorLocale.German
+                            ? "Wählt für jeden Song automatisch die Lyrics mit der höchsten Trefferquote und richtet sie ohne weitere Rückfrage mit EasyAligner auf dem Vocal-Stem aus."
+                            : "Automatically selects the highest-scoring lyrics for every song and aligns them on the vocal stem with EasyAligner without further prompts."
+                        : EditorLocale.German
+                            ? "Verwendet die vorhandene Lyrics-Quelle und berechnet den globalen deutschen oder englischen CTC-Pfad auf dem Vocal-Stem."
+                            : "Uses the existing lyrics source and computes the global German or English CTC path on the vocal stem.",
                     Foreground = Brush.Parse("#8993A6"), TextWrapping = TextWrapping.Wrap
                 },
                 new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right,

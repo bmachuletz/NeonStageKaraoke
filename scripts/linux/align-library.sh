@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 library="/home/benjamin/Karaoke/Sunnify"
-aligner_url="http://127.0.0.1:8081"
+aligner_url="${LRC_ALIGNER_URL:-http://127.0.0.1:8081}"
 language="auto"
 force=0
 separate=true

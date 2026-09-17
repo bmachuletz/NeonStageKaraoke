@@ -161,10 +161,12 @@ Run the media guard against `src/Karaoke.Stage.Unity/Builds` before packaging it
 - `NeonStage-Server-x86_64.AppImage`: self-contained ASP.NET Core server, web portals, and FFmpeg; configuration and persistent data remain outside the image
 - `NeonStage-LyricsEditor-x86_64.AppImage`: self-contained editor including FFmpeg, LibVLC, and VLC plugins; server URL is supplied through `KARAOKE_SERVER`
 
-The Docker Compose image is the server/API deployment. GPU alignment, local
-folder ingestion, and wishlist download processing stay in separately managed
-host or worker processes; models, downloader environments, and karaoke media
-are never bundled into the server image.
+The Docker Compose image is the server/API deployment and includes the small
+HTTP client workers for re-alignment and full transcription. The separately
+managed CUDA aligner still owns the GPU models and inference runtime. Local
+folder ingestion and wishlist download processing remain host/worker processes;
+models, downloader environments, and karaoke media are never bundled into the
+server image.
 - `NeonStage-Stage-x86_64.AppImage`: Unity Linux player; no songs or server state; server URL is supplied through `KARAOKE_SERVER`, `NEONSTAGE_SERVER_URL`, or `--server`
 - `stage-linux-x64`: unpacked Unity player; no songs or server state
 - `stage-android-armv7`: Android package for 32-bit devices such as the tested Ikarao hardware

@@ -102,6 +102,27 @@ internal sealed class ReplacementLyricsService(
             pending.Source, pending.SourceId, pending.Label, false);
     }
 
+    /// <summary>
+    /// Resolves the highest-scoring retrievable provider result without an
+    /// interactive selection. Full transcription is deliberately excluded: a
+    /// library re-alignment must keep running through EasyAligner and can fall
+    /// back to the song's existing stable lyrics when no provider matches.
+    /// </summary>
+    public async Task<AutomaticLyricsSelection?> RetrieveBestMatchAsync(SongDto song,
+        CancellationToken cancellationToken)
+    {
+        var search = await SearchAsync(song, null, cancellationToken);
+        var best = search.Items
+            .Where(item => item.CanRetrieve && !item.IsFullTranscript)
+            .OrderByDescending(item => item.Score)
+            .ThenBy(item => item.Source, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.SourceId, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (best is null) return null;
+        var retrieved = await RetrieveAsync(song.Id, best.SelectionToken, cancellationToken);
+        return retrieved is null ? null : new(retrieved, best.Score);
+    }
+
     private async Task<SourceSearchResult> SearchUsdbAsync(SongDto song, string query,
         CancellationToken cancellationToken)
     {
@@ -265,6 +286,8 @@ internal sealed class ReplacementLyricsService(
 internal sealed record RetrievedLyricsSelection(
     string Lyrics, string RawLyrics, string RawExtension,
     string Source, string SourceId, string Label, bool IsFullTranscript);
+
+internal sealed record AutomaticLyricsSelection(RetrievedLyricsSelection Lyrics, double Score);
 
 internal sealed record LrclibCandidate(
     [property: JsonPropertyName("id")] int Id,

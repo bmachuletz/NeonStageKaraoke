@@ -770,7 +770,7 @@ static async Task VerifyUsdbEditorPickerCreatesIsolatedVersionAsync()
 
 static async Task VerifyReplacementLyricsSearchCombinesProvidersAsync()
 {
-    var lrclibHandler = new QueueHttpHandler(JsonResponse("""
+    const string lrclibResponse = """
         [{
           "id": 815,
           "trackName": "The Nights",
@@ -781,7 +781,9 @@ static async Task VerifyReplacementLyricsSearchCombinesProvidersAsync()
           "plainLyrics": "One day my father told me\nSon, don't let it slip away",
           "syncedLyrics": "[00:01.00]One day my father told me\n[00:04.00]Son, don't let it slip away"
         }]
-        """));
+        """;
+    var lrclibHandler = new QueueHttpHandler(
+        JsonResponse(lrclibResponse), JsonResponse(lrclibResponse));
     var service = new ReplacementLyricsService(
         new PickerUsdbClient(), new TestHttpClientFactory(new HttpClient(lrclibHandler)
         {
@@ -815,6 +817,9 @@ static async Task VerifyReplacementLyricsSearchCombinesProvidersAsync()
            usdbLyrics.Lyrics.Contains("<[", StringComparison.Ordinal) == false &&
            usdbLyrics.Lyrics.Contains('<', StringComparison.Ordinal),
         "USDB behält die unveränderte UltraStar-Datei neben der für EasyAligner konvertierten LRC.");
+    var automatic = await service.RetrieveBestMatchAsync(song, default);
+    Assert(automatic is { Lyrics.Source: "usdb.eu", Score: 100 },
+        "Der automatische Bibliothekslauf übernimmt providerübergreifend den höchsten Lyrics-Treffer statt der interaktiven Empfehlung.");
 }
 
 static HttpResponseMessage JsonResponse(string content) => new(HttpStatusCode.OK)

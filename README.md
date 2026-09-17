@@ -158,8 +158,11 @@ Administration: `http://SERVER:5274/admin.html`
 
 ### Docker Compose server
 
-The server image contains only application binaries and web assets. The media
-library and SQLite state stay on the host as bind mounts.
+The server image contains the application binaries, web assets, and the small
+EasyAligner client workers used for re-alignment and full transcription. The
+CUDA models and the aligner service itself remain in the separate
+`lyrics-word-aligner` container. The media library and SQLite state stay on the
+host as bind mounts.
 
 ```bash
 cp .env.example .env
@@ -176,12 +179,13 @@ secret `.env` file is ignored by Git. Set `LRC_ALIGNER_URL` to
 aligner on the same Linux host. The editor connects by setting
 `KARAOKE_SERVER=http://SERVER:5274`.
 
-This is intentionally the server-only deployment: library editing, events,
-queues, wishes, web portals, playback coordination, and Spotify catalog access
-run in the container. GPU alignment, MP3/FLAC-folder ingestion, and request download
-processing remain host/worker jobs because their CUDA models and downloader
-toolchains are not release payloads. Run the documented worker scripts against
-the container URL when those operations are needed.
+This is intentionally the server/API deployment: library editing, events,
+queues, wishes, web portals, playback coordination, Spotify catalog access,
+re-alignment, and full transcription run in the container. Alignment requires
+the separately running CUDA aligner configured through `LRC_ALIGNER_URL`.
+MP3/FLAC-folder ingestion and request download processing remain host/worker
+jobs because their downloader and matching toolchains are not release payloads.
+Run the documented worker scripts against the container URL for those jobs.
 
 ### Optional Online-Karaoke with LiveKit
 
@@ -416,6 +420,7 @@ the result only when the operator creates a new version.
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |
 | Verify release contents | `./scripts/release/verify-no-media.sh` |
 | Build a versioned release | `./scripts/release/build-release.sh --platform linux` |
+| Review, commit, and optionally push changes | `./scripts/git/commit-and-push.sh` |
 
 More examples: [`scripts/linux/README.md`](scripts/linux/README.md), the [Online-Karaoke MVP](docs/online-karaoke.md), the [self-hosted LiveKit stack](deploy/livekit/README.md), the [macOS/Apple-Silicon build guide](docs/macos-build.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md), and the detailed [music-reactive background shader guide](docs/background-shaders.md).
 

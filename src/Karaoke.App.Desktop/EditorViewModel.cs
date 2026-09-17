@@ -1001,8 +1001,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _audio.Stop();
         AppendConsole($"> GPU-Alignment: {song.Title} · {song.Artist}");
         AppendConsole(Localized(
-            "  EasyAligner: globales DE/EN-CTC auf dem reinen Vocal-Stem",
-            "  EasyAligner: global DE/EN CTC on the clean vocal stem"));
+            "  Automatisch bester Lyrics-Treffer · EasyAligner: globales DE/EN-CTC auf dem reinen Vocal-Stem",
+            "  Automatic best lyrics match · EasyAligner: global DE/EN CTC on the clean vocal stem"));
         try
         {
             using var response = await _http.PostAsJsonAsync($"/api/admin/songs/{song.Id}/realign",

@@ -18,7 +18,8 @@ public sealed record SongRealignmentStatus(bool IsRunning, Guid? JobId, Guid? So
 /// </summary>
 internal sealed class SongRealignmentService(IWebHostEnvironment environment,
     LibraryRepository library, LyricsAlignmentVersionService alignmentVersions,
-    LyricsVersionRepository versions, ILogger<SongRealignmentService> logger)
+    LyricsVersionRepository versions, ReplacementLyricsService replacementLyrics,
+    ILogger<SongRealignmentService> logger)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
     private readonly object _gate = new();
@@ -66,7 +67,8 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment,
         if (!Begin(null, "Gesamte Bibliothek", null,
                 "EasyAligner für die gesamte Bibliothek wird gestartet …",
                 out var jobId, out var cancellation)) return false;
-        _ = Task.Run(() => RunLibraryAsync(selected, jobId, null, cancellation));
+        _ = Task.Run(() => RunLibraryAsync(selected, jobId, null,
+            refreshLyricsAutomatically: true, cancellation));
         return true;
     }
 
@@ -80,7 +82,8 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment,
                 "EasyAligner für die Auswahl wird gestartet …",
                 out var jobId, out var cancellation)) return false;
         _ = Task.Run(() => RunLibraryAsync(
-            request.Alignment with { SourceVersionId = null }, jobId, songIds, cancellation));
+            request.Alignment with { SourceVersionId = null }, jobId, songIds,
+            refreshLyricsAutomatically: false, cancellation));
         return true;
     }
 
@@ -171,7 +174,8 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment,
     }
 
     private async Task RunLibraryAsync(SongRealignmentRequest request, Guid jobId,
-        IReadOnlyList<Guid>? selectedSongIds, CancellationToken cancellationToken)
+        IReadOnlyList<Guid>? selectedSongIds, bool refreshLyricsAutomatically,
+        CancellationToken cancellationToken)
     {
         var output = new List<string>();
         try
@@ -202,8 +206,31 @@ internal sealed class SongRealignmentService(IWebHostEnvironment environment,
                 var end = 3 + (int)Math.Floor(92d * (index + 1) / Math.Max(1, songs.Count));
                 try
                 {
+                    var scopeLabel = $"{index + 1}/{songs.Count}";
+                    if (refreshLyricsAutomatically)
+                    {
+                        Set(start, Prefix(scopeLabel,
+                            "Beste Lyrics-Quelle wird automatisch ermittelt …"));
+                        var best = await replacementLyrics.RetrieveBestMatchAsync(song, cancellationToken);
+                        if (best is not null)
+                        {
+                            if (!await library.WriteRetrievedLyricsSourceAsync(
+                                    song.Id, best.Lyrics, cancellationToken))
+                                throw new InvalidOperationException(
+                                    "Der Song wurde beim Speichern der Lyrics nicht gefunden.");
+                            Add(output, Prefix(scopeLabel,
+                                $"Lyrics automatisch gewählt: {best.Lyrics.Source} " +
+                                $"#{best.Lyrics.SourceId} · Treffer {best.Score:F1}% · " +
+                                best.Lyrics.Label));
+                        }
+                        else
+                        {
+                            Add(output, Prefix(scopeLabel,
+                                "Kein geeigneter Provider-Treffer; vorhandene Lyrics-Basis bleibt erhalten."));
+                        }
+                    }
                     await AlignSongAsync(song.Id, audio.Value.Path, null, jobId, output,
-                        start, Math.Max(start + 1, end), $"{index + 1}/{songs.Count}", cancellationToken);
+                        start, Math.Max(start + 1, end), scopeLabel, cancellationToken);
                     created++;
                 }
                 catch (Exception exception) when (exception is not OperationCanceledException)

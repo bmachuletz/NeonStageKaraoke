@@ -19,6 +19,14 @@
 !src/Karaoke.Stage.Unity/Assets/NeonStage/
 !src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/
 !src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/*.cs
+!scripts/
+!scripts/linux/
+!scripts/linux/align-library.sh
+!scripts/linux/recognize-song-lyrics.sh
+!lyrics-word-aligner/
+!lyrics-word-aligner/scripts/
+!lyrics-word-aligner/scripts/verify_audio_encoding.py
+!lyrics-word-aligner/scripts/analyze_visuals.py
 **/bin/
 **/obj/
 **/data/
