@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Net.Http.Json;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
@@ -966,8 +967,10 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         AppendConsole($"> import-audio-folder \"{path}\"" + (FolderImportRecursive ? " --recursive" : string.Empty));
         try
         {
-            using var response = await _http.PostAsJsonAsync("/api/admin/folder-import",
-                new FolderImportRequest(path, FolderImportRecursive), cancellationToken);
+            using var response = Directory.Exists(path)
+                ? await UploadFolderImportAsync(path, FolderImportRecursive, cancellationToken)
+                : await _http.PostAsJsonAsync("/api/admin/folder-import",
+                    new FolderImportRequest(path, FolderImportRecursive), cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
                 AppendConsole(Localized(
                     "Ein Audio-Ordnerimport läuft bereits; dessen Status wird angezeigt.",
@@ -981,6 +984,86 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         {
             FolderImportSummary = "Ordnerimport konnte nicht gestartet werden: " + exception.Message.Trim('"');
             AppendConsole(FolderImportSummary);
+        }
+    }
+
+    private async Task<HttpResponseMessage> UploadFolderImportAsync(string sourcePath, bool recursive,
+        CancellationToken cancellationToken)
+    {
+        FolderImportSummary = Localized(
+            "Lokaler Audio-Ordner wird für den Server vorbereitet …",
+            "Preparing the local audio folder for the server …");
+        var archivePath = await Task.Run(() => CreateFolderImportArchive(sourcePath, recursive), cancellationToken);
+        try
+        {
+            var archiveSize = new FileInfo(archivePath).Length;
+            FolderImportSummary = Localized(
+                $"Audio-Ordner wird hochgeladen ({archiveSize / 1024d / 1024d:0.0} MB) …",
+                $"Uploading audio folder ({archiveSize / 1024d / 1024d:0.0} MB) …");
+            using var transfer = new HttpClient { BaseAddress = ServerAddress, Timeout = Timeout.InfiniteTimeSpan };
+            await using var stream = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.Read,
+                1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            using var content = new StreamContent(stream, 1024 * 1024);
+            content.Headers.ContentType = new("application/vnd.neonstage.folder-import+zip");
+            return await transfer.PostAsync(
+                $"/api/admin/folder-import/upload?recursive={recursive.ToString().ToLowerInvariant()}",
+                content, cancellationToken);
+        }
+        finally
+        {
+            try { File.Delete(archivePath); }
+            catch (IOException) { }
+        }
+    }
+
+    internal static string CreateFolderImportArchive(string sourcePath, bool recursive)
+    {
+        var root = Path.GetFullPath(sourcePath);
+        var audioFiles = Directory.EnumerateFiles(root, "*",
+                recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly)
+            .Where(path => Path.GetExtension(path).Equals(".mp3", StringComparison.OrdinalIgnoreCase) ||
+                           Path.GetExtension(path).Equals(".flac", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (audioFiles.Length == 0)
+            throw new InvalidOperationException("Der gewählte Ordner enthält keine MP3- oder FLAC-Dateien.");
+
+        var included = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var audioPath in audioFiles)
+        {
+            included.Add(audioPath);
+            var directory = Path.GetDirectoryName(audioPath)!;
+            var baseName = Path.GetFileNameWithoutExtension(audioPath);
+            foreach (var candidate in Directory.EnumerateFiles(directory))
+            {
+                var candidateName = Path.GetFileName(candidate);
+                if (candidateName.Equals(baseName + ".lrc", StringComparison.OrdinalIgnoreCase) ||
+                    candidateName.Equals(baseName + ".txt", StringComparison.OrdinalIgnoreCase) ||
+                    candidateName.Equals(baseName + ".cover.jpg", StringComparison.OrdinalIgnoreCase))
+                    included.Add(candidate);
+            }
+        }
+
+        var archivePath = Path.Combine(Path.GetTempPath(), $"neonstage-folder-import-{Guid.NewGuid():N}.zip");
+        try
+        {
+            using var archive = ZipFile.Open(archivePath, ZipArchiveMode.Create);
+            foreach (var filePath in included.OrderBy(path => path, StringComparer.OrdinalIgnoreCase))
+            {
+                var relativePath = Path.GetRelativePath(root, filePath).Replace(Path.DirectorySeparatorChar, '/');
+                var extension = Path.GetExtension(filePath);
+                var compression = extension.Equals(".lrc", StringComparison.OrdinalIgnoreCase) ||
+                                  extension.Equals(".txt", StringComparison.OrdinalIgnoreCase)
+                    ? CompressionLevel.Fastest
+                    : CompressionLevel.NoCompression;
+                archive.CreateEntryFromFile(filePath, relativePath, compression);
+            }
+            return archivePath;
+        }
+        catch
+        {
+            File.Delete(archivePath);
+            throw;
         }
     }
 
@@ -2244,7 +2327,13 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         _mp4ExportCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         try
         {
+            Mp4ExportStatus = "Originalaudio wird lokal für den Export vorbereitet …";
+            _localOriginalUri ??= await _audioCache.GetAsync(SelectedSong.Id, "original",
+                new Uri(ServerAddress, $"/api/songs/{SelectedSong.Id}/audio"),
+                _mp4ExportCancellation.Token);
             var snapshot = CreateStageSongState(false, TimeSpan.Zero);
+            snapshot.exportAudioPath = _localOriginalUri.LocalPath;
+            Mp4ExportStatus = "Unity-Renderer wird für den MP4-Export gestartet …";
             var completedPath = await _stageTest.ExportAsync(snapshot, outputPath,
                 cancellationToken: _mp4ExportCancellation.Token);
             Mp4ExportStatus = "MP4 fertig: " + completedPath;

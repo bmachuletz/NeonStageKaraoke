@@ -18,7 +18,10 @@ public sealed class QueueEntryDto
     public string id = "";
     public SongDto song = new();
     public string requestedBy = "";
+    public string locationId = "";
     public string startedAt = "";
+    public bool singerControlsMix;
+    public double singerMicrophoneVolume = 1;
 }
 
 [Serializable]
@@ -68,6 +71,7 @@ public sealed class OnlineRoomSessionDto
     public string accessToken = "";
     public string expiresAt = "";
     public OnlineParticipantDto[] participants = Array.Empty<OnlineParticipantDto>();
+    public bool allowConversation;
 }
 
 [Serializable]
@@ -77,6 +81,7 @@ public sealed class OnlineRoomStateDto
     public string participantId = "";
     public int role;
     public OnlineParticipantDto[] participants = Array.Empty<OnlineParticipantDto>();
+    public bool allowConversation;
 }
 
 [Serializable]
@@ -86,7 +91,22 @@ public sealed class OnlineJoinRequestDto
     public string participantId = "";
     public string displayName = "";
     public int role;
+    public string password = "";
+    public string locationId = "";
 }
+
+[Serializable]
+public sealed class OnlineStageDto
+{
+    public string roomId = "";
+    public string name = "";
+    public bool hasPassword;
+    public int participantCount;
+    public bool allowConversation;
+}
+
+[Serializable]
+public sealed class OnlineStageListDto { public OnlineStageDto[] items = Array.Empty<OnlineStageDto>(); }
 
 [Serializable]
 public sealed class OnlineRoleRequestDto { public int role; }
@@ -107,7 +127,27 @@ public sealed class KaraokeEventDto
     public string description = "";
     public string stageThemeId = "standard";
     public bool isActive;
+    public bool isOnline;
+    public bool hasOnlinePassword;
+    public bool allowConversation;
 }
+
+[Serializable]
+public sealed class StageLauncherDto
+{
+    public string id = "";
+    public string name = "";
+    public string inviteToken = "";
+    public bool isDirect;
+    public bool isOnline;
+    public bool hasOnlinePassword;
+    public bool hasImage;
+    public string stageThemeId = "standard";
+    [NonSerialized] public UnityEngine.Texture2D? image;
+}
+
+[Serializable]
+public sealed class StageLauncherListDto { public StageLauncherDto[] items = Array.Empty<StageLauncherDto>(); }
 
 [Serializable]
 public sealed class StageReactionDto { public long id; public string type = ""; public string sender = ""; }

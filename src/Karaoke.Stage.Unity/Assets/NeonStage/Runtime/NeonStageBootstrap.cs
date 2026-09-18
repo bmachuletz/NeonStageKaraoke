@@ -19,6 +19,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     // bei älteren Bibliothekseinträgen sicher auf die MP3-Masterspur zurück.
     private const bool PreparedStemsAreUnityCompatible = true;
     private StageAudioEngine _audio = null!;
+    private StageIdleMusic _idleMusic = null!;
     private OnlineStageController? _online;
     private IStageClock _clock = null!;
     private string _server = DefaultServer;
@@ -26,6 +27,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private string? _loadedSongId;
     private string? _loadedQueueEntryId;
     private string? _loadedStartedAt;
+    private string? _completedQueueEntryId;
+    private string? _completedStartedAt;
     private string _title = "NEON STAGE – UNITY AUDIO LAB";
     private string _songTitle = "NEON STAGE";
     private string _songArtist = "UNITY AUDIO LAB";
@@ -40,12 +43,19 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private float _nextTimingReport;
     private bool _timingReportRunning;
     private bool _hasActiveSession;
-    private bool _creatingQuickSession;
+    private bool _activeEventOnline;
     private string? _activeEventId;
-    private bool _initialSessionChecked;
+    private StageLauncherDto[] _launcherStages = Array.Empty<StageLauncherDto>();
+    private readonly Dictionary<string, Texture2D> _launcherImages = new();
+    private bool _launcherLoading;
+    private int _launcherPage;
+    private float _nextLauncherRefresh;
     private bool _exiting;
+    private bool _leavingSession;
+    private int _sessionGeneration;
     private float _musicVolume = 0.85f;
     private float _vocalVolume = 0.35f;
+    private float _microphoneVolume = 1f;
     private readonly StageLyricsEngine _lyrics = new();
     private StageVisualView _visuals = null!;
     private StageVideoView _video = null!;
@@ -63,6 +73,22 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     private Texture2D? _pill;
     private Texture2D? _softGlow;
     private Texture2D? _iconBadge;
+    private Texture2D? _stageSelectionIcon;
+    private Texture2D? _wordmark;
+    private Texture2D? _settingsIcon;
+    private bool _settingsOpen;
+    private int _settingsTab;
+    private bool _settingsAutomaticMicrophones;
+    private readonly List<string> _settingsSelectedMicrophones = new();
+    private string[] _settingsMicrophoneDevices = Array.Empty<string>();
+    private float _nextSettingsDeviceRefresh;
+    private string _settingsServerUrl = string.Empty;
+    private string _settingsLiveKitUrl = string.Empty;
+    private bool _settingsFullscreen;
+    private int _settingsDisplayIndex;
+    private bool _settingsDisplaySelectionChanged;
+    private readonly List<DisplayInfo> _settingsDisplays = new();
+    private string _settingsMessage = string.Empty;
     private readonly StagePointerInput _pointer = new();
     private bool _editorTestMode;
     private bool _editorExportMode;
@@ -100,6 +126,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         if (FindAnyObjectByType<AudioListener>() == null)
             gameObject.AddComponent<AudioListener>();
         _server = ResolveServer();
+        LoadSettingsDraft();
+        ApplySavedDisplaySettings();
         Debug.Log($"Neon Stage server: {_server}");
         _controllerId = PlayerPrefs.GetString("NeonStage.ControllerId", "");
         if (!Guid.TryParse(_controllerId, out _))
@@ -109,6 +137,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             PlayerPrefs.Save();
         }
         _audio = gameObject.AddComponent<StageAudioEngine>();
+        _idleMusic = gameObject.AddComponent<StageIdleMusic>();
         _audio.ConfigureOutputLatencySeconds(ResolveOutputLatencySeconds());
         _clock = new AudioStageClock(_audio);
         _audio.PlaybackEnded += HandlePlaybackEnded;
@@ -122,6 +151,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         if (TryGetEditorTestSettings(out var testHost, out var testPort, out var testSession, out var testToken))
         {
             _editorTestMode = true;
+            _idleMusic.SetIdle(false, immediate: true);
             Screen.fullScreenMode = FullScreenMode.Windowed;
             Screen.SetResolution(1280, 720, FullScreenMode.Windowed);
             _hasActiveSession = true;
@@ -132,10 +162,10 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             return;
         }
         _online = gameObject.AddComponent<OnlineStageController>();
-        _online.Initialize(_server, _audio);
+        _online.Initialize(_server, _audio, _controllerId);
         _online.RoleChanged += HandleOnlineRoleChanged;
-        _ = _visuals.LoadQrAsync(_server);
-        _ = ClaimControlAsync();
+        _online.StageLeaveRequested += HandleStageLeaveRequested;
+        _clock = new OnlineSynchronizedStageClock(_audio, _online);
         StartCoroutine(PollQueue());
     }
 
@@ -257,22 +287,16 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             // A transport command owns the playback state until the server has
             // acknowledged it. Otherwise the one-second poll can immediately
             // undo the local pause/resume feedback with an older server state.
-            if (!_commandRunning && !(_online?.IsListener ?? false)) _ = RefreshQueueAsync();
+            if (!_commandRunning) _ = RefreshQueueAsync();
             yield return new WaitForSecondsRealtime(1f);
         }
     }
 
     private void HandleOnlineRoleChanged(NeonStage.Online.OnlineRole role)
     {
-        if (role != NeonStage.Online.OnlineRole.Listener) return;
-        _audio.Stop();
-        _video.Stop();
-        _lyrics.SetVideoBackground(false);
-        // A later Singer handoff must reload and seek the current song instead
-        // of resuming a clip that was deliberately stopped in Listener mode.
-        _loadedSongId = null;
-        _loadedQueueEntryId = null;
-        _loadedStartedAt = null;
+        // Listener stages retain the local transport solely as a synchronized
+        // clock for lyrics, video and visuals. Only the LiveKit track is audible.
+        _audio.LocalOutputMuted = role == NeonStage.Online.OnlineRole.Listener;
     }
 
     private void Update()
@@ -288,7 +312,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         if (Input.GetKeyDown(KeyCode.Escape))
         {
             if (_editorTestMode) { Application.Quit(); return; }
-            _ = ExitStageAsync();
+            if (_hasActiveSession) _ = ReturnToLauncherAsync();
+            else _ = ExitStageAsync();
             return;
         }
         // The opaque audio-reactive backdrop uses its own shader render queue.
@@ -299,7 +324,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         if (!videoBackgroundMode && Time.unscaledTime >= _nextQrRefresh)
         {
             _nextQrRefresh = Time.unscaledTime + 15f;
-            _ = _visuals.LoadQrAsync(_server, true);
+            _ = _visuals.LoadQrAsync(_server, _controllerId, _activeEventId, force: true);
         }
         _visuals.SetVideoPerformanceMode(videoBackgroundMode);
         _lyrics.SetVideoPerformanceMode(Application.platform == RuntimePlatform.Android && videoBackgroundMode);
@@ -527,81 +552,35 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
     private async Task RefreshQueueAsync()
     {
-        if (_online?.IsListener == true)
-        {
-            _audio.Stop();
-            return;
-        }
         if (_refreshing) return;
         _refreshing = true;
+        var sessionGeneration = _sessionGeneration;
+        var eventId = _activeEventId;
         try
         {
-            using (var eventRequest = UnityWebRequest.Get($"{_server}/api/events/active"))
+            if (!_hasActiveSession || string.IsNullOrWhiteSpace(_activeEventId))
             {
-                await eventRequest.SendWebRequest();
-                if (eventRequest.result != UnityWebRequest.Result.Success)
-                {
-                    // A sleeping Android Wi-Fi stack or a brief server restart
-                    // is not evidence that the event was deactivated. Preserve
-                    // the complete paused stage unless the server explicitly
-                    // answers 404.
-                    if (eventRequest.responseCode != 404)
-                    {
-                        _status = StageLocale.Text("Verbindung unterbrochen – Session bleibt erhalten",
-                            "Connection interrupted – keeping session");
-                        return;
-                    }
-                    _initialSessionChecked = true;
-                    _hasActiveSession = false;
-                    _visuals.SetSessionActive(false);
-                    _visuals.SetStageTheme("standard");
-                    _lyrics.SetStageTheme("standard");
-                    _activeEventId = null;
-                    _loadedSongId = null;
-                    _video.Stop();
-                    _lyrics.SetVideoBackground(false);
-                    _loadedQueueEntryId = null;
-                    _loadedStartedAt = null;
-                    if (_audio.IsPlaying) _audio.Pause();
-                    _songTitle = "NEON STAGE";
-                    _songArtist = StageLocale.Text("BEREIT FÜR DEINE PARTY", "READY FOR YOUR PARTY");
-                    _status = StageLocale.Text("Keine Session aktiv", "No active session");
-                    return;
-                }
-                var activeEvent = JsonUtility.FromJson<KaraokeEventDto>(eventRequest.downloadHandler.text);
-                if (!_initialSessionChecked)
-                {
-                    _initialSessionChecked = true;
-                    var isStageQuickSession = activeEvent != null &&
-                        (activeEvent.description == "Spontane Karaoke-Session" ||
-                         activeEvent.description == "Spontane Karaoke-Session (Bühne)");
-                    if (isStageQuickSession)
-                    {
-                        await DeactivateEventAsync(activeEvent!.id);
-                        _hasActiveSession = false;
-                        _visuals.SetSessionActive(false);
-                        _activeEventId = null;
-                        return;
-                    }
-                }
-                _hasActiveSession = activeEvent != null;
-                _visuals.SetSessionActive(_hasActiveSession);
-                _visuals.SetStageTheme(activeEvent?.stageThemeId ?? "standard");
-                _lyrics.SetStageTheme(activeEvent?.stageThemeId ?? "standard");
-                if (activeEvent != null && _activeEventId != activeEvent.id)
-                {
-                    _activeEventId = activeEvent.id;
-                    _lastReactionId = 0;
-                    _loadedSongId = null;
-                    _loadedQueueEntryId = null;
-                    _loadedStartedAt = null;
-                    _songTitle = activeEvent.name;
-                    _songArtist = StageLocale.Text("SESSION BEREIT", "SESSION READY");
-                    _ = _visuals.LoadQrAsync(_server, true);
-                }
+                _idleMusic.SetIdle(true);
+                await LoadLauncherStagesAsync();
+                return;
             }
-            using var request = UnityWebRequest.Get($"{_server}/api/queue");
+            if (_activeEventOnline && !(_online?.IsConnectedToEvent(_activeEventId) ?? false))
+            {
+                _idleMusic.SetIdle(true);
+                if (_audio.IsPlaying) _audio.Pause();
+                _video.Stop();
+                _lyrics.SetVideoBackground(false);
+                _loadedSongId = null;
+                _loadedQueueEntryId = null;
+                _loadedStartedAt = null;
+                _status = StageLocale.Text(
+                    "Online-Stage aktiv – über das Online-Symbol beitreten",
+                    "Online stage active – join from the online panel");
+                return;
+            }
+            using var request = UnityWebRequest.Get(StageUrl("/api/queue"));
             await request.SendWebRequest();
+            if (sessionGeneration != _sessionGeneration || eventId != _activeEventId) return;
             if (request.result != UnityWebRequest.Result.Success)
             {
                 _status = $"Serverfehler {request.responseCode}: {request.error}";
@@ -610,12 +589,38 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
             var state = JsonUtility.FromJson<PlaybackStateDto>(request.downloadHandler.text);
             var current = state?.current;
+            var songIsTakingOver = current?.song != null &&
+                ((state?.isRunning == true && state.isPaused == false) ||
+                 !string.IsNullOrWhiteSpace(_loadedSongId));
+            _idleMusic.SetIdle(!songIsTakingOver);
+            _online?.SynchronizePlaybackOwner(current?.locationId,
+                current?.song != null, current?.id);
+            _online?.ConfigureListenerMixPolicy(current?.singerControlsMix == true,
+                current?.singerMicrophoneVolume ?? 1);
+            _online?.SynchronizeConversationMode(state?.isRunning == true &&
+                state.isPaused == false && current?.song != null);
 
             // A poll that started just before a mouse click may still complete
             // while the command is in flight. It may update passive metadata,
             // but it must not apply its stale transport state or reload a song.
             if (_commandRunning && !string.IsNullOrWhiteSpace(_optimisticPlaybackCommand))
                 return;
+
+            var completedPoll = current?.song != null && current.id == _completedQueueEntryId &&
+                string.Equals(current.startedAt, _completedStartedAt, StringComparison.Ordinal);
+            if (completedPoll)
+            {
+                _idleMusic.SetIdle(true);
+                _status = StageLocale.Text("Titel beendet – warte auf Warteliste …",
+                    "Song finished – waiting for queue …");
+                return;
+            }
+            if (current?.song == null || current.id != _completedQueueEntryId ||
+                !string.Equals(current.startedAt, _completedStartedAt, StringComparison.Ordinal))
+            {
+                _completedQueueEntryId = null;
+                _completedStartedAt = null;
+            }
 
             var playbackChanged = current?.song != null &&
                 (_loadedQueueEntryId != current.id ||
@@ -624,9 +629,11 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                 _visuals.BeginSongTransition(current.song, _songTitle, _songArtist);
             var nextEntry = state?.queue is { Length: > 0 } ? state.queue[0] : null;
             await _visuals.SetNextAsync(_server, nextEntry);
+            if (sessionGeneration != _sessionGeneration || eventId != _activeEventId) return;
             if (nextEntry?.song != null) _ = _video.PrefetchAsync(_server, nextEntry.song.id);
             if (state == null || current?.song == null)
             {
+                _idleMusic.SetIdle(true);
                 _loadedSongId = null;
                 _video.Stop();
                 _lyrics.SetVideoBackground(false);
@@ -649,7 +656,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
             if (!playbackChanged)
             {
-                if (_audio.HasEnded)
+                if (_audio.HasEnded && !(_online?.IsListener ?? false))
                 {
                     _status = StageLocale.Text("Titel beendet – nächster Song wird gestartet …", "Song finished – starting next song …");
                     _ = CompletePlaybackAndAdvanceAsync();
@@ -660,23 +667,25 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                 return;
             }
 
-            _loadedSongId = current.song.id;
+            var selectedSongId = current.song.id;
+            _loadedSongId = selectedSongId;
             _loadedQueueEntryId = current.id;
             _loadedStartedAt = current.startedAt;
             _status = StageLocale.Text("Prüfe vorbereitete Karaoke-Spuren …", "Checking prepared karaoke stems …");
-            var lyricsTask = _lyrics.LoadAsync(_server, _loadedSongId);
-            var coverTask = _visuals.LoadCoverAsync(_server, _loadedSongId);
-            var videoTask = _video.LoadAsync(_server, _loadedSongId);
-            var stemsTask = GetStemsAsync(_loadedSongId);
+            var lyricsTask = _lyrics.LoadAsync(_server, selectedSongId);
+            var coverTask = _visuals.LoadCoverAsync(_server, selectedSongId);
+            var videoTask = _video.LoadAsync(_server, selectedSongId);
+            var stemsTask = GetStemsAsync(selectedSongId);
             await Task.WhenAll(lyricsTask, coverTask, videoTask, stemsTask);
+            if (sessionGeneration != _sessionGeneration || eventId != _activeEventId) return;
             _lyrics.SetVideoBackground(_video.Active);
             var stems = await stemsTask;
             var useStems = PreparedStemsAreUnityCompatible && stems.hasInstrumental;
             var master = useStems
-                ? $"{_server}/api/songs/{_loadedSongId}/stems/instrumental?format=ogg"
-                : $"{_server}/api/songs/{_loadedSongId}/audio";
+                ? $"{_server}/api/songs/{selectedSongId}/stems/instrumental?format=ogg"
+                : $"{_server}/api/songs/{selectedSongId}/audio";
             var vocals = useStems && stems.hasVocals
-                ? $"{_server}/api/songs/{_loadedSongId}/stems/vocals?format=ogg"
+                ? $"{_server}/api/songs/{selectedSongId}/stems/vocals?format=ogg"
                 : null;
             try
             {
@@ -687,12 +696,19 @@ public sealed class NeonStageBootstrap : MonoBehaviour
                 // Unitys Decoder-Unterstützung für FLAC ist geräteabhängig. Der
                 // ARM32-Prototyp muss trotzdem beweisen können, dass Unity-Audio läuft.
                 _status = StageLocale.Text("Stem-Decoder nicht verfügbar – MP3-Fallback wird gestartet …", "Stem decoder unavailable – starting MP3 fallback …");
-                await _audio.PlayAsync($"{_server}/api/songs/{_loadedSongId}/audio", null);
+                await _audio.PlayAsync($"{_server}/api/songs/{selectedSongId}/audio", null);
+            }
+            if (sessionGeneration != _sessionGeneration || eventId != _activeEventId)
+            {
+                _audio.Stop();
+                return;
             }
             _status = _audio.Status;
         }
         catch (Exception exception)
         {
+            if (sessionGeneration != _sessionGeneration || eventId != _activeEventId) return;
+            if (!_audio.IsPlaying) _idleMusic.SetIdle(true);
             _status = $"Audiofehler: {exception.Message}";
             _loadedSongId = null;
             _video.Stop();
@@ -706,13 +722,17 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         }
     }
 
-    private void HandlePlaybackEnded() => _ = CompletePlaybackAndAdvanceAsync();
+    private void HandlePlaybackEnded()
+    {
+        if (!(_online?.IsListener ?? false)) _ = CompletePlaybackAndAdvanceAsync();
+    }
 
     private async Task CompletePlaybackAndAdvanceAsync()
     {
         if (_autoAdvanceRunning || string.IsNullOrWhiteSpace(_loadedQueueEntryId)) return;
         _autoAdvanceRunning = true;
         var completedEntryId = _loadedQueueEntryId;
+        var completedStartedAt = _loadedStartedAt;
         try
         {
             _status = StageLocale.Text("Titel beendet – nächster Song wird gestartet …", "Song finished – starting next song …");
@@ -724,7 +744,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             }
 
             var payload = $"{{\"queueEntryId\":\"{completedEntryId}\"}}";
-            using var request = CreateJsonPost($"{_server}/api/playback/complete", payload, true);
+            using var request = CreateJsonPost(StageUrl("/api/playback/complete"), payload, true);
             await request.SendWebRequest();
             if (request.result != UnityWebRequest.Result.Success)
             {
@@ -736,6 +756,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             // identity makes consecutive requests for the same song reload too.
             if (_loadedQueueEntryId == completedEntryId)
             {
+                _completedQueueEntryId = completedEntryId;
+                _completedStartedAt = completedStartedAt;
                 _loadedSongId = null;
                 _loadedQueueEntryId = null;
                 _loadedStartedAt = null;
@@ -777,6 +799,157 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             : new StemAvailabilityDto();
     }
 
+    private string StageUrl(string path) => string.IsNullOrWhiteSpace(_activeEventId)
+        ? $"{_server}{path}"
+        : $"{_server}{path}?eventId={UnityWebRequest.EscapeURL(_activeEventId)}";
+
+    private async Task LoadLauncherStagesAsync()
+    {
+        if (_launcherLoading || Time.unscaledTime < _nextLauncherRefresh) return;
+        _launcherLoading = true;
+        _nextLauncherRefresh = Time.unscaledTime + 5f;
+        try
+        {
+            using var request = UnityWebRequest.Get($"{_server}/api/stages");
+            request.timeout = 5;
+            await request.SendWebRequest();
+            if (request.result != UnityWebRequest.Result.Success)
+            {
+                if (request.responseCode == 404 && await LoadLegacyDirectStageAsync())
+                {
+                    _status = StageLocale.Text("Direkt-Stage bereit · Server bitte aktualisieren",
+                        "Direct Stage ready · please update the server");
+                    return;
+                }
+                _status = StageLocale.Text("Stage-Liste konnte nicht geladen werden", "Could not load stages");
+                return;
+            }
+            var result = JsonUtility.FromJson<StageLauncherListDto>(request.downloadHandler.text);
+            _launcherStages = result?.items ?? Array.Empty<StageLauncherDto>();
+            foreach (var stage in _launcherStages)
+                if (_launcherImages.TryGetValue(stage.id, out var cached)) stage.image = cached;
+                else if (stage.hasImage) _ = LoadLauncherImageAsync(stage);
+            _status = StageLocale.Text("Stage auswählen", "Select a stage");
+        }
+        finally { _launcherLoading = false; }
+    }
+
+    private async Task<bool> LoadLegacyDirectStageAsync()
+    {
+        using var request = UnityWebRequest.Get($"{_server}/api/events/active");
+        request.timeout = 5;
+        await request.SendWebRequest();
+        if (request.result != UnityWebRequest.Result.Success) return false;
+        var active = JsonUtility.FromJson<KaraokeEventDto>(request.downloadHandler.text);
+        if (active == null || string.IsNullOrWhiteSpace(active.id)) return false;
+        _launcherStages = new[]
+        {
+            new StageLauncherDto
+            {
+                id = active.id,
+                name = string.IsNullOrWhiteSpace(active.name) ? "Direkt-Stage" : active.name,
+                inviteToken = active.inviteToken,
+                isDirect = true,
+                isOnline = active.isOnline,
+                hasOnlinePassword = active.hasOnlinePassword,
+                stageThemeId = active.stageThemeId
+            }
+        };
+        return true;
+    }
+
+    private async Task LoadLauncherImageAsync(StageLauncherDto stage)
+    {
+        using var request = UnityWebRequestTexture.GetTexture($"{_server}/api/events/{stage.id}/image", true);
+        await request.SendWebRequest();
+        if (request.result == UnityWebRequest.Result.Success)
+        {
+            stage.image = DownloadHandlerTexture.GetContent(request);
+            if (stage.image != null) _launcherImages[stage.id] = stage.image;
+        }
+    }
+
+    private void SelectLauncherStage(StageLauncherDto stage)
+    {
+        _sessionGeneration++;
+        _idleMusic.SetIdle(true);
+        _activeEventId = stage.id;
+        _activeEventOnline = stage.isOnline;
+        _hasActiveSession = true;
+        _lastReactionId = 0;
+        _visuals.SetSessionActive(true);
+        _visuals.SetStageTheme(stage.stageThemeId);
+        _lyrics.SetStageTheme(stage.stageThemeId);
+        _songTitle = stage.name;
+        _songArtist = stage.isDirect
+            ? StageLocale.Text("DIREKTE BÜHNE", "DIRECT STAGE")
+            : StageLocale.Text("SESSION BEREIT", "SESSION READY");
+        _status = stage.isOnline
+            ? StageLocale.Text("Online-Stage gewählt – jetzt online verbinden", "Online stage selected – connect now")
+            : StageLocale.Text("Stage bereit", "Stage ready");
+        _online?.ConfigureLauncherStage(stage.id, stage.isOnline);
+        _ = _visuals.LoadQrAsync(_server, _controllerId, _activeEventId, force: true);
+        _ = ClaimControlAsync();
+        _ = RefreshQueueAsync();
+    }
+
+    private void HandleStageLeaveRequested() => _ = ReturnToLauncherAsync();
+
+    private async Task ReturnToLauncherAsync()
+    {
+        if (_leavingSession || !_hasActiveSession) return;
+        _leavingSession = true;
+        _sessionGeneration++;
+        var eventId = _activeEventId;
+        try
+        {
+            if (_ownsControl && !string.IsNullOrWhiteSpace(eventId))
+            {
+                using var release = UnityWebRequest.Delete(
+                    $"{_server}/api/playback/controller?eventId={UnityWebRequest.EscapeURL(eventId)}");
+                release.SetRequestHeader("X-Karaoke-Controller", _controllerId);
+                release.timeout = 3;
+                await release.SendWebRequest();
+            }
+            if (_online != null) await _online.LeaveStageAsync();
+        }
+        catch (Exception exception)
+        {
+            Debug.LogWarning("[Stage] cleanup while leaving failed: " + exception.Message);
+        }
+        finally
+        {
+            _audio.Stop();
+            _idleMusic.SetIdle(true);
+            _audio.LocalOutputMuted = false;
+            _video.Stop();
+            _lyrics.Clear();
+            _lyrics.SetVideoBackground(false);
+            _reactions.Clear();
+            _visuals.SetVideoPerformanceMode(false);
+            _visuals.SetSessionActive(false);
+            _playbackCommands.Clear();
+            _optimisticPlaybackCommand = null;
+            _ownsControl = false;
+            _activeEventId = null;
+            _activeEventOnline = false;
+            _hasActiveSession = false;
+            _loadedSongId = null;
+            _loadedQueueEntryId = null;
+            _loadedStartedAt = null;
+            _completedQueueEntryId = null;
+            _completedStartedAt = null;
+            _lastReactionId = 0;
+            _songTitle = "NEON STAGE";
+            _songArtist = StageLocale.Text("STAGE-AUSWAHL", "STAGE SELECT");
+            _status = StageLocale.Text("Stage auswählen", "Select a stage");
+            _launcherPage = 0;
+            _nextLauncherRefresh = 0;
+            _leavingSession = false;
+            _ = LoadLauncherStagesAsync();
+        }
+    }
+
     private async Task ClaimControlAsync(bool force = false)
     {
         var payload = JsonUtility.ToJson(new PlaybackControllerRequestDto
@@ -785,7 +958,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             clientName = $"Neon Stage Unity ({SystemInfo.deviceName})",
             force = force
         });
-        using var request = CreateJsonPost($"{_server}/api/playback/controller/claim", payload, false);
+        using var request = CreateJsonPost(StageUrl("/api/playback/controller/claim"), payload, false);
         request.timeout = 4;
         await request.SendWebRequest();
         if (request.result != UnityWebRequest.Result.Success)
@@ -799,6 +972,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
     private void RequestPlaybackCommand(string command)
     {
+        if (_online?.IsListener == true) return;
         // Give mouse/touch input immediate audible feedback. Network ownership
         // and persistence are processed in order below; clicks are no longer
         // silently discarded while a previous request is running.
@@ -833,7 +1007,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             {
                 var command = _playbackCommands.Dequeue();
                 _optimisticPlaybackCommand = command;
-                using var request = CreateJsonPost($"{_server}/api/playback/{command}", "{}", true);
+                using var request = CreateJsonPost(StageUrl($"/api/playback/{command}"), "{}", true);
                 request.timeout = 5;
                 await request.SendWebRequest();
                 if (request.result == UnityWebRequest.Result.Success) continue;
@@ -867,7 +1041,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
     private async Task SeekAsync(double seconds)
     {
-        if (_commandRunning || string.IsNullOrWhiteSpace(_loadedSongId)) return;
+        if (_online?.IsListener == true || _commandRunning || string.IsNullOrWhiteSpace(_loadedSongId)) return;
         _audio.Seek(seconds);
         _commandRunning = true;
         try
@@ -882,7 +1056,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             if (string.IsNullOrWhiteSpace(entryId)) return;
             var time = TimeSpan.FromSeconds(seconds);
             var payload = $"{{\"queueEntryId\":\"{entryId}\",\"position\":\"{time:c}\"}}";
-            using var request = CreateJsonPost($"{_server}/api/playback/position", payload, true);
+            using var request = CreateJsonPost(StageUrl("/api/playback/position"), payload, true);
             await request.SendWebRequest();
             if (request.result != UnityWebRequest.Result.Success) _status = $"Seek fehlgeschlagen ({request.responseCode})";
         }
@@ -891,7 +1065,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
     private async Task<string?> GetCurrentEntryIdAsync()
     {
-        using var request = UnityWebRequest.Get($"{_server}/api/queue");
+        using var request = UnityWebRequest.Get(StageUrl("/api/queue"));
         await request.SendWebRequest();
         if (request.result != UnityWebRequest.Result.Success) return null;
         return JsonUtility.FromJson<PlaybackStateDto>(request.downloadHandler.text)?.current?.id;
@@ -908,74 +1082,14 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         return request;
     }
 
-    private async Task CreateQuickSessionAsync()
+    private Task ExitStageAsync()
     {
-        if (_creatingQuickSession) return;
-        _creatingQuickSession = true;
-        try
-        {
-            var now = DateTimeOffset.Now;
-            var name = $"{StageLocale.Text("Sofort-Session", "Instant session")} · {now:g}";
-            var payload = JsonUtility.ToJson(new CreateKaraokeEventDto
-            {
-                name = name,
-                startsAt = now.ToString("O"),
-                description = "Spontane Karaoke-Session (Bühne)",
-                stageThemeId = "standard"
-            });
-            using var create = CreateJsonPost($"{_server}/api/events", payload, false);
-            await create.SendWebRequest();
-            if (create.result != UnityWebRequest.Result.Success)
-            {
-                _status = $"{StageLocale.Text("Session konnte nicht erstellt werden", "Could not create session")} ({create.responseCode})";
-                return;
-            }
-            var created = JsonUtility.FromJson<KaraokeEventDto>(create.downloadHandler.text);
-            if (created == null || string.IsNullOrWhiteSpace(created.id)) return;
-            using var activate = CreateJsonPost($"{_server}/api/events/{created.id}/activate", "{}", false);
-            await activate.SendWebRequest();
-            if (activate.result != UnityWebRequest.Result.Success)
-            {
-                _status = $"{StageLocale.Text("Session konnte nicht aktiviert werden", "Could not activate session")} ({activate.responseCode})";
-                return;
-            }
-            _activeEventId = created.id;
-            _hasActiveSession = true;
-            _visuals.SetSessionActive(true);
-            _songTitle = created.name;
-            _songArtist = StageLocale.Text("SESSION BEREIT", "SESSION READY");
-            _status = StageLocale.Text("Sofort-Session gestartet", "Instant session started");
-            _ = _visuals.LoadQrAsync(_server, true);
-        }
-        catch (Exception exception) { _status = $"{StageLocale.Text("Sessionfehler", "Session error")}: {exception.Message}"; }
-        finally { _creatingQuickSession = false; }
-    }
-
-    private async Task DeactivateEventAsync(string eventId)
-    {
-        if (string.IsNullOrWhiteSpace(eventId)) return;
-        using var request = CreateJsonPost($"{_server}/api/events/{eventId}/deactivate", "{}", false);
-        await request.SendWebRequest();
-    }
-
-    private async Task ExitStageAsync()
-    {
-        if (_exiting) return;
+        if (_exiting) return Task.CompletedTask;
         _exiting = true;
-        var eventId = _activeEventId;
-        if (!string.IsNullOrWhiteSpace(eventId))
-        {
-            using var active = UnityWebRequest.Get($"{_server}/api/events/active");
-            await active.SendWebRequest();
-            if (active.result == UnityWebRequest.Result.Success)
-            {
-                var item = JsonUtility.FromJson<KaraokeEventDto>(active.downloadHandler.text);
-                if (item != null && item.id == eventId && item.description == "Spontane Karaoke-Session (Bühne)")
-                    await DeactivateEventAsync(eventId);
-            }
-        }
+        _idleMusic.SetIdle(false, immediate: true);
         _audio.Stop();
         Application.Quit();
+        return Task.CompletedTask;
     }
 
     private void OnGUI()
@@ -996,18 +1110,23 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         if (!_hasActiveSession)
         {
             DrawSessionLauncher(width, height);
-            DrawOnlineGui();
+            DrawSettingsLauncherButton(width, height, scale);
+            if (_settingsOpen) DrawSettingsPanel(scale);
             return;
         }
+        if (!_editorTestMode && DrawStageSelectionButton(scale)) _ = ReturnToLauncherAsync();
         GUI.color = Color.white;
-        var titleStyle = new GUIStyle(GUI.skin.label) { fontSize = 28, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
-        titleStyle.normal.textColor = new Color(0.87f, 1f, 0.05f);
         if (!_visuals.IsSongTransitioning)
         {
-            GUI.Label(new Rect(40, 21, width - 80, 42), _songTitle, titleStyle);
-            var artistStyle = new GUIStyle(titleStyle) { fontSize = 19 };
+            DrawArcadeTitle(new Rect(118, 12, width - 386, 52), _songTitle);
+            var artistStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 18,
+                alignment = TextAnchor.MiddleCenter,
+                fontStyle = FontStyle.BoldAndItalic
+            };
             artistStyle.normal.textColor = new Color(.92f, .86f, .97f);
-            GUI.Label(new Rect(40, 57, width - 80, 28), _songArtist, artistStyle);
+            GUI.Label(new Rect(118, 59, width - 386, 27), _songArtist, artistStyle);
         }
         var controlsY = height - 158;
 
@@ -1015,6 +1134,69 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         GUI.Box(new Rect(0, controlsY, width, 158), GUIContent.none);
         DrawSolid(new Rect(0, controlsY, width, 2), new Color(1f, .2f, .72f, .55f));
         GUI.color = Color.white;
+        if (_online?.IsListener == true)
+        {
+            var listenerStyle = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = 19,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleCenter
+            };
+            listenerStyle.normal.textColor = new Color(.72f, .82f, .9f);
+            GUI.Label(new Rect(40, controlsY + 5, width - 80, 32),
+                _online.IsConversationActive
+                    ? StageLocale.Text("PAUSEN-GESPRÄCH · DEIN MIKROFON IST FREIGEGEBEN",
+                        "PAUSE CONVERSATION · YOUR MICROPHONE IS LIVE")
+                    : StageLocale.Text("ONLINE-ZUHÖRER · Steuerung am Sänger-Standort",
+                        "ONLINE LISTENER · Controls are available at the singer location"), listenerStyle);
+            var listenerInfo = new GUIStyle(listenerStyle) { fontSize = 13, fontStyle = FontStyle.Normal };
+            listenerInfo.normal.textColor = new Color(.64f, .55f, .7f);
+            GUI.Label(new Rect(40, controlsY + 128, width - 80, 24),
+                $"{_clock.Capture().PositionSeconds:0.0}s · LiveKit A/V-Sync {_online.RemoteLatencySeconds * 1000:0} ms · {_server}",
+                listenerInfo);
+
+            var mixLabel = new GUIStyle(listenerInfo)
+            {
+                fontSize = 12,
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleLeft
+            };
+            mixLabel.normal.textColor = new Color(.86f, .8f, .92f);
+            var listenerMatrix = GUI.matrix;
+            GUI.matrix = Matrix4x4.identity;
+            var musicLabelRect = ToScreenRect(new Rect(50, controlsY + 49, 105, 24), scale);
+            var musicSliderRect = ToScreenRect(new Rect(155, controlsY + 46, 225, 30), scale);
+            var rightX = Mathf.Max(430, width - 455);
+            var vocalLabelRect = ToScreenRect(new Rect(rightX, controlsY + 42, 130, 24), scale);
+            var vocalSliderRect = ToScreenRect(new Rect(rightX + 135, controlsY + 39, 245, 30), scale);
+            var microphoneLabelRect = ToScreenRect(new Rect(rightX, controlsY + 87, 130, 24), scale);
+            var microphoneSliderRect = ToScreenRect(new Rect(rightX + 135, controlsY + 84, 245, 30), scale);
+            var screenMixLabel = ScaleInteractiveStyle(mixLabel, scale);
+            if (_online.ListenerMixLocked)
+            {
+                _musicVolume = .85f;
+                _vocalVolume = .35f;
+                _microphoneVolume = _online.LockedMicrophoneVolume;
+                GUI.Label(ToScreenRect(new Rect(50, controlsY + 24, width - 100, 20), scale),
+                    StageLocale.Text("Mix wird vom Singer vorgegeben", "Mix is controlled by the singer"),
+                    screenMixLabel);
+                GUI.enabled = false;
+            }
+            GUI.Label(musicLabelRect, StageLocale.Text("MUSIK", "MUSIC"), screenMixLabel);
+            _musicVolume = DrawNeonSlider("listener-music-volume", musicSliderRect,
+                _musicVolume, new Color(.87f, 1f, .05f), scale);
+            GUI.Label(vocalLabelRect, StageLocale.Text("ORIGINALVOCALS", "ORIGINAL VOCALS"), screenMixLabel);
+            _vocalVolume = DrawNeonSlider("listener-vocal-volume", vocalSliderRect,
+                _vocalVolume, new Color(1f, .25f, .75f), scale);
+            GUI.Label(microphoneLabelRect, StageLocale.Text("LIVE-MIKRO", "LIVE MICROPHONE"), screenMixLabel);
+            _microphoneVolume = DrawNeonSlider("listener-microphone-volume", microphoneSliderRect,
+                _microphoneVolume, new Color(.25f, .85f, 1f), scale);
+            GUI.enabled = true;
+            _online.SetListenerMix(_musicVolume, _vocalVolume, _microphoneVolume);
+            GUI.matrix = listenerMatrix;
+            DrawOnlineGui();
+            return;
+        }
         var buttonStyle = new GUIStyle(GUI.skin.button)
         {
             fontSize = 28,
@@ -1088,30 +1270,423 @@ public sealed class NeonStageBootstrap : MonoBehaviour
     {
         var heading = new GUIStyle(GUI.skin.label) { fontSize = 42, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
         heading.normal.textColor = new Color(.87f, 1f, .05f);
-        GUI.Label(new Rect(40, height * .18f, width - 80, 60), "NEON STAGE", heading);
+        if (_wordmark != null)
+            GUI.DrawTexture(new Rect(width * .5f - 250, 3, 500, 110),
+                _wordmark, ScaleMode.ScaleToFit, true);
+        else
+            GUI.Label(new Rect(40, 28, width - 80, 66), "NEON STAGE", heading);
         var sub = new GUIStyle(heading) { fontSize = 18, fontStyle = FontStyle.Normal };
         sub.normal.textColor = new Color(1f, .3f, .78f);
-        GUI.Label(new Rect(40, height * .18f + 58, width - 80, 35), StageLocale.Text("Keine Karaoke-Session aktiv", "No active karaoke session"), sub);
-        var buttonRect = new Rect(width * .5f - 220, height * .5f - 70, 440, 140);
-        GUI.color = new Color(.87f, 1f, .05f, .18f);
-        GUI.DrawTexture(new Rect(buttonRect.x - 24, buttonRect.y - 24, buttonRect.width + 48, buttonRect.height + 48), _softGlow!, ScaleMode.StretchToFill, true);
-        GUI.color = Color.white;
-        var button = new GUIStyle(GUI.skin.button) { fontSize = 28, fontStyle = FontStyle.Bold, alignment = TextAnchor.MiddleCenter, wordWrap = true };
+        DrawArcadeLabel(new Rect(40, 104, width - 80, 34),
+            StageLocale.Text("WÄHLE DEINE BÜHNE", "SELECT YOUR STAGE"),
+            14, 24, 1.35f, 3f);
+        var button = new GUIStyle(GUI.skin.button) { fontSize = 18, fontStyle = FontStyle.Bold, alignment = TextAnchor.LowerCenter, wordWrap = true };
         button.normal.background = _controlButtonHover;
         button.hover.background = _controlButtonActive;
         button.active.background = _controlButtonActive;
         button.normal.textColor = new Color(.94f, 1f, .72f);
-        GUI.enabled = !_creatingQuickSession;
-        if (DrawScreenSpaceButton(buttonRect,
-                _creatingQuickSession
-                    ? StageLocale.Text("SESSION WIRD GESTARTET …", "STARTING SESSION …")
-                    : StageLocale.Text("SOFORT-SESSION\nSTARTEN", "START INSTANT\nSESSION"),
-                button, Mathf.Max(1f, Mathf.Min(Screen.width / 1280f, Screen.height / 720f))))
-            _ = CreateQuickSessionAsync();
-        GUI.enabled = true;
+        var columns = Mathf.Clamp(Mathf.FloorToInt((width - 80) / 280), 1, 4);
+        var cardWidth = Mathf.Min(250, (width - 80 - (columns - 1) * 20) / columns);
+        const float cardHeight = 205;
+        var rows = Mathf.Max(1, Mathf.FloorToInt((height - 190) / (cardHeight + 20)));
+        var pageSize = columns * rows;
+        var pageCount = Mathf.Max(1, Mathf.CeilToInt(_launcherStages.Length / (float)pageSize));
+        _launcherPage = Mathf.Clamp(_launcherPage, 0, pageCount - 1);
+        var firstStage = _launcherPage * pageSize;
+        var lastStage = Mathf.Min(_launcherStages.Length, firstStage + pageSize);
+        var totalWidth = columns * cardWidth + (columns - 1) * 20;
+        var startX = (width - totalWidth) * .5f;
+        for (var index = firstStage; index < lastStage; index++)
+        {
+            var stage = _launcherStages[index];
+            var pageIndex = index - firstStage;
+            var row = pageIndex / columns;
+            var column = pageIndex % columns;
+            var card = new Rect(startX + column * (cardWidth + 20), 148 + row * (cardHeight + 20), cardWidth, cardHeight);
+            var screenCard = ToScreenRect(card, Mathf.Max(1f, Mathf.Min(Screen.width / 1280f, Screen.height / 720f)));
+            var hovered = screenCard.Contains(_pointer.Position);
+            DrawLauncherCardFrame(card, stage.isDirect, stage.isOnline, hovered);
+            var imageRect = new Rect(card.x + 9, card.y + 9, card.width - 18, 133);
+            if (stage.image != null) GUI.DrawTexture(imageRect, stage.image, ScaleMode.ScaleAndCrop, true);
+            else
+            {
+                var old = GUI.color;
+                GUI.color = stage.isDirect ? new Color(.87f, 1f, .05f, .22f) : new Color(1f, .24f, .74f, .2f);
+                GUI.DrawTexture(imageRect, _pill!, ScaleMode.StretchToFill, true);
+                GUI.color = old;
+                var glyph = new GUIStyle(heading) { fontSize = 46 };
+                GUI.Label(imageRect, stage.isDirect ? "▶" : "★", glyph);
+            }
+            var label = stage.isDirect
+                ? StageLocale.Text("DIREKT-STAGE", "DIRECT STAGE")
+                : stage.name;
+            DrawArcadeLabel(new Rect(card.x + 10, card.y + 145, card.width - 20, 38),
+                label, 10, 19, 1f, 2.25f, maxLines: 2);
+            if (!stage.isDirect)
+            {
+                var status = stage.isOnline
+                    ? StageLocale.Text("ONLINE-BÜHNE", "ONLINE STAGE")
+                    : StageLocale.Text("LOKALE BÜHNE", "LOCAL STAGE");
+                DrawArcadeLabel(new Rect(card.x + 14, card.y + 181, card.width - 28, 17),
+                    status, 8, 11, .7f, 1.4f,
+                    stage.isOnline ? new Color(.87f, 1f, .05f) : new Color(.75f, .7f, .82f));
+            }
+            if (!_settingsOpen && Event.current.type == EventType.Repaint && _pointer.ConsumeClick(screenCard))
+                SelectLauncherStage(stage);
+        }
+        if (pageCount > 1)
+        {
+            var scale = Mathf.Max(1f, Mathf.Min(Screen.width / 1280f, Screen.height / 720f));
+            var navigation = new GUIStyle(button) { fontSize = 16, alignment = TextAnchor.MiddleCenter };
+            GUI.enabled = _launcherPage > 0;
+            if (!_settingsOpen && DrawScreenSpaceButton(new Rect(32, height - 62, 82, 42), "◀", navigation, scale)) _launcherPage--;
+            GUI.enabled = _launcherPage + 1 < pageCount;
+            if (!_settingsOpen && DrawScreenSpaceButton(new Rect(width - 114, height - 62, 82, 42), "▶", navigation, scale)) _launcherPage++;
+            GUI.enabled = true;
+            GUI.Label(new Rect(width * .5f - 80, height - 58, 160, 32),
+                $"{_launcherPage + 1} / {pageCount}", sub);
+        }
         var hint = new GUIStyle(sub) { fontSize = 14 };
         hint.normal.textColor = new Color(.68f, .6f, .74f);
-        GUI.Label(new Rect(40, buttonRect.yMax + 30, width - 80, 32), StageLocale.Text("Oder ein vorbereitetes Event im Admin-Portal auf die Bühne schalten", "Or activate a prepared event from the admin portal"), hint);
+        if (_launcherLoading || _launcherStages.Length == 0)
+            GUI.Label(new Rect(40, height - 70, width - 80, 32),
+                _launcherLoading ? StageLocale.Text("Stages werden geladen …", "Loading stages …") : _status, hint);
+    }
+
+    private void LoadSettingsDraft()
+    {
+        _settingsAutomaticMicrophones = StageRuntimeSettings.AutomaticMicrophones;
+        _settingsSelectedMicrophones.Clear();
+        _settingsSelectedMicrophones.AddRange(StageRuntimeSettings.SelectedMicrophones);
+        _settingsServerUrl = _server;
+        _settingsLiveKitUrl = StageRuntimeSettings.LiveKitServerOverride;
+        _settingsFullscreen = StageRuntimeSettings.Fullscreen;
+        _settingsDisplayIndex = StageRuntimeSettings.DisplayIndex;
+        _settingsDisplaySelectionChanged = false;
+        RefreshSettingsDevices(force: true);
+    }
+
+    private void RefreshSettingsDevices(bool force = false)
+    {
+        if (!force && Time.unscaledTime < _nextSettingsDeviceRefresh) return;
+        _nextSettingsDeviceRefresh = Time.unscaledTime + 1.5f;
+        _settingsMicrophoneDevices = OnlineBroadcastMixer.SelectMicrophoneDevices(
+            Microphone.devices,
+            Application.platform is RuntimePlatform.LinuxPlayer or RuntimePlatform.LinuxEditor);
+        _settingsDisplays.Clear();
+        if (Application.platform != RuntimePlatform.Android) Screen.GetDisplayLayout(_settingsDisplays);
+        if (!_settingsDisplaySelectionChanged)
+        {
+            _settingsDisplayIndex = 0;
+            var savedName = StageRuntimeSettings.DisplayName;
+            for (var index = 0; index < _settingsDisplays.Count; index++)
+                if (!string.IsNullOrWhiteSpace(savedName) &&
+                    string.Equals(_settingsDisplays[index].name, savedName, StringComparison.Ordinal))
+                {
+                    _settingsDisplayIndex = index;
+                    break;
+                }
+        }
+        _settingsDisplayIndex = Mathf.Clamp(_settingsDisplayIndex, 0, Mathf.Max(0, _settingsDisplays.Count - 1));
+    }
+
+    private void ApplySavedDisplaySettings()
+    {
+        if (Application.platform == RuntimePlatform.Android) return;
+        _settingsDisplays.Clear();
+        Screen.GetDisplayLayout(_settingsDisplays);
+        if (_settingsDisplays.Count == 0) return;
+        var savedName = StageRuntimeSettings.DisplayName;
+        var selected = 0;
+        if (!string.IsNullOrWhiteSpace(savedName))
+            for (var index = 0; index < _settingsDisplays.Count; index++)
+                if (string.Equals(_settingsDisplays[index].name, savedName, StringComparison.Ordinal))
+                {
+                    selected = index;
+                    break;
+                }
+
+        // A disconnected saved display deliberately falls back to display 0.
+        _settingsDisplayIndex = selected;
+        var target = _settingsDisplays[selected];
+        Screen.MoveMainWindowTo(target, Vector2Int.zero);
+        Screen.fullScreenMode = StageRuntimeSettings.Fullscreen
+            ? FullScreenMode.FullScreenWindow
+            : FullScreenMode.Windowed;
+    }
+
+    private void DrawSettingsLauncherButton(float width, float height, float scale)
+    {
+        var matrix = GUI.matrix;
+        GUI.matrix = Matrix4x4.identity;
+        var rect = ToScreenRect(new Rect(width * .5f - 33, height - 70, 66, 60), scale);
+        var hovered = rect.Contains(_pointer.Position);
+        DrawIconBadge(rect, hovered ? new Color(.87f, 1f, .05f) : new Color(.12f, .88f, 1f));
+        var old = GUI.color;
+        GUI.color = hovered ? Color.white : new Color(1f, 1f, 1f, .86f);
+        if (_settingsIcon != null)
+            GUI.DrawTexture(new Rect(rect.x + 8 * scale, rect.y + 5 * scale,
+                rect.width - 16 * scale, rect.height - 10 * scale), _settingsIcon, ScaleMode.ScaleToFit, true);
+        GUI.color = old;
+        if (Event.current.type == EventType.Repaint && _pointer.ConsumeClick(rect))
+        {
+            _settingsOpen = !_settingsOpen;
+            if (_settingsOpen)
+            {
+                LoadSettingsDraft();
+                _settingsMessage = string.Empty;
+            }
+        }
+        GUI.matrix = matrix;
+    }
+
+    private void DrawSettingsPanel(float scale)
+    {
+        RefreshSettingsDevices();
+        var matrix = GUI.matrix;
+        GUI.matrix = Matrix4x4.identity;
+        var panel = new Rect(Screen.width * .1f, Screen.height * .08f,
+            Screen.width * .8f, Screen.height * .84f);
+        DrawSolid(new Rect(0, 0, Screen.width, Screen.height), new Color(.015f, .005f, .035f, .78f));
+        DrawSolid(new Rect(panel.x + 8 * scale, panel.y + 10 * scale, panel.width, panel.height),
+            new Color(.35f, .01f, .25f, .76f));
+        DrawSolid(panel, new Color(.045f, .018f, .09f, .99f));
+        DrawRectOutline(panel, 3 * scale, new Color(.03f, .9f, 1f));
+        DrawRectOutline(new Rect(panel.x + 6 * scale, panel.y + 6 * scale,
+            panel.width - 12 * scale, panel.height - 12 * scale), scale, new Color(1f, .72f, .08f, .8f));
+
+        var title = new Rect(panel.x + 24 * scale, panel.y + 13 * scale,
+            panel.width - 48 * scale, 48 * scale);
+        DrawArcadeLabel(title, StageLocale.Text("STAGE-EINSTELLUNGEN", "STAGE SETTINGS"),
+            Mathf.RoundToInt(15 * scale), Mathf.RoundToInt(28 * scale), 1.5f * scale, 3f * scale);
+
+        var tabStyle = MakeSettingsButtonStyle(scale, 15);
+        var tabs = new[]
+        {
+            StageLocale.Text("AUDIO", "AUDIO"), StageLocale.Text("VIDEO", "VIDEO"),
+            "LIVEKIT", StageLocale.Text("SERVER", "SERVER")
+        };
+        var tabsY = panel.y + 65 * scale;
+        var tabWidth = (panel.width - 48 * scale) / tabs.Length;
+        for (var index = 0; index < tabs.Length; index++)
+        {
+            var rect = new Rect(panel.x + 24 * scale + index * tabWidth, tabsY,
+                tabWidth - 7 * scale, 40 * scale);
+            if (index == _settingsTab) DrawRectOutline(rect, 2 * scale, new Color(.87f, 1f, .05f));
+            if (DrawPointerButton(rect, tabs[index], tabStyle, "settings-tab-" + index)) _settingsTab = index;
+        }
+
+        var content = new Rect(panel.x + 34 * scale, panel.y + 119 * scale,
+            panel.width - 68 * scale, panel.height - 196 * scale);
+        switch (_settingsTab)
+        {
+            case 0: DrawAudioSettings(content, scale); break;
+            case 1: DrawVideoSettings(content, scale); break;
+            case 2: DrawLiveKitSettings(content, scale); break;
+            default: DrawServerSettings(content, scale); break;
+        }
+
+        var footerY = panel.yMax - 62 * scale;
+        var footerStyle = MakeSettingsButtonStyle(scale, 14);
+        if (DrawPointerButton(new Rect(panel.x + 28 * scale, footerY, 150 * scale, 39 * scale),
+                StageLocale.Text("SCHLIESSEN", "CLOSE"), footerStyle, "settings-close"))
+            _settingsOpen = false;
+        if (DrawPointerButton(new Rect(panel.xMax - 178 * scale, footerY, 150 * scale, 39 * scale),
+                StageLocale.Text("SPEICHERN", "SAVE"), footerStyle, "settings-save"))
+            SaveStageSettings();
+        if (!string.IsNullOrWhiteSpace(_settingsMessage))
+        {
+            var messageStyle = MakeSettingsLabelStyle(scale, 12, TextAnchor.MiddleCenter);
+            messageStyle.normal.textColor = new Color(.87f, 1f, .05f);
+            GUI.Label(new Rect(panel.x + 190 * scale, footerY, panel.width - 380 * scale, 39 * scale),
+                _settingsMessage, messageStyle);
+        }
+        GUI.matrix = matrix;
+    }
+
+    private void DrawAudioSettings(Rect content, float scale)
+    {
+        var heading = MakeSettingsLabelStyle(scale, 18, TextAnchor.MiddleLeft, true);
+        var label = MakeSettingsLabelStyle(scale, 13, TextAnchor.MiddleLeft);
+        GUI.Label(new Rect(content.x, content.y, content.width, 28 * scale),
+            StageLocale.Text("MIKROFON-EINGÄNGE", "MICROPHONE INPUTS"), heading);
+        var button = MakeSettingsButtonStyle(scale, 13);
+        var automaticRect = new Rect(content.x, content.y + 34 * scale, content.width, 34 * scale);
+        if (DrawPointerButton(automaticRect,
+                (_settingsAutomaticMicrophones ? "●  " : "○  ") +
+                StageLocale.Text("Automatisch – bis zu zwei echte Mikrofone", "Automatic – up to two real microphones"),
+                button, "settings-microphone-auto"))
+            _settingsAutomaticMicrophones = !_settingsAutomaticMicrophones;
+
+        var y = content.y + 76 * scale;
+        foreach (var device in _settingsMicrophoneDevices)
+        {
+            if (y + 33 * scale > content.yMax - 70 * scale) break;
+            var selected = _settingsSelectedMicrophones.Contains(device);
+            var deviceRect = new Rect(content.x, y, content.width, 30 * scale);
+            GUI.enabled = !_settingsAutomaticMicrophones;
+            if (DrawPointerButton(deviceRect, (selected ? "✓  " : "○  ") + device,
+                    button, "settings-microphone-" + device)) ToggleSettingsMicrophone(device);
+            GUI.enabled = true;
+            y += 34 * scale;
+        }
+        if (_settingsMicrophoneDevices.Length == 0)
+            GUI.Label(new Rect(content.x, y, content.width, 28 * scale),
+                StageLocale.Text("Kein Mikrofon angeschlossen", "No microphone connected"), label);
+
+        GUI.Label(new Rect(content.x, content.yMax - 62 * scale, content.width, 25 * scale),
+            StageLocale.Text("AUDIO-AUSGANG", "AUDIO OUTPUT"), heading);
+        GUI.Label(new Rect(content.x, content.yMax - 34 * scale, content.width, 28 * scale),
+            StageLocale.Text("Systemstandard · Änderungen in PipeWire/Windows/macOS werden live übernommen",
+                "System default · PipeWire/Windows/macOS changes are picked up live"), label);
+    }
+
+    private void DrawVideoSettings(Rect content, float scale)
+    {
+        var heading = MakeSettingsLabelStyle(scale, 18, TextAnchor.MiddleLeft, true);
+        var label = MakeSettingsLabelStyle(scale, 13, TextAnchor.MiddleLeft);
+        GUI.Label(new Rect(content.x, content.y, content.width, 28 * scale),
+            StageLocale.Text("ZIELMONITOR", "TARGET DISPLAY"), heading);
+        if (Application.platform == RuntimePlatform.Android)
+        {
+            GUI.Label(new Rect(content.x, content.y + 40 * scale, content.width, 60 * scale),
+                StageLocale.Text("Android verwendet weiterhin den gespiegelten Systemausgang.",
+                    "Android continues to use the mirrored system output."), label);
+            return;
+        }
+
+        var button = MakeSettingsButtonStyle(scale, 13);
+        var y = content.y + 38 * scale;
+        for (var index = 0; index < _settingsDisplays.Count; index++)
+        {
+            var display = _settingsDisplays[index];
+            var selected = index == _settingsDisplayIndex;
+            var text = $"{(selected ? "●" : "○")}  {index + 1}: {display.name}  ·  {display.width}×{display.height}";
+            if (DrawPointerButton(new Rect(content.x, y, content.width, 34 * scale),
+                    text, button, "settings-display-" + index))
+            {
+                _settingsDisplayIndex = index;
+                _settingsDisplaySelectionChanged = true;
+            }
+            y += 38 * scale;
+        }
+        if (DrawPointerButton(new Rect(content.x, content.yMax - 48 * scale, content.width, 36 * scale),
+                (_settingsFullscreen ? "✓  " : "○  ") +
+                StageLocale.Text("Fullscreen auf diesem Monitor", "Fullscreen on this display"),
+                button, "settings-fullscreen")) _settingsFullscreen = !_settingsFullscreen;
+        GUI.Label(new Rect(content.x, content.yMax - 82 * scale, content.width, 27 * scale),
+            StageLocale.Text("Fehlt der gespeicherte Monitor, startet die Stage auf dem Hauptdisplay.",
+                "If the saved display is missing, the Stage starts on the primary display."), label);
+    }
+
+    private void DrawLiveKitSettings(Rect content, float scale)
+    {
+        var heading = MakeSettingsLabelStyle(scale, 18, TextAnchor.MiddleLeft, true);
+        var label = MakeSettingsLabelStyle(scale, 13, TextAnchor.UpperLeft);
+        GUI.Label(new Rect(content.x, content.y, content.width, 28 * scale), "LIVEKIT SIGNALING", heading);
+        GUI.Label(new Rect(content.x, content.y + 33 * scale, content.width, 44 * scale),
+            StageLocale.Text("Leer lassen: Die vom NeonStage-Server gelieferte URL verwenden.",
+                "Leave empty to use the URL supplied by the NeonStage server."), label);
+        _settingsLiveKitUrl = GUI.TextField(new Rect(content.x, content.y + 82 * scale,
+            content.width, 39 * scale), _settingsLiveKitUrl, MakeSettingsTextFieldStyle(scale));
+        GUI.Label(new Rect(content.x, content.y + 133 * scale, content.width, 78 * scale),
+            StageLocale.Text("Nur ws:// oder wss://. API-Key und Secret bleiben ausschließlich auf dem Server.",
+                "ws:// or wss:// only. API key and secret remain exclusively on the server."), label);
+    }
+
+    private void DrawServerSettings(Rect content, float scale)
+    {
+        var heading = MakeSettingsLabelStyle(scale, 18, TextAnchor.MiddleLeft, true);
+        var label = MakeSettingsLabelStyle(scale, 13, TextAnchor.UpperLeft);
+        GUI.Label(new Rect(content.x, content.y, content.width, 28 * scale),
+            StageLocale.Text("NEONSTAGE-SERVER", "NEONSTAGE SERVER"), heading);
+        GUI.Label(new Rect(content.x, content.y + 34 * scale, content.width, 35 * scale),
+            StageLocale.Text("HTTP-/HTTPS-Adresse der Bibliothek und Stage-Verwaltung",
+                "HTTP/HTTPS address of the library and stage management"), label);
+        _settingsServerUrl = GUI.TextField(new Rect(content.x, content.y + 78 * scale,
+            content.width, 39 * scale), _settingsServerUrl, MakeSettingsTextFieldStyle(scale));
+    }
+
+    private void ToggleSettingsMicrophone(string device)
+    {
+        if (_settingsSelectedMicrophones.Remove(device)) return;
+        if (_settingsSelectedMicrophones.Count >= 2) _settingsSelectedMicrophones.RemoveAt(0);
+        _settingsSelectedMicrophones.Add(device);
+    }
+
+    private void SaveStageSettings()
+    {
+        if (!TryNormalizeServer(_settingsServerUrl, out var server))
+        {
+            _settingsMessage = StageLocale.Text("Ungültige Server-Adresse", "Invalid server address");
+            return;
+        }
+        var liveKit = _settingsLiveKitUrl.Trim().TrimEnd('/');
+        if (liveKit.Length > 0 && (!Uri.TryCreate(liveKit, UriKind.Absolute, out var liveKitUri) ||
+                                   liveKitUri.Scheme is not ("ws" or "wss")))
+        {
+            _settingsMessage = StageLocale.Text("LiveKit benötigt ws:// oder wss://", "LiveKit requires ws:// or wss://");
+            return;
+        }
+
+        StageRuntimeSettings.AutomaticMicrophones = _settingsAutomaticMicrophones;
+        StageRuntimeSettings.SelectedMicrophones = _settingsSelectedMicrophones.ToArray();
+        StageRuntimeSettings.LiveKitServerOverride = liveKit;
+        StageRuntimeSettings.Fullscreen = _settingsFullscreen;
+        StageRuntimeSettings.DisplayIndex = _settingsDisplayIndex;
+        if (_settingsDisplays.Count > _settingsDisplayIndex &&
+            (_settingsDisplaySelectionChanged || string.IsNullOrWhiteSpace(StageRuntimeSettings.DisplayName)))
+            StageRuntimeSettings.DisplayName = _settingsDisplays[_settingsDisplayIndex].name;
+        PlayerPrefs.SetString("NeonStage.Server", server);
+        PlayerPrefs.Save();
+
+        var serverChanged = !string.Equals(_server, server, StringComparison.OrdinalIgnoreCase);
+        _server = server;
+        _online?.ConfigureServer(_server);
+        ApplySavedDisplaySettings();
+        if (serverChanged) _ = LoadLauncherStagesAsync();
+        _settingsMessage = StageLocale.Text("Gespeichert und angewendet", "Saved and applied");
+    }
+
+    private static GUIStyle MakeSettingsLabelStyle(float scale, int size,
+        TextAnchor alignment, bool bold = false)
+    {
+        var style = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = Mathf.RoundToInt(size * scale), alignment = alignment,
+            fontStyle = bold ? FontStyle.BoldAndItalic : FontStyle.Normal,
+            wordWrap = true
+        };
+        style.normal.textColor = bold ? new Color(1f, .3f, .78f) : new Color(.9f, .86f, .96f);
+        return style;
+    }
+
+    private GUIStyle MakeSettingsButtonStyle(float scale, int size)
+    {
+        var style = new GUIStyle(GUI.skin.button)
+        {
+            fontSize = Mathf.RoundToInt(size * scale), alignment = TextAnchor.MiddleLeft,
+            fontStyle = FontStyle.Bold, padding = new RectOffset(
+                Mathf.RoundToInt(12 * scale), Mathf.RoundToInt(8 * scale), 0, 0)
+        };
+        style.normal.background = _controlButton;
+        style.hover.background = _controlButtonHover;
+        style.active.background = _controlButtonActive;
+        style.normal.textColor = new Color(.94f, .9f, 1f);
+        style.hover.textColor = new Color(.87f, 1f, .05f);
+        return style;
+    }
+
+    private static GUIStyle MakeSettingsTextFieldStyle(float scale)
+    {
+        var style = new GUIStyle(GUI.skin.textField)
+        {
+            fontSize = Mathf.RoundToInt(15 * scale), alignment = TextAnchor.MiddleLeft,
+            padding = new RectOffset(Mathf.RoundToInt(12 * scale), Mathf.RoundToInt(12 * scale), 0, 0)
+        };
+        style.normal.textColor = new Color(.92f, .96f, 1f);
+        style.focused.textColor = Color.white;
+        return style;
     }
 
     private float DrawNeonSlider(string id, Rect rect, float value, Color accent,
@@ -1230,6 +1805,132 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         _pill = MakeRoundedTexture(32, 16, Color.white, Color.white, 0);
         _softGlow = MakeRadialTexture(64);
         _iconBadge = MakeRoundedTexture(64, 32, new Color(.09f, .035f, .13f, .96f), Color.white, 3);
+        _stageSelectionIcon = Resources.Load<Texture2D>("StageSelectionBackIcon");
+        _wordmark = Resources.Load<Texture2D>("NeonStageWordmark");
+        _settingsIcon = MakeSettingsIcon(96);
+    }
+
+    private static void DrawArcadeTitle(Rect rect, string text)
+    {
+        DrawArcadeLabel(rect, text, 20, 34, 2f, 5f);
+    }
+
+    private static void DrawArcadeLabel(Rect rect, string text, int minimumSize,
+        int maximumSize, float outline, float extrusion, Color? faceColor = null,
+        int maxLines = 1)
+    {
+        text ??= "";
+        var fitSize = text.Length == 0
+            ? maximumSize
+            : Mathf.FloorToInt(rect.width * Mathf.Max(1, maxLines) / (text.Length * .61f));
+        var size = Mathf.Clamp(fitSize, minimumSize, maximumSize);
+        var style = new GUIStyle(GUI.skin.label)
+        {
+            fontSize = size,
+            alignment = TextAnchor.MiddleCenter,
+            fontStyle = FontStyle.BoldAndItalic,
+            clipping = TextClipping.Clip,
+            wordWrap = maxLines > 1
+        };
+        style.normal.textColor = new Color(.025f, .035f, .16f, .98f);
+        GUI.Label(new Rect(rect.x + extrusion, rect.y + extrusion + 1, rect.width, rect.height), text, style);
+        style.normal.textColor = new Color(.03f, .92f, 1f, 1f);
+        foreach (var offset in new[]
+                 {
+                     new Vector2(-outline, 0), new Vector2(outline, 0),
+                     new Vector2(0, -outline), new Vector2(0, outline),
+                     new Vector2(-outline * .72f, -outline * .72f),
+                     new Vector2(outline * .72f, -outline * .72f),
+                     new Vector2(-outline * .72f, outline * .72f),
+                     new Vector2(outline * .72f, outline * .72f)
+                 })
+            GUI.Label(new Rect(rect.x + offset.x, rect.y + offset.y, rect.width, rect.height), text, style);
+        style.normal.textColor = faceColor ?? new Color(1f, .12f, .7f, 1f);
+        GUI.Label(rect, text, style);
+        style.normal.textColor = new Color(1f, .82f, .12f, .22f);
+        GUI.Label(new Rect(rect.x, rect.y - Mathf.Max(.5f, outline * .5f), rect.width, rect.height), text, style);
+    }
+
+    private void DrawLauncherCardFrame(Rect card, bool isDirect, bool isOnline, bool hovered)
+    {
+        var cyan = new Color(.03f, .9f, 1f, hovered ? 1f : .76f);
+        var magenta = new Color(1f, .1f, .68f, hovered ? 1f : .78f);
+        var gold = new Color(1f, .72f, .08f, hovered ? .95f : .62f);
+        var primary = isDirect ? new Color(.8f, 1f, .04f, hovered ? 1f : .78f) :
+            isOnline ? cyan : magenta;
+
+        if (hovered)
+        {
+            var pulse = .15f + (Mathf.Sin(Time.unscaledTime * 7f) + 1f) * .07f;
+            DrawRectOutline(new Rect(card.x - 5, card.y - 5, card.width + 10, card.height + 10),
+                3, new Color(primary.r, primary.g, primary.b, pulse));
+        }
+
+        DrawSolid(new Rect(card.x + 6, card.y + 7, card.width, card.height),
+            new Color(.34f, .015f, .25f, .72f));
+        DrawSolid(card, new Color(.045f, .018f, .09f, .98f));
+        DrawRectOutline(card, hovered ? 4 : 3, primary);
+        DrawRectOutline(new Rect(card.x + 5, card.y + 5, card.width - 10, card.height - 10),
+            1, gold);
+
+        // Asymmetrical arcade accents keep the cards lively without stealing
+        // horizontal room from long, user-defined stage names.
+        DrawSolid(new Rect(card.x + 3, card.y + 3, card.width * .42f, 3), magenta);
+        DrawSolid(new Rect(card.x + card.width * .58f - 3, card.y + card.height - 6,
+            card.width * .42f, 3), cyan);
+        DrawSolid(new Rect(card.x - 2, card.y + 18, 6, 24), gold);
+        DrawSolid(new Rect(card.x + card.width - 4, card.y + card.height - 42, 6, 24), magenta);
+    }
+
+    private static void DrawRectOutline(Rect rect, float thickness, Color color)
+    {
+        DrawSolid(new Rect(rect.x, rect.y, rect.width, thickness), color);
+        DrawSolid(new Rect(rect.x, rect.yMax - thickness, rect.width, thickness), color);
+        DrawSolid(new Rect(rect.x, rect.y, thickness, rect.height), color);
+        DrawSolid(new Rect(rect.xMax - thickness, rect.y, thickness, rect.height), color);
+    }
+
+    private bool DrawStageSelectionButton(float scale)
+    {
+        var matrix = GUI.matrix;
+        GUI.matrix = Matrix4x4.identity;
+        var rect = ToScreenRect(new Rect(14, 10, 92, 92), scale);
+        var style = new GUIStyle(GUI.skin.button)
+        {
+            alignment = TextAnchor.MiddleCenter,
+            normal = { background = _controlButton },
+            hover = { background = _controlButtonHover },
+            active = { background = _controlButtonActive }
+        };
+        var enabled = GUI.enabled;
+        GUI.enabled = !_leavingSession;
+        var clicked = DrawPointerButton(rect, "", ScaleInteractiveStyle(style, scale), "stage-selection");
+
+        var pulse = _leavingSession
+            ? .45f + .2f * (Mathf.Sin(Time.unscaledTime * 5f) + 1f) * .5f
+            : 1f;
+        var previous = GUI.color;
+        GUI.color = new Color(1f, 1f, 1f, pulse);
+        var padding = 5f * scale;
+        if (_stageSelectionIcon != null)
+            GUI.DrawTexture(new Rect(rect.x + padding, rect.y + padding,
+                    rect.width - padding * 2, rect.height - padding * 2),
+                _stageSelectionIcon, ScaleMode.ScaleToFit, true);
+        else
+        {
+            var fallback = new GUIStyle(GUI.skin.label)
+            {
+                fontSize = Mathf.RoundToInt(38 * scale),
+                fontStyle = FontStyle.Bold,
+                alignment = TextAnchor.MiddleCenter
+            };
+            fallback.normal.textColor = new Color(.1f, .95f, 1f);
+            GUI.Label(rect, "←", fallback);
+        }
+        GUI.color = previous;
+        GUI.enabled = enabled;
+        GUI.matrix = matrix;
+        return clicked;
     }
 
     private static Texture2D MakeRoundedTexture(int size, float radius, Color fill, Color border, float borderWidth)
@@ -1258,6 +1959,33 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             texture.SetPixel(x, y, new Color(1, 1, 1, Mathf.Pow(Mathf.Clamp01(1 - distance), 2)));
         }
         texture.Apply(); return texture;
+    }
+
+    private static Texture2D MakeSettingsIcon(int size)
+    {
+        var texture = new Texture2D(size, size, TextureFormat.RGBA32, false);
+        var center = (size - 1) * .5f;
+        for (var y = 0; y < size; y++) for (var x = 0; x < size; x++)
+        {
+            var dx = x - center;
+            var dy = y - center;
+            var radius = Mathf.Sqrt(dx * dx + dy * dy);
+            var angle = Mathf.Atan2(dy, dx);
+            var tooth = Mathf.Cos(angle * 8f) > .18f;
+            var outer = size * (tooth ? .43f : .35f);
+            var inner = size * .15f;
+            if (radius < inner || radius > outer)
+            {
+                texture.SetPixel(x, y, Color.clear);
+                continue;
+            }
+            var edge = radius < inner + 3 || radius > outer - 3;
+            texture.SetPixel(x, y, edge
+                ? new Color(.02f, .94f, 1f, 1f)
+                : new Color(1f, .1f, .68f, 1f));
+        }
+        texture.Apply();
+        return texture;
     }
 
     private void DrawIconBadge(Rect rect, Color accent)

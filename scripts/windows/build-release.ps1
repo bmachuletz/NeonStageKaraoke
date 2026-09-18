@@ -17,6 +17,12 @@ $repoRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $suffix = "v$Version-build.$BuildNumber"
 
+$prepareArguments = @{}
+if ($SkipUnity) { $prepareArguments['SkipUnity'] = $true }
+if ($FfmpegExe) { $prepareArguments['FfmpegExe'] = $FfmpegExe }
+& "$repoRoot\scripts\windows\prepare-build.ps1" @prepareArguments
+if ($LASTEXITCODE -ne 0) { throw "Windows-Prepare fehlgeschlagen ($LASTEXITCODE)." }
+
 function Invoke-Checked {
     param([string]$Command, [string[]]$Arguments)
     & $Command @Arguments
@@ -94,7 +100,7 @@ try {
         $env:NEONSTAGE_VERSION = $Version
         $env:NEONSTAGE_BUILD_NUMBER = $BuildNumber.ToString()
         $env:NEONSTAGE_RELEASE_BUILD = '1'
-        & "$repoRoot\scripts\windows\build-unity-stage-windows.ps1"
+        & "$repoRoot\scripts\windows\build-unity-stage-windows.ps1" -SkipPrepare
         if ($LASTEXITCODE -ne 0) { throw "Unity build failed ($LASTEXITCODE)." }
 
         $stageSource = "$repoRoot\src\Karaoke.Stage.Unity\Builds\Windows"

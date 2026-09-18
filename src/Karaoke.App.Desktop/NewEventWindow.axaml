@@ -1,6 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         x:Class="Karaoke.App.Desktop.NewEventWindow" Title="Neon Stage · Event planen"
-        Width="590" Height="610" MinWidth="520" MinHeight="550" Background="#0D1016"
+        Width="590" Height="780" MinWidth="520" MinHeight="700" Background="#0D1016"
         WindowStartupLocation="CenterOwner">
   <Grid RowDefinitions="Auto,*,Auto" Margin="24">
     <StackPanel>
@@ -33,6 +33,20 @@
         </ComboBox.ItemTemplate>
       </ComboBox>
       <TextBlock Text="Standard bleibt die bisherige Neon-Stage." Foreground="#677185" FontSize="10" />
+      <TextBlock Text="LAUNCHER-BILD (OPTIONAL)" Foreground="#8993A6" FontSize="10" FontWeight="Bold" Margin="0,8,0,0" />
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+        <TextBox x:Name="ImagePathBox" IsReadOnly="True" Watermark="PNG, JPEG oder WebP · maximal 5 MB" />
+        <Button Grid.Column="1" Content="Bild wählen …" Click="ChooseImageClick" />
+      </Grid>
+      <CheckBox x:Name="OnlineBox" Content="Online-Stage (mehrere Standorte über LiveKit)"
+                Margin="0,10,0,0" />
+      <TextBlock Text="KENNWORT DER ONLINE-STAGE" Foreground="#8993A6" FontSize="10" FontWeight="Bold" />
+      <TextBox x:Name="OnlinePasswordBox" PasswordChar="●" MaxLength="128"
+               Watermark="Mindestens 4 Zeichen · wird auf den Stages gespeichert" />
+      <CheckBox x:Name="AllowConversationBox"
+                Content="Alle dürfen sich unterhalten, solange kein Song läuft oder pausiert ist" />
+      <TextBlock Text="Offline ist Standard. Die lokale Default-Stage bleibt offline."
+                 Foreground="#677185" FontSize="10" />
       <TextBlock Text="BESCHREIBUNG (OPTIONAL)" Foreground="#8993A6" FontSize="10" FontWeight="Bold" Margin="0,8,0,0" />
       <TextBox x:Name="DescriptionBox" AcceptsReturn="True" TextWrapping="Wrap" MaxLength="500" Height="80" />
       <TextBlock x:Name="ErrorText" Foreground="#FF6D88" TextWrapping="Wrap" />

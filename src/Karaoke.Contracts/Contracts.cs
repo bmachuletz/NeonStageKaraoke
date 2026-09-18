@@ -4,15 +4,18 @@ public enum SongReviewStatus { InReview, Approved }
 public enum SongLibraryCategory { KaraokeReady, WithoutLyrics }
 public enum OnlineRole { Listener = 0, Singer = 1 }
 public sealed record OnlineJoinRequest(string RoomId, string ParticipantId, string DisplayName,
-    OnlineRole Role = OnlineRole.Listener);
+    OnlineRole Role = OnlineRole.Listener, string? Password = null, Guid? LocationId = null);
 public sealed record OnlineRoleRequest(OnlineRole Role);
+public sealed record OnlineStageDto(string RoomId, string Name, bool HasPassword, int ParticipantCount,
+    bool AllowConversation = false);
+public sealed record OnlineStageListDto(IReadOnlyList<OnlineStageDto> Items);
 public sealed record OnlineParticipantDto(string ParticipantId, string DisplayName, OnlineRole Role,
     DateTimeOffset LastSeenAt);
 public sealed record OnlineRoomStateDto(string RoomId, string ParticipantId, OnlineRole Role,
-    IReadOnlyList<OnlineParticipantDto> Participants);
+    IReadOnlyList<OnlineParticipantDto> Participants, bool AllowConversation = false);
 public sealed record OnlineRoomSessionDto(bool Enabled, string Provider, string ServerUrl, string RoomId,
     string ParticipantId, OnlineRole Role, string AccessToken, DateTimeOffset ExpiresAt,
-    IReadOnlyList<OnlineParticipantDto> Participants);
+    IReadOnlyList<OnlineParticipantDto> Participants, bool AllowConversation = false);
 public sealed record OnlineConfigurationDto(bool Enabled, string Provider, string ServerUrl,
     string Status);
 public sealed record OnlineServerSettingsDto(
@@ -125,11 +128,16 @@ public sealed record QueueEntryDto(
     int Position = 0,
     QueueEntryStatus Status = QueueEntryStatus.Waiting,
     DateTimeOffset? StartedAt = null,
-    DateTimeOffset? FinishedAt = null);
-public sealed record AddQueueRequest(Guid SongId, string RequestedBy);
+    DateTimeOffset? FinishedAt = null,
+    Guid? LocationId = null,
+    bool SingerControlsMix = false,
+    double SingerMicrophoneVolume = 1);
+public sealed record AddQueueRequest(Guid SongId, string RequestedBy, Guid? LocationId = null);
 public sealed record ReorderQueueRequest(Guid EntryId, int Position);
 public sealed record PlaybackPositionUpdateRequest(Guid QueueEntryId, TimeSpan Position);
 public sealed record CompletePlaybackRequest(Guid QueueEntryId);
+public sealed record UpdateSingerMixRequest(Guid QueueEntryId, Guid LocationId, string RequestedBy,
+    bool SingerControlsMix, double MicrophoneVolume);
 public sealed record PlaybackPositionDto(Guid QueueEntryId, TimeSpan Position, DateTimeOffset UpdatedAt, long Revision);
 public sealed record PlaybackControllerRequest(Guid ClientId, string ClientName, bool Force = false);
 public sealed record PlaybackControllerDto(bool OwnsControl, Guid? ControllerId, string? ControllerName, DateTimeOffset LeaseExpiresAt);
@@ -242,9 +250,14 @@ public sealed record FolderImportStatus(
     IReadOnlyList<string> RecentOutput);
 public sealed record KaraokeEventDto(Guid Id, string Name, string InviteToken, DateTimeOffset StartsAt,
     DateTimeOffset? EndsAt, bool IsActive, DateTimeOffset CreatedAt, string? Description = null,
-    string StageThemeId = "standard");
+    string StageThemeId = "standard", bool IsOnline = false, bool HasOnlinePassword = false,
+    bool AllowConversation = false, bool HasImage = false);
+public sealed record StageLauncherDto(Guid Id, string Name, string InviteToken, bool IsDirect,
+    bool IsOnline, bool HasOnlinePassword, bool HasImage, string StageThemeId);
+public sealed record StageLauncherListDto(IReadOnlyList<StageLauncherDto> Items);
 public sealed record CreateKaraokeEventRequest(string Name, DateTimeOffset StartsAt, DateTimeOffset? EndsAt = null,
-    string? Description = null, string StageThemeId = "standard");
+    string? Description = null, string StageThemeId = "standard", bool IsOnline = false,
+    string? OnlinePassword = null, bool AllowConversation = false);
 public sealed record StageThemeDto(string Id, string Name, string Description, bool IsDefault = false);
 public sealed record PublicServerInfoDto(string BaseUrl);
 public sealed record PlaybackStateDto(

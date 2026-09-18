@@ -29,11 +29,21 @@ public sealed class StageAudioEngine : MonoBehaviour
 
     public event Action? PlaybackEnded;
     public event Action<float[], int, int>? BroadcastMusicRead;
+    public event Action<float[], int, int>? BroadcastVocalRead;
     public string Status { get; private set; } = "Audio bereit";
     public bool IsPlaying => _master != null && _master.isPlaying;
     public bool HasClip => _master != null && _master.clip != null;
     public bool HasEnded => _completionRaised;
     public double DurationSeconds => HasClip ? _master.clip.length : 0;
+    public bool LocalOutputMuted
+    {
+        get => _master != null && _master.mute;
+        set
+        {
+            if (_master != null) _master.mute = value;
+            if (_vocals != null) _vocals.mute = value;
+        }
+    }
     public float MusicVolume
     {
         get => _master != null ? _master.volume : 0.85f;
@@ -136,6 +146,8 @@ public sealed class StageAudioEngine : MonoBehaviour
         _vocals = vocalBus.AddComponent<AudioSource>();
         musicBus.AddComponent<StageAudioTap>().AudioRead +=
             (samples, channels, rate) => BroadcastMusicRead?.Invoke(samples, channels, rate);
+        vocalBus.AddComponent<StageAudioTap>().AudioRead +=
+            (samples, channels, rate) => BroadcastVocalRead?.Invoke(samples, channels, rate);
         _master.playOnAwake = false;
         _vocals.playOnAwake = false;
         _master.volume = 0.85f;

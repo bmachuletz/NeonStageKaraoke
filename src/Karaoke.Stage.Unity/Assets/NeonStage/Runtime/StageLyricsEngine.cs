@@ -66,6 +66,13 @@ public sealed class StageLyricsEngine
         Load(lyrics, beatTimes ?? Array.Empty<double>(), clearView);
     }
 
+    public void Clear()
+    {
+        _presentation = null;
+        _shownPage = -1;
+        _view?.Show(Array.Empty<string>(), Array.Empty<int>());
+    }
+
     private void Load(LyricsDto lyrics, IReadOnlyList<double> beatTimes, bool clearView)
     {
         _presentation = null;

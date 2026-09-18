@@ -6,6 +6,7 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using System.Net;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 
@@ -26,7 +27,7 @@ try
     await VerifyAlignmentSyllablesSkipDisplayBoundaryLinesAsync();
     await VerifyAlignmentSyllablesFollowChronologicalRepeatedLinesAsync();
     await VerifyOverlappingAlignmentSnapshotsLandInReviewCategoryAsync();
-    await VerifyFirstSongStartsActiveStageAsync();
+    await VerifyFirstSongSelectsSingerWithoutStartingAsync();
     var options = Options.Create(new KaraokeOptions { DatabasePath = databasePath });
     var events = new EventRepository(options);
     var queue = new QueueService(options, new TestHubContext(), events);
@@ -35,46 +36,82 @@ try
         "Standard Stage Test", DateTimeOffset.UtcNow.AddHours(2)), default);
     Assert(standardEvent.StageThemeId == EventRepository.DefaultStageThemeId,
         "Events ohne Auswahl verwenden weiterhin die bisherige Standardbühne.");
+    Assert(!standardEvent.IsOnline && !standardEvent.HasOnlinePassword,
+        "Neue Stages sind standardmäßig lokal/offline.");
+    var protectedEvent = await events.CreateAsync(new CreateKaraokeEventRequest(
+        "Geschützte Online-Stage", DateTimeOffset.UtcNow, IsOnline: true,
+        OnlinePassword: "karaoke-42", AllowConversation: true), default);
+    Assert((await events.GetAvailableOnlineAsync(default)).Any(item => item.Id == protectedEvent.Id) &&
+           await events.ValidateOnlineAccessAsync(protectedEvent.Id.ToString("N"), "karaoke-42", default)
+               is { AllowConversation: true },
+        "Neu angelegte Online-Stages sind im Multi-Stage-Modell sofort auswählbar und beitretbar.");
+    await events.ActivateAsync(protectedEvent.Id, default);
+    Assert(await events.ValidateOnlineAccessAsync(protectedEvent.Id.ToString("N"), "falsch", default) is null &&
+           await events.ValidateOnlineAccessAsync(protectedEvent.Id.ToString("N"), "karaoke-42", default)
+               is { AllowConversation: true },
+        "Online-Stages werden nur mit dem gespeicherten Kennwort betreten.");
+    await events.ActivateAsync(EventRepository.DefaultEventId, default);
     var first = await SeedSongAsync(databasePath, "Erster Song");
     var second = await SeedSongAsync(databasePath, "Zweiter Song");
-    await queue.AddAsync(EventRepository.DefaultEventId, first, "Anna", default);
+    var firstLocationId = Guid.NewGuid();
+    await queue.AddAsync(EventRepository.DefaultEventId, first, "Anna", firstLocationId, default);
     await queue.AddAsync(EventRepository.DefaultEventId, second, "Ben", default);
 
-    var started = await queue.StartAsync(default);
+    var started = await queue.StartAsync(EventRepository.DefaultEventId, default);
     Assert(started.IsRunning && !started.IsPaused && started.Current?.Song.Id == first.Id, "Start wählt den ersten Titel.");
+    Assert(started.Current?.RequestedBy == "Anna" && started.Current.LocationId == firstLocationId,
+        "Persönlicher Sängername und Standort-GUID bleiben im Queue-Eintrag getrennt erhalten.");
 
-    var paused = await queue.PauseAsync(default);
+    var paused = await queue.PauseAsync(EventRepository.DefaultEventId, default);
     Assert(paused.IsPaused, "Pause setzt den Pausenzustand.");
-    var resumed = await queue.ResumeAsync(default);
+    var resumed = await queue.ResumeAsync(EventRepository.DefaultEventId, default);
     Assert(resumed.IsRunning && !resumed.IsPaused, "Resume setzt die Wiedergabe fort.");
 
     var position = TimeSpan.FromSeconds(17.5);
-    var accepted = await queue.UpdatePositionAsync(new(started.Current!.Id, position), default);
+    var accepted = await queue.UpdatePositionAsync(EventRepository.DefaultEventId, new(started.Current!.Id, position), default);
     Assert(accepted?.Position == position, "Position des aktuellen Eintrags wird angenommen.");
-    var rejected = await queue.UpdatePositionAsync(new(Guid.NewGuid(), TimeSpan.FromSeconds(3)), default);
+    var rejected = await queue.UpdatePositionAsync(EventRepository.DefaultEventId, new(Guid.NewGuid(), TimeSpan.FromSeconds(3)), default);
     Assert(rejected is null, "Position eines fremden Eintrags wird abgewiesen.");
 
-    var next = await queue.NextAsync(default);
+    var next = await queue.NextAsync(EventRepository.DefaultEventId, default);
     Assert(next.Current?.Song.Id == second.Id && next.Position == TimeSpan.Zero, "Next startet den zweiten Titel bei Position null.");
-    var previous = await queue.PreviousAsync(default);
+    var previous = await queue.PreviousAsync(EventRepository.DefaultEventId, default);
     Assert(previous.Current?.Song.Id == first.Id && previous.Position == TimeSpan.Zero, "Previous kehrt zum ersten Titel zurück.");
-    var completed = await queue.CompleteAsync(previous.Current!.Id, default);
-    var duplicateCompletion = await queue.CompleteAsync(previous.Current.Id, default);
+    var completed = await queue.CompleteAsync(EventRepository.DefaultEventId, previous.Current!.Id, default);
+    var duplicateCompletion = await queue.CompleteAsync(EventRepository.DefaultEventId, previous.Current.Id, default);
     Assert(completed.Current?.Song.Id == second.Id && duplicateCompletion.Current?.Song.Id == second.Id,
         "Ein doppeltes Titelende überspringt keinen weiteren Song.");
+    var queueEnded = await queue.CompleteAsync(EventRepository.DefaultEventId, second.Id == duplicateCompletion.Current!.Song.Id
+        ? duplicateCompletion.Current.Id : Guid.Empty, default);
+    var repeatedEnd = await queue.CompleteAsync(EventRepository.DefaultEventId, duplicateCompletion.Current.Id, default);
+    Assert(queueEnded.Current is null && repeatedEnd.Current is null && !repeatedEnd.IsRunning,
+        "Nach dem letzten Titel bleibt die Bühne leer und fällt nicht in eine Wiederholungsschleife.");
 
     var controller = new PlaybackControllerService();
     var appOne = Guid.NewGuid();
     var appTwo = Guid.NewGuid();
-    Assert(controller.Claim(new(appOne, "App Eins")).OwnsControl, "Die erste App übernimmt die Bühnensteuerung.");
-    Assert(!controller.Claim(new(appTwo, "App Zwei")).OwnsControl, "Eine zweite App wird während der aktiven Lease abgewiesen.");
-    Assert(controller.Claim(new(appTwo, "Unity Stage", Force: true)).OwnsControl,
+    Assert(controller.Claim(EventRepository.DefaultEventId, new(appOne, "App Eins")).OwnsControl, "Die erste App übernimmt die Bühnensteuerung.");
+    Assert(!controller.Claim(EventRepository.DefaultEventId, new(appTwo, "App Zwei")).OwnsControl, "Eine zweite App wird während der aktiven Lease abgewiesen.");
+    Assert(controller.Claim(EventRepository.DefaultEventId, new(appTwo, "Unity Stage", Force: true)).OwnsControl,
         "Eine bewusste Bedienung direkt auf der Stage übernimmt die Steuerung sofort.");
-    Assert(!controller.Claim(new(appOne, "App Eins")).OwnsControl,
+    Assert(!controller.Claim(EventRepository.DefaultEventId, new(appOne, "App Eins")).OwnsControl,
         "Normale Clients können die von der Stage übernommene Lease nicht verdrängen.");
-    Assert(controller.Claim(new(appTwo, "Unity Stage")).OwnsControl, "Die aktive App kann ihre Lease erneuern.");
-    controller.Release(appTwo);
-    Assert(controller.Claim(new(appOne, "App Eins")).OwnsControl, "Nach der Freigabe kann eine andere App übernehmen.");
+    Assert(controller.Claim(EventRepository.DefaultEventId, new(appTwo, "Unity Stage")).OwnsControl, "Die aktive App kann ihre Lease erneuern.");
+    controller.Release(EventRepository.DefaultEventId, appTwo);
+    Assert(controller.Claim(EventRepository.DefaultEventId, new(appOne, "App Eins")).OwnsControl, "Nach der Freigabe kann eine andere App übernehmen.");
+
+    var parallelStage = await events.CreateAsync(new("Parallele Stage", DateTimeOffset.UtcNow), default);
+    await events.ActivateAsync(parallelStage.Id, default);
+    var parallelSong = await SeedSongAsync(databasePath, "Paralleler Song");
+    await queue.AddAsync(parallelStage.Id, parallelSong, "Clara", default);
+    var parallelState = await queue.StartAsync(parallelStage.Id, default);
+    var directState = await queue.GetStateAsync(EventRepository.DefaultEventId, default);
+    Assert(parallelState.Current?.Song.Id == parallelSong.Id && parallelState.IsRunning &&
+           directState.Current is null && !directState.IsRunning,
+        "Zwei veröffentlichte Stages besitzen vollständig getrennte Queue- und Playback-Zustände.");
+    Assert(controller.Claim(parallelStage.Id, new(appTwo, "Zweite Stage")).OwnsControl &&
+           controller.Owns(EventRepository.DefaultEventId, appOne),
+        "Controller-Leases gelten pro Stage und blockieren parallele Bühnen nicht.");
 
     var libraryPath = Path.Combine(Path.GetTempPath(), $"neon-stage-library-{Guid.NewGuid():N}");
     var settings = new ServerSettingsService(options);
@@ -181,6 +218,40 @@ try
             "Datei- und Ordnerimporte verwenden standardmäßig EasyAligner Direct.");
     }
     finally { Directory.Delete(uniqueAudioFolder, recursive: true); }
+
+    var folderArchivePath = Path.Combine(Path.GetTempPath(), $"neon-stage-folder-{Guid.NewGuid():N}.zip");
+    var extractedFolder = Path.Combine(Path.GetTempPath(), $"neon-stage-folder-{Guid.NewGuid():N}");
+    var escapedFile = Path.Combine(Path.GetDirectoryName(extractedFolder)!, "escape.mp3");
+    try
+    {
+        using (var archive = ZipFile.Open(folderArchivePath, ZipArchiveMode.Create))
+        {
+            await using var audio = archive.CreateEntry("Album/Demo.mp3").Open();
+            await audio.WriteAsync(new byte[] { 1, 2, 3 });
+        }
+        await FolderImportService.ExtractUploadAsync(folderArchivePath, extractedFolder, default);
+        Assert(File.Exists(Path.Combine(extractedFolder, "Album", "Demo.mp3")),
+            "Ein hochgeladener Desktop-Ordner wird serverseitig mit seiner Struktur entpackt.");
+
+        File.Delete(folderArchivePath);
+        Directory.Delete(extractedFolder, recursive: true);
+        using (var archive = ZipFile.Open(folderArchivePath, ZipArchiveMode.Create))
+        {
+            await using var unsafeEntry = archive.CreateEntry("../escape.mp3").Open();
+            await unsafeEntry.WriteAsync(new byte[] { 1 });
+        }
+        var unsafeRejected = false;
+        try { await FolderImportService.ExtractUploadAsync(folderArchivePath, extractedFolder, default); }
+        catch (InvalidDataException) { unsafeRejected = true; }
+        Assert(unsafeRejected && !File.Exists(escapedFile),
+            "Der Ordner-Upload weist Archivpfade außerhalb seines temporären Verzeichnisses ab.");
+    }
+    finally
+    {
+        File.Delete(folderArchivePath);
+        if (Directory.Exists(extractedFolder)) Directory.Delete(extractedFolder, recursive: true);
+        File.Delete(escapedFile);
+    }
 
     var lyricsVersions = new LyricsVersionRepository(options);
     var versionSongId = Guid.NewGuid();
@@ -386,12 +457,14 @@ try
         "Derselbe Spotify-Titel kann unabhängig in verschiedenen Event-Wunschlisten stehen.");
     await queue.AddAsync(party.Id, first, "Eva", default);
     var partyQueue = await queue.GetStateAsync(party.Id, default);
-    Assert(partyQueue.Queue.Count == 1 && partyQueue.Queue[0].RequestedBy == "Eva",
+    Assert(partyQueue.Current?.RequestedBy == "Eva" && partyQueue.Queue.Count == 0 && !partyQueue.IsRunning,
         "Vorab befüllte Event-Wartelisten bleiben voneinander getrennt.");
     await events.ActivateAsync(party.Id, default);
-    var activeParty = await events.GetActiveAsync(default);
-    Assert(activeParty?.Id == party.Id && (await queue.GetActiveStateAsync(default)).Queue.Count == 1,
-        "Beim Aktivieren wechselt die Bühne auf die vorbereitete Event-Warteliste.");
+    var launcherStages = await events.GetLauncherStagesAsync(default);
+    Assert(launcherStages.Any(stage => stage.Id == party.Id) &&
+           launcherStages.Any(stage => stage.IsDirect) &&
+           (await queue.GetStateAsync(party.Id, default)).Current?.RequestedBy == "Eva",
+        "Veröffentlichen ergänzt die vorbereitete Stage im Launcher, ohne die Direkt-Stage zu ersetzen.");
 
     var enhancedLyrics = LrcParser.Parse(Guid.NewGuid(),
         ["[00:12.57]<00:12.12>Das <00:12.36>Leben <00:12.52>bockt <00:12.76>nicht"], TimeSpan.FromSeconds(20));
@@ -516,7 +589,7 @@ static void Assert(bool condition, string message)
     Console.WriteLine("OK: " + message);
 }
 
-static async Task VerifyFirstSongStartsActiveStageAsync()
+static async Task VerifyFirstSongSelectsSingerWithoutStartingAsync()
 {
     var database = Path.Combine(Path.GetTempPath(), $"neon-stage-autostart-{Guid.NewGuid():N}.db");
     try
@@ -529,16 +602,20 @@ static async Task VerifyFirstSongStartsActiveStageAsync()
         await events.ActivateAsync(activeEvent.Id, default);
         var first = await SeedSongAsync(database, "Autostart Song");
         var added = await queue.AddAsync(activeEvent.Id, first, "Gast", default);
-        var state = await queue.GetActiveStateAsync(default);
-        Assert(added.Status == QueueEntryStatus.Playing && state.IsRunning && !state.IsPaused &&
+        var state = await queue.GetStateAsync(activeEvent.Id, default);
+        Assert(added.Status == QueueEntryStatus.Playing && !state.IsRunning && !state.IsPaused &&
                state.Current?.Id == added.Id && state.Queue.Count == 0,
-            "Der erste Titel einer leeren aktiven Warteliste startet automatisch auf der Bühne.");
+            "Der erste Titel wird dem Singer-Standort zugeordnet, wartet aber auf dessen Startsignal.");
+
+        state = await queue.StartAsync(activeEvent.Id, default);
+        Assert(state.IsRunning && !state.IsPaused && state.Current?.Id == added.Id,
+            "Der Singer-Standort kann den vorausgewählten ersten Titel anschließend starten.");
 
         var second = await SeedSongAsync(database, "Wartender Song");
         await queue.AddAsync(activeEvent.Id, second, "Gast", default);
-        state = await queue.GetActiveStateAsync(default);
+        state = await queue.GetStateAsync(activeEvent.Id, default);
         Assert(state.Current?.Id == added.Id && state.Queue.Count == 1 && state.Queue[0].Song.Id == second.Id,
-            "Weitere Titel warten normal, während der automatisch gestartete Titel läuft.");
+            "Weitere Titel warten normal, während der gestartete Titel läuft.");
     }
     finally
     {
@@ -1093,7 +1170,7 @@ static async Task VerifyOnlineRoomAndTokenContractAsync()
     await settings.InitializeAsync(default);
     var rooms = new OnlineRoomRegistry(settings, TimeProvider.System);
     var singer = rooms.Join(new OnlineJoinRequest("PARTY", "site-a", "Standort A", OnlineRole.Singer));
-    rooms.Join(new OnlineJoinRequest("PARTY", "site-b", "Standort B", OnlineRole.Listener));
+    var listener = rooms.Join(new OnlineJoinRequest("PARTY", "site-b", "Standort B", OnlineRole.Listener));
     var denied = false;
     try { rooms.ChangeRole("PARTY", "site-b", OnlineRole.Singer); }
     catch (OnlineSingerConflictException) { denied = true; }
@@ -1108,6 +1185,30 @@ static async Task VerifyOnlineRoomAndTokenContractAsync()
     using var payload = JsonDocument.Parse(Convert.FromBase64String(payloadPart));
     Assert(payload.RootElement.GetProperty("video").GetProperty("canPublish").GetBoolean(),
         "Das kurzlebige Singer-Token besitzt eine Publish-Berechtigung.");
+    Assert(payload.RootElement.GetProperty("video").GetProperty("canPublishData").GetBoolean(),
+        "Das Singer-Token darf Zeitmarken über den LiveKit-Datenkanal senden.");
+    var listenerToken = new LiveKitTokenIssuer(settings, TimeProvider.System).Issue(listener).AccessToken;
+    var listenerPayloadPart = listenerToken.Split('.')[1].Replace('-', '+').Replace('_', '/');
+    listenerPayloadPart = listenerPayloadPart.PadRight(
+        listenerPayloadPart.Length + (4 - listenerPayloadPart.Length % 4) % 4, '=');
+    using var listenerPayload = JsonDocument.Parse(Convert.FromBase64String(listenerPayloadPart));
+    Assert(!listenerPayload.RootElement.GetProperty("video").GetProperty("canPublish").GetBoolean(),
+        "Normale Listener-Tokens dürfen keine Audiotracks veröffentlichen.");
+    Assert(!listenerPayload.RootElement.GetProperty("video").GetProperty("canPublishData").GetBoolean(),
+        "Listener-Tokens bleiben auch für Datenpakete strikt receive-only.");
+    var conversationListener = rooms.Join(new OnlineJoinRequest(
+        "TALK", "site-c", "Standort C", OnlineRole.Listener), allowConversation: true);
+    var conversationToken = new LiveKitTokenIssuer(settings, TimeProvider.System)
+        .Issue(conversationListener).AccessToken;
+    var conversationPayloadPart = conversationToken.Split('.')[1].Replace('-', '+').Replace('_', '/');
+    conversationPayloadPart = conversationPayloadPart.PadRight(
+        conversationPayloadPart.Length + (4 - conversationPayloadPart.Length % 4) % 4, '=');
+    using var conversationPayload = JsonDocument.Parse(Convert.FromBase64String(conversationPayloadPart));
+    Assert(conversationPayload.RootElement.GetProperty("video").GetProperty("canPublish").GetBoolean() &&
+           !conversationPayload.RootElement.GetProperty("video").GetProperty("canPublishData").GetBoolean() &&
+           conversationPayload.RootElement.GetProperty("video").GetProperty("canPublishSources")[0]
+               .GetString() == "microphone",
+        "Der optionale Gesprächsmodus erlaubt Listenern nur Mikrofon-Audio, aber keine Timeline-Daten.");
     Assert(!payload.RootElement.ToString().Contains("super-secret", StringComparison.Ordinal),
         "Das LiveKit-Secret gelangt niemals in Token-Payload oder Client-Konfiguration.");
     rooms.Leave("PARTY", "site-b");

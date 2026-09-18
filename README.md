@@ -18,8 +18,8 @@ operator's machine.
 
 | Area | Current capability |
 |---|---|
-| Party operation | Planned events and instant sessions, invitation links and QR codes, mobile guest portal, released-library search, queue management, song requests, and live reactions |
-| Stage | Unity 6 player for Linux, Android/ARM32, Windows x64, and macOS ARM64 with synchronized instrumental/vocal stems, independent levels, video backgrounds, reactive shaders, word/syllable highlighting, and DSP-clock timing |
+| Party operation | Multiple simultaneous Stages with independent queues/playback, planned events, invitation links and QR codes, mobile guest portal, released-library search, song requests, and live reactions |
+| Stage | Unity 6 player for Linux, Android/ARM32, Windows x64, and macOS ARM64 with a touch-friendly image launcher, Direct Stage, synchronized stems, video backgrounds, reactive shaders, word/syllable highlighting, and DSP-clock timing |
 | Lyrics production | Avalonia editor with waveform editing, loops, undo/redo, version/review workflow, Enhanced LRC and UltraStar import, live windowed Stage testing, and deterministic MP4 export |
 | Song preparation | MP3/FLAC folder import, preserved original masters, portable song packages, LRCLIB/USDB source selection, full transcription fallback, vocal separation, and EasyAligner word timing |
 | Automation | German and English global CTC models, adaptive backing-vocal recovery, batch realignment, quality gates, technical/human lyric views, and explicit release approval |
@@ -45,8 +45,8 @@ mkdir -p data
 # KARAOKE_LIBRARY_PATH=/absolute/path/to/your/karaoke/library
 # KARAOKE_DATA_PATH=./data
 # NEON_STAGE_PUBLIC_URL=http://YOUR-LAN-IP:5274
-docker compose up -d --build server
-docker compose ps
+./scripts/containers/create.sh server
+./scripts/containers/manage.sh status
 curl http://127.0.0.1:5274/api/health
 ```
 
@@ -55,6 +55,19 @@ portal is served from `http://SERVER:5274/`. Use the server's LAN address in
 `NEON_STAGE_PUBLIC_URL` when phones need to open the generated QR invitation.
 Spotify, Qobuz, USDB credentials, CUDA alignment, and Online-Karaoke are
 optional; the server starts without them.
+
+The container helper can create or update the server, CUDA EasyAligner and
+single-host LiveKit stacks together while preserving all persistent data:
+
+```bash
+./scripts/containers/create.sh             # first start of all three stacks
+./scripts/containers/update.sh             # pull/rebuild and replace all three
+./scripts/containers/update.sh server      # update only one stack
+./scripts/containers/manage.sh logs server --follow
+```
+
+See [`scripts/containers/README.md`](scripts/containers/README.md) for restart,
+stop, status, dry-run and managed-TLS variants.
 
 ### 2. Add the Stage and editor
 
@@ -123,10 +136,10 @@ Guest phones ── HTTP/SSE ──▶ ASP.NET Core server ── state/audio �
 
 The ASP.NET Core server is the single source of truth. It owns event/session state, invitations, queue order, playback state, review metadata, and paths into the operator's local media library. Clients never ship with songs and do not need direct filesystem access.
 
-1. **Create or activate a session.** An administrator prepares an event in the web portal, or the stage creates an ad-hoc session. The server returns an invitation token and QR code.
+1. **Create and publish a Stage.** An administrator prepares a Stage in the editor, optionally uploads its launcher image, and publishes it. Publishing does not replace another Stage: the server can run multiple independent queues and playback sessions at once. The permanent Direct Stage remains available for immediate local use.
 2. **Join from a phone.** A guest opens `/e/{invite-token}`. The responsive portal resolves that token through the server, stores only the guest's chosen display name locally, and queries the released song catalog.
 3. **Build the queue.** Search, enqueue, reorder, remove, and request operations are HTTP calls scoped to the resolved event. Server-side validation prevents unreleased or incomplete songs from entering stage playback.
-4. **Drive the stage.** The Unity client polls session/playback state and acquires the stage control lease. It requests metadata, cover art, enhanced lyrics, and audio/stem streams from the server. Instrumental and vocal files are decoded locally by Unity and synchronized against its DSP clock; lyric progress uses that same clock rather than network request timing.
+4. **Drive the stage.** On startup Unity presents the Direct Stage and all published Stages as image cards. After selection, every queue, playback command, control lease, QR code, reaction and Online room is scoped to that Stage ID. Instrumental and vocal files are decoded locally by Unity and synchronized against its DSP clock; lyric progress uses that same clock rather than network request timing.
 5. **Send audience reactions.** Guest phones post a small reaction type (`heart`, `smile`, `like`, `clap`, or `fire`). The stage fetches the event's reaction stream and renders font-independent animated graphics. No emoji font is required on Android or Linux.
 6. **Prepare new material.** The request worker downloads authorized source material, matches lyrics, and sends audio plus lyrics to the CUDA alignment container. Generated LRC, alignment diagnostics, and stems remain in the local library, outside application packages.
 7. **Review and release.** The editor reads server metadata and local audio streams, caches temporary editing audio on the workstation, and saves versioned lyric documents back to the server. Re-alignment can target one song or the full library. Only an explicitly released version becomes visible to the Unity stage.
@@ -191,23 +204,31 @@ Run the documented worker scripts against the container URL for those jobs.
 
 The Online-Karaoke MVP connects Stage devices at different locations. One
 Stage joins as **Singer** and publishes the locally mixed song plus up to two
-microphone inputs; any number of **Listener** stages receive that single audio
-track without starting local playback. The server issues short-lived,
+microphone inputs; any number of **Listener** stages receive separate music,
+original-vocal and live-microphone tracks without audible local playback. The server issues short-lived,
 role-scoped LiveKit tokens and guarantees that only one Singer owns a room.
 
 1. Start the documented [single-host LiveKit stack](deploy/livekit/README.md),
    or use an existing LiveKit deployment.
 2. Open **Settings → Online-Karaoke** in the desktop editor, enter the WSS URL,
    API key, API secret, and room prefix, then use **Test LiveKit connection**.
-3. On the Stage, press `F8` or click/tap the broadcast microphone icon. Use the
-   same room name on all locations and select Singer or Listener.
+3. Create an event as an **Online stage** (offline is the default), choose a
+   stage password, optionally enable the all-site pause conversation, and
+   activate it.
+4. On every Stage device, press `F8` or click/tap the broadcast microphone
+   icon, select the advertised stage, enter its password, and join. Roles then
+   follow the location GUID in the queue automatically; the first queued song
+   gives its location the controls but waits for Play.
 
 The broadcast brackets are gray while offline and colored after a successful
 connection. LiveKit credentials remain server-side; they are never sent to a
 Stage. If an Android karaoke box exposes two physical radio microphones as one
 multichannel system input, Neon Stage preserves that complete input. If the OS
 exposes two separate microphone devices, both are captured and mixed with
-headroom. See the [Online-Karaoke architecture and operating guide](docs/online-karaoke.md)
+headroom. A Singer can optionally lock the Listener mix and prescribe the
+remote microphone volume from the mobile song page. In pause-conversation
+mode, every site publishes only its microphone while no song is playing; all
+Listener microphones are unpublished immediately on Resume. See the [Online-Karaoke architecture and operating guide](docs/online-karaoke.md)
 for ports, audio routing, security, logs, and current MVP limits.
 
 ### Configure Spotify Web API access

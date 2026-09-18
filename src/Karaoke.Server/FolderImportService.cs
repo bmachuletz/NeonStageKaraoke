@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Text;
 using Karaoke.Editor.Core;
 using Karaoke.Contracts;
@@ -29,7 +30,7 @@ public sealed class FolderImportService(
         lock (_gate) return _status;
     }
 
-    public FolderImportStatus? TryStart(FolderImportRequest request)
+    public FolderImportStatus? TryStart(FolderImportRequest request, string? cleanupSourcePath = null)
     {
         var sourcePath = Path.GetFullPath(Environment.ExpandEnvironmentVariables(request.SourcePath.Trim()));
         if (!Directory.Exists(sourcePath))
@@ -46,11 +47,43 @@ public sealed class FolderImportService(
                 0, 0, 0, 0, 0, "MP3- und FLAC-Dateien werden vorbereitet …", DateTimeOffset.UtcNow, null, []);
         }
 
-        _ = Task.Run(() => ProcessFolderAsync(files));
+        _ = Task.Run(() => ProcessFolderAsync(files, cleanupSourcePath));
         return GetStatus();
     }
 
-    private async Task ProcessFolderAsync(IReadOnlyList<string> sourceFiles)
+    public async Task<FolderImportStatus?> TryStartUploadAsync(Stream archiveStream, bool recursive,
+        CancellationToken cancellationToken)
+    {
+        if (GetStatus().IsRunning) return null;
+
+        var uploadRoot = Path.Combine(Path.GetTempPath(), "neonstage-folder-upload", Guid.NewGuid().ToString("N"));
+        var archivePath = Path.Combine(uploadRoot, "folder.zip");
+        var sourcePath = Path.Combine(uploadRoot, "source");
+        var accepted = false;
+        Directory.CreateDirectory(sourcePath);
+        try
+        {
+            await using (var archiveFile = new FileStream(archivePath, FileMode.CreateNew, FileAccess.Write,
+                             FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                await archiveStream.CopyToAsync(archiveFile, cancellationToken);
+            await ExtractUploadAsync(archivePath, sourcePath, cancellationToken);
+            File.Delete(archivePath);
+
+            var status = TryStart(new FolderImportRequest(sourcePath, recursive), uploadRoot);
+            accepted = status is not null;
+            return status;
+        }
+        finally
+        {
+            if (!accepted)
+            {
+                try { if (Directory.Exists(uploadRoot)) Directory.Delete(uploadRoot, recursive: true); }
+                catch (IOException exception) { logger.LogDebug(exception, "Uploadordner konnte nicht entfernt werden"); }
+            }
+        }
+    }
+
+    private async Task ProcessFolderAsync(IReadOnlyList<string> sourceFiles, string? cleanupSourcePath)
     {
         var output = new List<string>();
         var jobId = GetStatus().JobId ?? Guid.NewGuid();
@@ -216,7 +249,42 @@ public sealed class FolderImportService(
         {
             try { if (Directory.Exists(stagingRoot)) Directory.Delete(stagingRoot, recursive: true); }
             catch (Exception exception) { logger.LogDebug(exception, "Temporärer Importordner konnte nicht entfernt werden"); }
+            if (!string.IsNullOrWhiteSpace(cleanupSourcePath))
+            {
+                try { if (Directory.Exists(cleanupSourcePath)) Directory.Delete(cleanupSourcePath, recursive: true); }
+                catch (Exception exception) { logger.LogDebug(exception, "Uploadordner konnte nicht entfernt werden"); }
+            }
         }
+    }
+
+    internal static async Task ExtractUploadAsync(string archivePath, string destinationPath,
+        CancellationToken cancellationToken)
+    {
+        var destinationRoot = Path.GetFullPath(destinationPath);
+        var extractedFiles = 0;
+        long extractedBytes = 0;
+        using var archive = ZipFile.OpenRead(archivePath);
+        foreach (var entry in archive.Entries)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrEmpty(entry.Name)) continue;
+            if (++extractedFiles > 20_000)
+                throw new InvalidDataException("Der Import enthält zu viele Dateien.");
+            if (entry.Length < 0 || extractedBytes > long.MaxValue - entry.Length ||
+                (extractedBytes += entry.Length) > 500L * 1024 * 1024 * 1024)
+                throw new InvalidDataException("Der entpackte Import ist zu groß.");
+
+            var targetPath = Path.GetFullPath(Path.Combine(destinationRoot,
+                entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
+            if (!IsWithin(targetPath, destinationRoot))
+                throw new InvalidDataException("Der Import enthält einen unsicheren Dateipfad.");
+            Directory.CreateDirectory(Path.GetDirectoryName(targetPath)!);
+            await using var input = entry.Open();
+            await using var output = new FileStream(targetPath, FileMode.CreateNew, FileAccess.Write,
+                FileShare.None, 1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            await input.CopyToAsync(output, cancellationToken);
+        }
+        if (extractedFiles == 0) throw new InvalidDataException("Das hochgeladene Ordnerarchiv ist leer.");
     }
 
     private static AudioTags ReadMetadata(string path)

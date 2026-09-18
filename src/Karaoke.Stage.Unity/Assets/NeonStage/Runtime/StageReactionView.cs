@@ -33,6 +33,12 @@ public sealed class StageReactionView
         _active.Add(new FlyingReaction(rect, image, Random.Range(-45f,45f), Random.Range(145f,220f), Random.Range(2.6f,4.1f)));
     }
 
+    public void Clear()
+    {
+        foreach (var item in _active) Object.Destroy(item.Rect.gameObject);
+        _active.Clear();
+    }
+
     private Sprite GetSprite(string type)
     {
         if (_sprites.TryGetValue(type, out var existing)) return existing;

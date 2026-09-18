@@ -7,42 +7,44 @@ public sealed class PlaybackControllerService
     public const string HeaderName = "X-Karaoke-Controller";
     private static readonly TimeSpan LeaseDuration = TimeSpan.FromSeconds(8);
     private readonly object _sync = new();
-    private Guid? _controllerId;
-    private string? _controllerName;
-    private DateTimeOffset _leaseExpiresAt;
+    private readonly Dictionary<Guid, Lease> _leases = new();
 
-    public PlaybackControllerDto Claim(PlaybackControllerRequest request)
+    public PlaybackControllerDto Claim(Guid eventId, PlaybackControllerRequest request)
     {
         lock (_sync)
         {
             var now = DateTimeOffset.UtcNow;
-            if (request.Force || _controllerId is null || _leaseExpiresAt <= now || _controllerId == request.ClientId)
+            _leases.TryGetValue(eventId, out var lease);
+            if (request.Force || lease is null || lease.ExpiresAt <= now || lease.ControllerId == request.ClientId)
             {
-                _controllerId = request.ClientId;
-                _controllerName = string.IsNullOrWhiteSpace(request.ClientName) ? "Karaoke-App" : request.ClientName.Trim();
-                _leaseExpiresAt = now + LeaseDuration;
+                lease = new Lease(request.ClientId,
+                    string.IsNullOrWhiteSpace(request.ClientName) ? "Karaoke-App" : request.ClientName.Trim(),
+                    now + LeaseDuration);
+                _leases[eventId] = lease;
             }
-            return Snapshot(request.ClientId);
+            return Snapshot(lease, request.ClientId);
         }
     }
 
-    public bool Owns(Guid clientId)
+    public bool Owns(Guid eventId, Guid clientId)
     {
         lock (_sync)
-            return _controllerId == clientId && _leaseExpiresAt > DateTimeOffset.UtcNow;
+            return _leases.TryGetValue(eventId, out var lease) &&
+                   lease.ControllerId == clientId && lease.ExpiresAt > DateTimeOffset.UtcNow;
     }
 
-    public void Release(Guid clientId)
+    public void Release(Guid eventId, Guid clientId)
     {
         lock (_sync)
         {
-            if (_controllerId != clientId) return;
-            _controllerId = null;
-            _controllerName = null;
-            _leaseExpiresAt = DateTimeOffset.MinValue;
+            if (_leases.TryGetValue(eventId, out var lease) && lease.ControllerId == clientId)
+                _leases.Remove(eventId);
         }
     }
 
-    private PlaybackControllerDto Snapshot(Guid requesterId) =>
-        new(_controllerId == requesterId && _leaseExpiresAt > DateTimeOffset.UtcNow, _controllerId, _controllerName, _leaseExpiresAt);
+    private static PlaybackControllerDto Snapshot(Lease lease, Guid requesterId) =>
+        new(lease.ControllerId == requesterId && lease.ExpiresAt > DateTimeOffset.UtcNow,
+            lease.ControllerId, lease.ControllerName, lease.ExpiresAt);
+
+    private sealed record Lease(Guid ControllerId, string ControllerName, DateTimeOffset ExpiresAt);
 }

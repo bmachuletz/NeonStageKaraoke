@@ -1,0 +1,7 @@
+nav{grid-template-columns:repeat(3,1fr)}
+.singer-mix{margin:-8px 0 20px;padding:18px;border:1px solid #74518c;background:linear-gradient(135deg,#281738ee,#151020ee);border-radius:18px;box-shadow:0 12px 38px #0007}
+.singer-mix h2{margin:.35rem 0 1rem;font-size:1.15rem}
+.mix-lock,.mix-range{display:flex;align-items:center;gap:12px;margin:12px 0;font-weight:800}
+.mix-lock input{width:22px;height:22px;accent-color:var(--lime)}
+.mix-range input{flex:1;min-width:80px;padding:0;accent-color:var(--pink)}
+.mix-range output{min-width:50px;text-align:right;color:var(--lime)}

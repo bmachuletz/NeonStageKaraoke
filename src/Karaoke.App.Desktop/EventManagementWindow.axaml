@@ -70,9 +70,9 @@
 
           <Separator Grid.Row="2" Margin="0,24,0,18" />
           <WrapPanel Grid.Row="3" Orientation="Horizontal">
-            <Button Content="Auf Bühne aktivieren" Click="ActivateClick" IsEnabled="{Binding CanActivate}"
+            <Button Content="Im Launcher veröffentlichen" Click="ActivateClick" IsEnabled="{Binding CanActivate}"
                     Background="#DFFF28" Foreground="#11151C" Margin="0,0,8,8" />
-            <Button Content="Aktive Bühne beenden" Click="DeactivateClick" IsEnabled="{Binding CanDeactivate}"
+            <Button Content="Aus Launcher entfernen" Click="DeactivateClick" IsEnabled="{Binding CanDeactivate}"
                     Margin="0,0,8,8" />
             <Button Content="Wünsche abarbeiten" Click="ProcessWishesClick" Margin="0,0,8,8" />
             <Button Content="Session löschen" Click="DeleteClick" IsEnabled="{Binding CanDelete}"

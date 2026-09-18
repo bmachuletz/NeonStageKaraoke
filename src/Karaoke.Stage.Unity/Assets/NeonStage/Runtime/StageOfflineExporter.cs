@@ -101,10 +101,12 @@ public static class StageOfflineExporter
                 pixels = new Texture2D(request.width, request.height, TextureFormat.RGBA32, false, false);
             UnityEngine.Debug.Log($"Stage export GPU readback: {(useAsyncReadback ? "asynchronous" : "synchronous fallback")}");
 
-            var audioUrl = $"{song.serverUrl.TrimEnd('/')}/api/songs/{song.songId}/audio";
+            var audioInput = !string.IsNullOrWhiteSpace(song.exportAudioPath) && File.Exists(song.exportAudioPath)
+                ? song.exportAudioPath
+                : $"{song.serverUrl.TrimEnd('/')}/api/songs/{song.songId}/audio";
             var arguments = $"-hide_banner -loglevel error -y -f rawvideo -pixel_format rgba " +
                             $"-video_size {request.width}x{request.height} -framerate {request.framesPerSecond} " +
-                            $"-i pipe:0 -i {Quote(audioUrl)} -map 0:v:0 -map 1:a:0? -vf vflip " +
+                            $"-i pipe:0 -i {Quote(audioInput)} -map 0:v:0 -map 1:a:0? -vf vflip " +
                             $"{EncoderArguments()} -pix_fmt yuv420p -c:a aac -b:a 192k " +
                             $"-shortest {Quote(partial)}";
             UnityEngine.Debug.Log("Stage export FFmpeg: ffmpeg " + arguments);
@@ -258,6 +260,7 @@ public static class StageOfflineExporter
                 if (File.Exists(partial)) File.Delete(partial);
             }
             catch { }
+            UnityEngine.Debug.LogError("Stage MP4 export failed: " + failure);
             failed(failure.Message);
         }
         else completed(output);
@@ -302,7 +305,11 @@ public static class StageOfflineExporter
         var configured = Environment.GetEnvironmentVariable("NEONSTAGE_EXPORT_GPU_READBACK")?.Trim().ToLowerInvariant();
         return configured switch
         {
-            null or "" or "auto" => SelectedEncoder() != "h264_nvenc",
+            // Several Linux/Intel drivers complete the one-frame capability
+            // probe successfully and fail only after the export pipeline is
+            // under load. Offline export values correctness over a marginal
+            // readback gain, so auto uses the deterministic synchronous path.
+            null or "" or "auto" => false,
             "async" => true,
             "sync" => false,
             _ => throw new InvalidOperationException(

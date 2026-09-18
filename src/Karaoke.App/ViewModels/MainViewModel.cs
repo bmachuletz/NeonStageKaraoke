@@ -78,6 +78,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string settingsMessage = string.Empty;
     [ObservableProperty] private string newEventName = string.Empty;
     [ObservableProperty] private string newEventStartsAt = DateTimeOffset.Now.AddDays(7).ToString("yyyy-MM-dd HH:mm");
+    [ObservableProperty] private bool newEventIsOnline;
+    [ObservableProperty] private string newEventOnlinePassword = string.Empty;
+    [ObservableProperty] private bool newEventAllowConversation;
     [ObservableProperty] private KaraokeEventDto? selectedEvent;
     [ObservableProperty] private StageThemeDto? selectedNewEventStageTheme;
 
@@ -340,10 +343,21 @@ public partial class MainViewModel : ObservableObject, IDisposable
             SettingsMessage = "Eventname und Startzeit (z. B. 2026-08-01 19:00) prüfen.";
             return;
         }
+        if (NewEventIsOnline && NewEventOnlinePassword.Length < 4)
+        {
+            SettingsMessage = "Online-Stage: Kennwort mit mindestens vier Zeichen eingeben.";
+            return;
+        }
         using var response = await _http.PostAsJsonAsync("/api/events", new CreateKaraokeEventRequest(
-            NewEventName, startsAt, StageThemeId: SelectedNewEventStageTheme?.Id ?? "standard"));
+            NewEventName, startsAt, StageThemeId: SelectedNewEventStageTheme?.Id ?? "standard",
+            IsOnline: NewEventIsOnline,
+            OnlinePassword: NewEventIsOnline ? NewEventOnlinePassword : null,
+            AllowConversation: NewEventIsOnline && NewEventAllowConversation));
         if (!response.IsSuccessStatusCode) { SettingsMessage = "Event konnte nicht erstellt werden."; return; }
         NewEventName = string.Empty;
+        NewEventOnlinePassword = string.Empty;
+        NewEventIsOnline = false;
+        NewEventAllowConversation = false;
         await LoadEventsAsync();
         SettingsMessage = "Event und Einladungslink wurden erstellt.";
     }

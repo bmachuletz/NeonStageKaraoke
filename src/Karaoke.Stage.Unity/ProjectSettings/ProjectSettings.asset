@@ -172,12 +172,12 @@ PlayerSettings:
     Android: de.neonstage.stage
     Standalone: de.neonstage.stage
   buildNumber:
-    Standalone: 3
+    Standalone: 4
     VisionOS: 0
     iPhone: 0
     tvOS: 0
   overrideDefaultApplicationIdentifier: 1
-  AndroidBundleVersionCode: 3
+  AndroidBundleVersionCode: 4
   AndroidMinSdkVersion: 26
   AndroidTargetSdkVersion: 0
   AndroidPreferredInstallLocation: 1

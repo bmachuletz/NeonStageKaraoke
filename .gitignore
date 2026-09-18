@@ -91,6 +91,8 @@ library/
 !src/Karaoke.Stage.Unity/Assets/Resources/NeonStageIcon.png
 !src/Karaoke.Stage.Unity/Assets/Resources/OnlineBroadcastIcon.png
 !src/Karaoke.Stage.Unity/Assets/Resources/OnlineBroadcastIconOffline.png
+!src/Karaoke.Stage.Unity/Assets/Resources/StageSelectionBackIcon.png
+!src/Karaoke.Stage.Unity/Assets/Resources/NeonStageWordmark.png
 !lyrics-word-aligner/third_party/SOFA/example.png
 !site/assets/
 !site/assets/*.png

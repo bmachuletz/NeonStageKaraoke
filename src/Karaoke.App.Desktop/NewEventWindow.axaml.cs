@@ -1,5 +1,6 @@
 using System.Globalization;
 using Avalonia.Controls;
+using Avalonia.Platform.Storage;
 using Karaoke.Contracts;
 
 namespace Karaoke.App.Desktop;
@@ -54,10 +55,31 @@ public partial class NewEventWindow : Window
             }
             endsAt = parsedEnd;
         }
+        var isOnline = OnlineBox.IsChecked == true;
+        if (isOnline && (OnlinePasswordBox.Text?.Length ?? 0) < 4)
+        {
+            ErrorText.Text = EditorLocale.German
+                ? "Für eine Online-Stage bitte ein Kennwort mit mindestens vier Zeichen vergeben."
+                : "Please enter an online-stage password with at least four characters.";
+            return;
+        }
         var stageTheme = StageThemeBox.SelectedItem as StageThemeDto;
-        Close(new CreateKaraokeEventRequest(NameBox.Text.Trim(), startsAt, endsAt,
+        Close(new NewEventResult(new CreateKaraokeEventRequest(NameBox.Text.Trim(), startsAt, endsAt,
             string.IsNullOrWhiteSpace(DescriptionBox.Text) ? null : DescriptionBox.Text.Trim(),
-            stageTheme?.Id ?? "standard"));
+            stageTheme?.Id ?? "standard", isOnline,
+            isOnline ? OnlinePasswordBox.Text : null,
+            isOnline && AllowConversationBox.IsChecked == true), ImagePathBox.Text));
+    }
+
+    private async void ChooseImageClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = EditorLocale.German ? "Stage-Bild auswählen" : "Select stage image",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("Bilder") { Patterns = ["*.png", "*.jpg", "*.jpeg", "*.webp"] }]
+        });
+        if (files.Count > 0) ImagePathBox.Text = files[0].TryGetLocalPath();
     }
 
     private static bool TryParseLocal(string? text, out DateTimeOffset value)
@@ -72,3 +94,5 @@ public partial class NewEventWindow : Window
 
     private void CancelClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e) => Close(null);
 }
+
+public sealed record NewEventResult(CreateKaraokeEventRequest Request, string? ImagePath);

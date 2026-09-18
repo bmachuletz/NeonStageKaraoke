@@ -12,6 +12,7 @@
     'Titel mit synchronisierten Lyrics können später importiert werden.':'Tracks with synchronized lyrics can be imported later.',
     'Aktuelle Wünsche':'Current requests','WILLKOMMEN AUF DER BÜHNE':'WELCOME TO THE STAGE',
     'Wie heißt du?':'What is your name?','Unter diesem Namen erscheinen deine Songwünsche.':'Your song requests will use this name.',
+    'Unter diesem Namen erscheinst du in der Warteliste. Der QR-Code der Stage ordnet deinen Song automatisch dem richtigen Standort zu.':'This name appears in the queue. The Stage QR code automatically assigns your song to the correct location.',
     'Dein Name':'Your name','Gästeportal':'Guest portal','EVENTS VERWALTEN':'MANAGE EVENTS',
     'Deine nächste Karaoke-Nacht beginnt hier.':'Your next karaoke night starts here.',
     'Event anlegen, Link teilen und die Warteliste schon vor der Party füllen lassen.':'Create an event, share its link, and let guests fill the queue before the party.',

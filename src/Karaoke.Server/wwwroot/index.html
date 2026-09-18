@@ -7,6 +7,7 @@
   <title>Neon Stage</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/wishlist.css">
+  <link rel="stylesheet" href="/online-stage.css">
   <style>.event-title{color:#ff48c4;font-size:.78rem;font-weight:800;letter-spacing:.08em;text-transform:uppercase}</style>
 </head>
 <body>
@@ -20,6 +21,13 @@
       <button data-reaction="clap" title="Applaus senden" aria-label="Applaus senden"><svg viewBox="0 0 24 24"><path d="m4 13 5 7c2 2 6 1 8-1l3-4c1-2-1-3-2-2l-2 2 3-7c.5-2-2-3-3-1l-2 5 1-7c0-2-2-2-3 0l-1 6V5c0-2-2-2-3 0v7l-2-4c-1-2-3 0-2 2Z"/></svg></button>
       <button data-reaction="fire" title="Flamme senden" aria-label="Flamme senden"><svg viewBox="0 0 24 24"><path d="M13 2c1 5-3 6-1 10 1-2 3-3 4-5 4 4 5 8 3 12-3 5-12 4-14-1-2-5 2-9 5-12 0 6 3 7 3 10 2-2 4-4 5-6Z"/></svg></button>
     </div></section>
+    <section id="singer-mix" class="singer-mix hidden">
+      <span class="eyebrow">DEIN LIVE-MIX</span>
+      <h2>So hört man dich an den anderen Standorten</h2>
+      <label class="mix-lock"><input id="singer-controls-mix" type="checkbox"> Listener-Mix sperren und selbst vorgeben</label>
+      <label id="singer-microphone-row" class="mix-range">Mikrofonstimme <input id="singer-microphone-volume" type="range" min="0" max="1" step="0.05" value="1"><output id="singer-microphone-output">100 %</output></label>
+      <p class="muted">Ist die Sperre aus, mischt jeder Listener Musik, Originalvocals und Live-Mikrofon selbst.</p>
+    </section>
     <nav><button class="tab active" data-view="search">Songs</button><button class="tab" data-view="queue">Warteliste <b id="queue-count">0</b></button><button class="tab" data-view="wishlist">Wünsche</button></nav>
     <section id="search-view">
       <div id="new-section"><div class="wish-head"><div><span class="eyebrow">FRISCH AUF DER BÜHNE</span><h2>Neu</h2></div></div><div id="new-songs" class="cards"></div></div>
@@ -37,7 +45,7 @@
     </section>
   </main>
   <div id="toast" role="status"></div>
-  <dialog id="name-dialog"><form method="dialog"><span class="eyebrow">WILLKOMMEN AUF DER BÜHNE</span><h2>Wie heißt du?</h2><p>Unter diesem Namen erscheinen deine Songwünsche.</p><input id="name" maxlength="40" autocomplete="name" placeholder="Dein Name" required><button id="join" value="default">LET'S SING</button></form></dialog>
-  <script src="/i18n.js"></script><script src="/app.js"></script>
+  <dialog id="name-dialog"><form method="dialog"><span class="eyebrow">WILLKOMMEN AUF DER BÜHNE</span><h2>Wie heißt du?</h2><p>Unter diesem Namen erscheinst du in der Warteliste. Der QR-Code der Stage ordnet deinen Song automatisch dem richtigen Standort zu.</p><input id="name" maxlength="40" autocomplete="name" placeholder="Dein Name" required><button id="join" value="default">LET'S SING</button></form></dialog>
+  <script src="/i18n.js"></script><script src="/app.js?v=20260918-online-stage"></script>
 </body>
 </html>

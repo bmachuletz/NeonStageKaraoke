@@ -56,7 +56,8 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
     }
     public bool HasSelection => SelectedEvent is not null;
     public bool CanActivate => SelectedEvent is { IsActive: false } && !Busy;
-    public bool CanDeactivate => SelectedEvent is { IsActive: true } && !Busy;
+    public bool CanDeactivate => SelectedEvent is { IsActive: true } selected &&
+                                 selected.Id != ProtectedDefaultEventId && !Busy;
     public bool CanDelete => SelectedEvent is { IsActive: false } selected && selected.Id != ProtectedDefaultEventId && !Busy;
     public int WishCount { get => _wishCount; private set { if (Set(ref _wishCount, value)) OnPropertyChanged(nameof(WishCountLabel)); } }
     public string WishCountLabel => EditorLocale.German
@@ -114,7 +115,8 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
         finally { Busy = false; }
     }
 
-    public async Task CreateAsync(CreateKaraokeEventRequest request, CancellationToken cancellationToken = default)
+    public async Task CreateAsync(CreateKaraokeEventRequest request, string? imagePath = null,
+        CancellationToken cancellationToken = default)
     {
         await MutateAsync(async () =>
         {
@@ -122,8 +124,24 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
             await EnsureSuccessAsync(response, cancellationToken);
             var created = await response.Content.ReadFromJsonAsync<KaraokeEventDto>(cancellationToken: cancellationToken)
                           ?? throw new InvalidOperationException("Server returned no event.");
+            if (!string.IsNullOrWhiteSpace(imagePath))
+            {
+                await using var source = File.OpenRead(imagePath);
+                using var form = new MultipartFormDataContent();
+                using var content = new StreamContent(source);
+                content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+                    Path.GetExtension(imagePath).ToLowerInvariant() == ".png" ? "image/png" :
+                    Path.GetExtension(imagePath).ToLowerInvariant() == ".webp" ? "image/webp" : "image/jpeg");
+                form.Add(content, "file", Path.GetFileName(imagePath));
+                using var upload = await _http.PostAsync($"/api/events/{created.Id}/image", form, cancellationToken);
+                // Older servers already created the Stage successfully but do
+                // not know the optional launcher-image endpoint yet. Never
+                // report the complete creation as failed in that case.
+                if (upload.StatusCode != System.Net.HttpStatusCode.NotFound)
+                    await EnsureSuccessAsync(upload, cancellationToken);
+            }
             await LoadAsync(created.Id, cancellationToken);
-            Report(EditorLocale.German ? "Event wurde angelegt." : "Event created.");
+            Report(EditorLocale.German ? "Stage wurde angelegt." : "Stage created.");
         });
     }
 
@@ -155,7 +173,7 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
         using var response = await _http.PostAsync($"/api/events/{selected.Id}/activate", null, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         await LoadAsync(selected.Id, cancellationToken);
-        Report(EditorLocale.German ? "Bühne wurde auf dieses Event umgeschaltet." : "Stage switched to this event.");
+        Report(EditorLocale.German ? "Stage wurde im Launcher veröffentlicht." : "Stage published in the launcher.");
     });
 
     public Task DeactivateAsync(CancellationToken cancellationToken = default) => WithSelectedAsync(async selected =>
@@ -163,7 +181,7 @@ public sealed class EventManagementViewModel : INotifyPropertyChanged, IDisposab
         using var response = await _http.PostAsync($"/api/events/{selected.Id}/deactivate", null, cancellationToken);
         await EnsureSuccessAsync(response, cancellationToken);
         await LoadAsync(selected.Id, cancellationToken);
-        Report(EditorLocale.German ? "Aktive Bühne wurde beendet." : "Active stage session ended.");
+        Report(EditorLocale.German ? "Stage wurde aus dem Launcher entfernt." : "Stage removed from the launcher.");
     });
 
     public Task ProcessWishesAsync(CancellationToken cancellationToken = default) => WithSelectedAsync(async selected =>
@@ -295,9 +313,11 @@ public sealed class EditorEventItem(KaraokeEventDto source, string? stageThemeNa
     public string InviteToken => source.InviteToken;
     public bool IsActive => source.IsActive;
     public string Description => source.Description ?? string.Empty;
-    public string StageThemeLabel => string.IsNullOrWhiteSpace(stageThemeName)
+    public string StageThemeLabel => (string.IsNullOrWhiteSpace(stageThemeName)
         ? source.StageThemeId
-        : stageThemeName;
+        : stageThemeName) + (source.IsOnline
+            ? " · ONLINE 🔒" + (source.AllowConversation ? " · PAUSEN-GESPRÄCH" : "")
+            : " · OFFLINE");
     public string StatusLabel => IsActive ? (EditorLocale.German ? "● AKTIV" : "● ACTIVE") :
         source.EndsAt < DateTimeOffset.Now ? (EditorLocale.German ? "BEENDET" : "ENDED") :
         (EditorLocale.German ? "GEPLANT" : "PLANNED");

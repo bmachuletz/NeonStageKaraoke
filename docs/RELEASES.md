@@ -148,9 +148,20 @@ Unity builds:
 ./scripts/linux/build-unity-stage-linux.sh
 ./scripts/linux/build-unity-stage-android.sh
 # Run on the corresponding host platform:
+./scripts/macos/prepare-build.sh
 ./scripts/macos/build-unity-stage-macos.sh
-# PowerShell: scripts/windows/build-unity-stage-windows.ps1
+# PowerShell:
+scripts/windows/prepare-build.ps1
+scripts/windows/build-unity-stage-windows.ps1
 ```
+
+The native Windows and macOS build scripts always run their matching prepare
+step first. The macOS prepare checks the host, exact Unity project version and
+Mac Build Support module, then resolves Unity packages and compiles the Stage
+scripts. The standalone Windows Stage builder does the equivalent for Windows.
+The full Windows release build additionally validates .NET and FFmpeg and
+restores the Server and Editor projects. Calling a prepare script directly is
+therefore optional and mainly useful for diagnosing a build machine.
 
 Run the media guard against `src/Karaoke.Stage.Unity/Builds` before packaging it.
 

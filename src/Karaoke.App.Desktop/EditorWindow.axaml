@@ -351,7 +351,7 @@
                        Foreground="#AAB2C1" Margin="0,4,0,12" />
           </StackPanel>
           <Grid Grid.Row="1" ColumnDefinitions="*,Auto">
-            <TextBox Text="{Binding FolderImportPath}" Watermark="Ordnerpfad auf dem Neon-Stage-Server …" />
+            <TextBox Text="{Binding FolderImportPath}" Watermark="Lokaler Audio-Ordner (wird zum Server hochgeladen) …" />
             <Button Grid.Column="1" Content="ORDNER WÄHLEN …" Click="PickImportFolderClick" Margin="8,0,0,0" />
           </Grid>
           <Grid Grid.Row="2" ColumnDefinitions="Auto,*,Auto" Margin="0,12,0,12">

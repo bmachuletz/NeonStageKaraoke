@@ -58,7 +58,11 @@ public static class NeonStageAndroidBuild
             scenes = new[] { ScenePath },
             locationPathName = "Builds/Linux/NeonStage",
             target = BuildTarget.StandaloneLinux64,
-            options = BuildOptions.None
+            // Unity's incremental Linux player build can retain an old
+            // Assembly-CSharp.dll even though assets are refreshed. A clean
+            // player cache guarantees that role automation and online audio
+            // changes are actually present in the produced executable.
+            options = BuildOptions.CleanBuildCache
         });
         if (report.summary.result != BuildResult.Succeeded)
             throw new BuildFailedException($"Linux-Build fehlgeschlagen: {report.summary.result}");

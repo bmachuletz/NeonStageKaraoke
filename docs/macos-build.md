@@ -13,6 +13,12 @@
 scripts/macos/build-unity-stage-macos.sh
 ```
 
+Der Builder führt automatisch zuerst `scripts/macos/prepare-build.sh` aus. Das
+Prepare prüft macOS, die im Projekt festgelegte Unity-Version sowie **Mac Build
+Support (Mono)** und lässt Unity Pakete auflösen und die Stage-Skripte
+kompilieren. Für die isolierte Prüfung eines Build-Macs kann das Prepare-Skript
+auch direkt gestartet werden.
+
 Alternativ in Unity: **Neon Stage → Build macOS Stage (Apple Silicon)**. Das Ergebnis liegt unter `src/Karaoke.Stage.Unity/Builds/macOS/NeonStage Karaoke.app`.
 
 Standard ist ein nativer ARM64-Build; Rosetta wird nicht benötigt. Für ein Universal-Binary:

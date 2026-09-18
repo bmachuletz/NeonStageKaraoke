@@ -85,7 +85,10 @@ diesem Modus greift die Stage nicht auf Queue oder Playback-Controller-Lease zu.
 unveränderlichen Snapshot der aktuellen Lyrics. Die Stage berechnet die Songzeit
 aus `Frame / FPS`, rendert unabhängig von der Fenstergröße in eine RenderTexture
 und streamt die RGBA-Frames direkt an FFmpeg. Das Originalaudio wird als AAC mit
-dem H.264/yuv420p-Video gemuxt. Fortschritt und Abbruch laufen über die geschützte
+dem H.264/yuv420p-Video gemuxt. Der Editor lädt das Original dafür vor dem
+Renderstart vollständig in seinen lokalen Audiocache; FFmpeg hängt damit während
+des Exports weder von einem Container-Dateipfad noch von HTTP-/Proxy-Streaming ab.
+Fortschritt und Abbruch laufen über die geschützte
 Loopback-Session; bei Abbruch werden FFmpeg und die Teildatei entfernt.
 
 Der Export verwendet 1920 × 1080 bei 60 FPS. Seine Audio-Reaktivität wird
@@ -98,8 +101,9 @@ Video-Offset wird dabei berücksichtigt.
 Der Export läuft ohne sichtbares Unity-Fenster im Batch-Modus. Vier begrenzte
 Framepuffer entkoppeln Rendering, GPU-Readback und FFmpeg voneinander;
 Video-Decoding und Encoding arbeiten parallel. Wenn der Grafiktreiber
-`AsyncGPUReadback` nicht zuverlässig unterstützt, erkennt ein Probelauf dies und
-fällt automatisch auf synchrones Readback zurück. Standardmäßig encodiert
+`AsyncGPUReadback` erst unter längerer Last verliert, reicht ein einzelner
+Probelauf nicht zuverlässig aus. Der automatische Modus verwendet deshalb den
+deterministischen synchronen Readback. Standardmäßig encodiert
 `libx264` mit dem Preset `fast`. Unter **Einstellungen → Video-Export** steht
 die Auswahl standardmäßig auf **Automatisch**: Der Editor lässt FFmpeg einen
 echten Testframe encodieren und verwendet NVENC automatisch, sobald GPU,
@@ -107,9 +111,9 @@ Treiber und FFmpeg gemeinsam funktionieren. Dort kann NVENC auch fest erzwungen
 oder mit **Software (libx264)** deaktiviert werden.
 
 Ein Encoderfehler wird an den Editor gemeldet und die `.partial.mp4` wird
-entfernt. Da Unity-Readback und NVENC auf einzelnen Treibern bei
-gleichzeitiger GPU-Nutzung kollidieren, verwendet NVENC im Modus `auto` den
-stabilen synchronen Readback. Der Modus kann für Diagnose oder abweichende
+entfernt. Da Unity-Readback und Encoder auf einzelnen Treibern bei
+gleichzeitiger GPU-Nutzung kollidieren, verwendet `auto` den stabilen
+synchronen Readback. Der Modus kann für Diagnose oder abweichende
 Treiber explizit über `NEONSTAGE_EXPORT_GPU_READBACK=async` beziehungsweise
 `sync` gewählt werden.
 

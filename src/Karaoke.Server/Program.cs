@@ -124,17 +124,25 @@ app.MapGet("/api/online/config", (OnlineSettingsService configured) =>
         online.IsConfigured ? online.ServerUrl : string.Empty,
         online.IsConfigured ? "Bereit" : "Online-Karaoke ist nicht konfiguriert"));
 });
-app.MapPost("/api/online/rooms/join", (OnlineJoinRequest request, OnlineRoomRegistry rooms,
-    LiveKitTokenIssuer tokens, OnlineSettingsService configured) =>
+app.MapGet("/api/online/stages", async (OnlineRoomRegistry rooms, EventRepository events,
+    CancellationToken ct) => Results.Ok(new OnlineStageListDto((await events.GetAvailableOnlineAsync(ct))
+    .Select(item => new OnlineStageDto(item.Id.ToString("N").ToUpperInvariant(), item.Name,
+        item.HasOnlinePassword, rooms.ParticipantCount(item.Id.ToString("N")),
+        item.AllowConversation)).ToArray())));
+app.MapPost("/api/online/rooms/join", async (OnlineJoinRequest request, OnlineRoomRegistry rooms,
+    LiveKitTokenIssuer tokens, OnlineSettingsService configured, EventRepository events,
+    CancellationToken ct) =>
 {
     if (!configured.Current.IsConfigured)
         return Results.Problem("Online-Karaoke ist auf diesem Server nicht konfiguriert.", statusCode: 503);
     try
     {
+        if (await events.ValidateOnlineAccessAsync(request.RoomId, request.Password, ct) is not { } onlineEvent)
+            return Results.Json(new { message = "Online-Stage oder Kennwort ist ungültig." }, statusCode: 401);
         var participantId = string.IsNullOrWhiteSpace(request.ParticipantId)
             ? Guid.NewGuid().ToString("N")
             : request.ParticipantId;
-        var state = rooms.Join(request with { ParticipantId = participantId });
+        var state = rooms.Join(request with { ParticipantId = participantId }, onlineEvent.AllowConversation);
         return Results.Ok(tokens.Issue(state));
     }
     catch (OnlineSingerConflictException exception) { return Results.Conflict(exception.Message); }
@@ -194,6 +202,8 @@ app.MapPost("/api/diagnostics/stage-timing", (StageTimingSampleDto sample, Stage
 app.MapGet("/api/diagnostics/stage-timing", (Guid? songId, int? take, StageTimingDiagnosticsService diagnostics) =>
     Results.Ok(diagnostics.Get(songId, Math.Clamp(take ?? 300, 1, 3600))));
 app.MapGet("/api/events", async (EventRepository events, CancellationToken ct) => Results.Ok(await events.GetAllAsync(ct)));
+app.MapGet("/api/stages", async (EventRepository events, CancellationToken ct) =>
+    Results.Ok(new StageLauncherListDto(await events.GetLauncherStagesAsync(ct))));
 app.MapGet("/api/stage-themes", () => Results.Ok(EventRepository.StageThemes));
 app.MapGet("/api/events/active", async (EventRepository events, CancellationToken ct) =>
     await events.GetActiveAsync(ct) is { } item ? Results.Ok(item) : Results.NotFound());
@@ -204,6 +214,25 @@ app.MapPost("/api/events", async (CreateKaraokeEventRequest create, EventReposit
     try { return Results.Ok(await events.CreateAsync(create, ct)); }
     catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
 });
+app.MapGet("/api/events/{id:guid}/image", async (Guid id, EventRepository events, CancellationToken ct) =>
+    await events.GetImageAsync(id, ct) is { } image
+        ? Results.Bytes(image.Data, image.ContentType, enableRangeProcessing: true)
+        : Results.NotFound());
+app.MapPost("/api/events/{id:guid}/image", async (Guid id, HttpRequest request,
+    EventRepository events, CancellationToken ct) =>
+{
+    if (!request.HasFormContentType) return Results.BadRequest("Eine Bilddatei fehlt.");
+    var form = await request.ReadFormAsync(ct);
+    var file = form.Files.GetFile("file");
+    if (file is null) return Results.BadRequest("Eine Bilddatei fehlt.");
+    try
+    {
+        await using var stream = file.OpenReadStream();
+        return await events.SetImageAsync(id, stream, file.Length, file.ContentType, ct)
+            ? Results.NoContent() : Results.NotFound();
+    }
+    catch (ArgumentException exception) { return Results.BadRequest(exception.Message); }
+}).DisableAntiforgery();
 app.MapPost("/api/events/{id:guid}/activate", async (Guid id, EventRepository events, CancellationToken ct) =>
     await events.ActivateAsync(id, ct) is { } item ? Results.Ok(item) : Results.NotFound());
 app.MapPost("/api/events/{id:guid}/deactivate", async (Guid id, EventRepository events, CancellationToken ct) =>
@@ -335,6 +364,22 @@ app.MapPost("/api/admin/folder-import", (FolderImportRequest request, FolderImpo
         return Results.BadRequest(exception.Message);
     }
 });
+app.MapPost("/api/admin/folder-import/upload", async (HttpRequest request, FolderImportService imports,
+    CancellationToken ct) =>
+{
+    if (request.ContentLength == 0) return Results.BadRequest("Das Ordnerarchiv ist leer.");
+    var recursive = !bool.TryParse(request.Query["recursive"], out var parsedRecursive) || parsedRecursive;
+    try
+    {
+        var status = await imports.TryStartUploadAsync(request.Body, recursive, ct);
+        return status is null ? Results.Conflict(imports.GetStatus()) : Results.Accepted(value: status);
+    }
+    catch (Exception exception) when (exception is ArgumentException or DirectoryNotFoundException or
+                                      InvalidDataException or IOException)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+}).WithMetadata(new Microsoft.AspNetCore.Mvc.DisableRequestSizeLimitAttribute());
 app.MapPost("/api/admin/lyrics/resolve-imported", async (
     ResolveImportedLyricsRequest request,
     ServerSettingsService settings,
@@ -441,11 +486,13 @@ app.MapGet("/api/events/{token}/qr", async (string token, HttpRequest request, E
     var url = urls.GetEventUrl(request, token);
     return Results.Bytes(PngByteQRCodeHelper.GetQRCode(url, QRCodeGenerator.ECCLevel.Q, 12, false), "image/png");
 });
-app.MapGet("/api/stage/guest-qr", async (HttpRequest request, EventRepository events,
+app.MapGet("/api/stage/guest-qr", async (Guid? eventId, Guid? locationId, HttpRequest request, EventRepository events,
     PublicServerUrlResolver urls, CancellationToken ct) =>
 {
-    var active = await events.GetActiveAsync(ct);
-    var guestUrl = active is null ? urls.GetBaseUrl(request) + "/" : urls.GetEventUrl(request, active.InviteToken);
+    var selected = eventId is { } id ? await events.GetByIdAsync(id, ct) : await events.GetByIdAsync(EventRepository.DefaultEventId, ct);
+    var guestUrl = selected is null ? urls.GetBaseUrl(request) + "/" : urls.GetEventUrl(request, selected.InviteToken);
+    if (locationId is { } stageLocationId)
+        guestUrl += (guestUrl.Contains('?') ? "&" : "?") + "locationId=" + stageLocationId.ToString("N");
     var png = PngByteQRCodeHelper.GetQRCode(guestUrl, QRCodeGenerator.ECCLevel.Q, 12, false);
     return Results.Bytes(png, "image/png");
 });
@@ -733,54 +780,83 @@ app.MapPost("/api/admin/songs/{id:guid}/cover", async (Guid id, IFormFile file, 
         ? Results.NoContent()
         : Results.BadRequest("Das Bild konnte nicht als Cover verarbeitet werden.");
 }).DisableAntiforgery();
-app.MapGet("/api/queue", async (string? eventToken, QueueService queue, EventRepository events, CancellationToken ct) =>
-    await events.ResolveIdAsync(eventToken, ct) is { } eventId ? Results.Ok(await queue.GetStateAsync(eventId, ct)) : Results.NotFound());
-app.MapPost("/api/queue", async (string? eventToken, AddQueueRequest request, QueueService queue, LibraryRepository repo, EventRepository events, CancellationToken ct) =>
+app.MapGet("/api/queue", async (Guid? eventId, string? eventToken, QueueService queue, EventRepository events, CancellationToken ct) =>
+    await ResolveStageIdAsync(eventId, eventToken, events, ct) is { } stageId
+        ? Results.Ok(await queue.GetStateAsync(stageId, ct)) : Results.NotFound());
+app.MapPost("/api/queue", async (Guid? eventId, string? eventToken, WebAddQueueRequest request, QueueService queue,
+    LibraryRepository repo, EventRepository events, OnlineRoomRegistry onlineRooms, CancellationToken ct) =>
 {
-    var eventId = await events.ResolveIdAsync(eventToken, ct);
-    if (eventId is null) return Results.NotFound();
-    var song = await repo.GetAsync(request.SongId, ct);
+    if (!Guid.TryParse(request.SongId, out var songId))
+        return Results.BadRequest("Die Song-ID ist ungültig. Bitte die Seite neu laden und erneut versuchen.");
+    var locationId = Guid.TryParse(request.LocationId, out var parsedLocationId)
+        ? parsedLocationId
+        : (Guid?)null;
+    var stageId = await ResolveStageIdAsync(eventId, eventToken, events, ct);
+    if (stageId is null) return Results.NotFound();
+    var karaokeEvent = await events.GetByIdAsync(stageId.Value, ct);
+    if (karaokeEvent?.IsOnline == true &&
+        (locationId is null || !onlineRooms.IsLocationJoined(stageId.Value.ToString("N"), locationId.Value)))
+        return Results.Conflict("Diese Online-Stage nimmt Songs nur über den QR-Code eines verbundenen Standorts an.");
+    var song = await repo.GetAsync(songId, ct);
     return song is not { ReviewStatus: SongReviewStatus.Approved }
         ? Results.BadRequest("Dieser Song ist noch nicht freigegeben.")
-        : Results.Ok(await queue.AddAsync(eventId.Value, song, request.RequestedBy, ct));
+        : Results.Ok(await queue.AddAsync(stageId.Value, song, request.RequestedBy ?? "Gast", locationId, ct));
 });
-app.MapDelete("/api/queue/{id:guid}", async (Guid id, string? eventToken, QueueService queue, EventRepository events, CancellationToken ct) =>
-    await events.ResolveIdAsync(eventToken, ct) is { } eventId && await queue.RemoveAsync(eventId, id, ct) ? Results.NoContent() : Results.NotFound());
-app.MapDelete("/api/queue", async (string? eventToken, QueueService queue, EventRepository events, CancellationToken ct) =>
-{ var eventId = await events.ResolveIdAsync(eventToken, ct); if (eventId is null) return Results.NotFound(); await queue.ClearAsync(eventId.Value, ct); return Results.NoContent(); });
-app.MapPut("/api/queue/reorder", async (string? eventToken, ReorderQueueRequest request, QueueService queue, EventRepository events, CancellationToken ct) =>
-{ var eventId = await events.ResolveIdAsync(eventToken, ct); return eventId is not null && await queue.ReorderAsync(eventId.Value, request.EntryId, request.Position, ct) ? Results.Ok(await queue.GetStateAsync(eventId.Value, ct)) : Results.NotFound(); });
-app.MapPost("/api/playback/controller/claim", (PlaybackControllerRequest request, PlaybackControllerService controller) =>
-    Results.Ok(controller.Claim(request)));
-app.MapDelete("/api/playback/controller", (HttpRequest request, PlaybackControllerService controller) =>
+app.MapDelete("/api/queue/{id:guid}", async (Guid id, Guid? eventId, string? eventToken, QueueService queue, EventRepository events, CancellationToken ct) =>
+    await ResolveStageIdAsync(eventId, eventToken, events, ct) is { } stageId && await queue.RemoveAsync(stageId, id, ct) ? Results.NoContent() : Results.NotFound());
+app.MapDelete("/api/queue", async (Guid? eventId, string? eventToken, QueueService queue, EventRepository events, CancellationToken ct) =>
+{ var stageId = await ResolveStageIdAsync(eventId, eventToken, events, ct); if (stageId is null) return Results.NotFound(); await queue.ClearAsync(stageId.Value, ct); return Results.NoContent(); });
+app.MapPut("/api/queue/reorder", async (Guid? eventId, string? eventToken, ReorderQueueRequest request, QueueService queue, EventRepository events, CancellationToken ct) =>
+{ var stageId = await ResolveStageIdAsync(eventId, eventToken, events, ct); return stageId is not null && await queue.ReorderAsync(stageId.Value, request.EntryId, request.Position, ct) ? Results.Ok(await queue.GetStateAsync(stageId.Value, ct)) : Results.NotFound(); });
+app.MapPost("/api/playback/controller/claim", async (Guid? eventId, string? eventToken,
+    PlaybackControllerRequest request, PlaybackControllerService controller, EventRepository events, CancellationToken ct) =>
+    await ResolveStageIdAsync(eventId, eventToken, events, ct) is { } stageId
+        ? Results.Ok(controller.Claim(stageId, request)) : Results.NotFound());
+app.MapDelete("/api/playback/controller", async (Guid? eventId, string? eventToken,
+    HttpRequest request, PlaybackControllerService controller, EventRepository events, CancellationToken ct) =>
 {
     if (ReadControllerId(request) is not { } id) return Results.BadRequest();
-    controller.Release(id);
+    if (await ResolveStageIdAsync(eventId, eventToken, events, ct) is not { } stageId) return Results.NotFound();
+    controller.Release(stageId, id);
     return Results.NoContent();
 });
-app.MapPost("/api/playback/start", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.StartAsync(ct)) : Results.Conflict("Eine andere App steuert bereits die Bühne."));
-app.MapPost("/api/playback/start-fresh", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.StartFreshAsync(ct)) : Results.Conflict("Eine andere App steuert bereits die Bühne."));
-app.MapPost("/api/playback/pause", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.PauseAsync(ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/resume", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.ResumeAsync(ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/next", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.NextAsync(ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/complete", async (HttpRequest request, CompletePlaybackRequest completion, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.CompleteAsync(completion.QueueEntryId, ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/previous", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.PreviousAsync(ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/skip", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.SkipAsync(ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/restart", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.RestartAsync(ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/stop", async (HttpRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    HasControl(request, controller) ? Results.Ok(await queue.StopAsync(ct)) : Results.Conflict("Keine Steuerberechtigung."));
-app.MapPost("/api/playback/position", async (HttpRequest httpRequest, PlaybackPositionUpdateRequest request, QueueService queue, PlaybackControllerService controller, CancellationToken ct) =>
-    !HasControl(httpRequest, controller) ? Results.Conflict("Keine Steuerberechtigung.") :
-    await queue.UpdatePositionAsync(request, ct) is { } update ? Results.Ok(update) : Results.Conflict());
+app.MapPost("/api/playback/{command}", async (string command, Guid? eventId, string? eventToken,
+    HttpRequest request, QueueService queue, PlaybackControllerService controller, EventRepository events, CancellationToken ct) =>
+{
+    if (await ResolveStageIdAsync(eventId, eventToken, events, ct) is not { } stageId) return Results.NotFound();
+    if (!HasControl(request, controller, stageId)) return Results.Conflict("Keine Steuerberechtigung.");
+    var state = command switch
+    {
+        "start" => await queue.StartAsync(stageId, ct),
+        "start-fresh" => await queue.StartFreshAsync(stageId, ct),
+        "pause" => await queue.PauseAsync(stageId, ct),
+        "resume" => await queue.ResumeAsync(stageId, ct),
+        "next" => await queue.NextAsync(stageId, ct),
+        "previous" => await queue.PreviousAsync(stageId, ct),
+        "skip" => await queue.SkipAsync(stageId, ct),
+        "restart" => await queue.RestartAsync(stageId, ct),
+        "stop" => await queue.StopAsync(stageId, ct),
+        _ => null
+    };
+    return state is null ? Results.NotFound() : Results.Ok(state);
+});
+app.MapPost("/api/playback/complete", async (Guid? eventId, string? eventToken, HttpRequest request,
+    CompletePlaybackRequest completion, QueueService queue, PlaybackControllerService controller,
+    EventRepository events, CancellationToken ct) =>
+    await ResolveStageIdAsync(eventId, eventToken, events, ct) is { } stageId && HasControl(request, controller, stageId)
+        ? Results.Ok(await queue.CompleteAsync(stageId, completion.QueueEntryId, ct))
+        : Results.Conflict("Keine Steuerberechtigung."));
+app.MapPut("/api/playback/singer-mix", async (Guid? eventId, string? eventToken,
+    UpdateSingerMixRequest update, QueueService queue, EventRepository events, CancellationToken ct) =>
+    await ResolveStageIdAsync(eventId, eventToken, events, ct) is { } stageId &&
+    await queue.UpdateSingerMixAsync(stageId, update, ct) is { } entry
+        ? Results.Ok(entry)
+        : Results.Conflict("Die Mix-Vorgabe darf nur vom aktuellen Singer geändert werden."));
+app.MapPost("/api/playback/position", async (Guid? eventId, string? eventToken, HttpRequest httpRequest,
+    PlaybackPositionUpdateRequest request, QueueService queue, PlaybackControllerService controller,
+    EventRepository events, CancellationToken ct) =>
+    await ResolveStageIdAsync(eventId, eventToken, events, ct) is { } stageId && HasControl(httpRequest, controller, stageId) &&
+    await queue.UpdatePositionAsync(stageId, request, ct) is { } update ? Results.Ok(update) : Results.Conflict());
 app.MapGet("/api/library/scan-status", (LibraryRepository repo) => Results.Ok(repo.GetScanStatus()));
 app.MapPost("/api/library/reindex", async (LibraryRepository repo, CancellationToken ct) =>
     await repo.TryReindexAsync(ct)
@@ -946,8 +1022,15 @@ app.Run();
 static Guid? ReadControllerId(HttpRequest request) =>
     Guid.TryParse(request.Headers[PlaybackControllerService.HeaderName].FirstOrDefault(), out var id) ? id : null;
 
-static bool HasControl(HttpRequest request, PlaybackControllerService controller) =>
-    ReadControllerId(request) is { } id && controller.Owns(id);
+static bool HasControl(HttpRequest request, PlaybackControllerService controller, Guid eventId) =>
+    ReadControllerId(request) is { } id && controller.Owns(eventId, id);
+
+static async Task<Guid?> ResolveStageIdAsync(Guid? eventId, string? eventToken,
+    EventRepository events, CancellationToken ct)
+{
+    if (eventId is { } id) return await events.GetByIdAsync(id, ct) is null ? null : id;
+    return await events.ResolveIdAsync(eventToken, ct);
+}
 
 static bool CanTransmitAdminSecrets(HttpContext context)
 {
@@ -975,3 +1058,5 @@ static async Task<IResult> ChangeLyricsStatus(Guid songId, Guid versionId, long 
         return Results.BadRequest(exception.Message);
     }
 }
+
+sealed record WebAddQueueRequest(string? SongId, string? RequestedBy, string? LocationId);

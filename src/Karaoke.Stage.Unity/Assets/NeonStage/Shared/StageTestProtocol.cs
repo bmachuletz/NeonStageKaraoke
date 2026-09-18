@@ -59,6 +59,9 @@ public sealed class StageTestSongState
     public string title = "";
     public string artist = "";
     public string serverUrl = "";
+    // MP4 exports use an editor-local, fully downloaded master so FFmpeg does
+    // not depend on a container/reverse-proxy HTTP stream during rendering.
+    public string exportAudioPath = "";
     public string stageThemeId = "standard";
     public string lyricsJson = "";
     public double positionSeconds;

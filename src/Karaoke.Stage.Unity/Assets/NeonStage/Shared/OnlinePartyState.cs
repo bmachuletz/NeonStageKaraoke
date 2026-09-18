@@ -63,6 +63,77 @@ public static class OnlineAudioRouting
         : new OnlineAudioRoute(OnlineAudioBus.Remote, OnlineAudioBus.None);
 }
 
+public static class OnlineRoleAutomation
+{
+    public static OnlineRole ForQueueLocation(string? requestedLocationId, string? localLocationId,
+        bool queueEntryAssigned)
+    {
+        if (!queueEntryAssigned) return OnlineRole.Listener;
+        return Guid.TryParse(requestedLocationId, out var requested) &&
+               Guid.TryParse(localLocationId, out var local) && requested == local
+            ? OnlineRole.Singer
+            : OnlineRole.Listener;
+    }
+}
+
+/// <summary>
+/// Projects a singer timeline beacon onto the song position that is currently
+/// audible at a remote output. Transport latency is deliberately kept outside
+/// the persisted lyrics and media timestamps.
+/// </summary>
+public readonly struct OnlineTimelineBeacon
+{
+    public OnlineTimelineBeacon(string queueEntryId, double positionSeconds, bool playing,
+        double receivedAtSeconds) : this(queueEntryId, positionSeconds, playing,
+        receivedAtSeconds, 0)
+    {
+    }
+
+    public OnlineTimelineBeacon(string queueEntryId, double positionSeconds, bool playing,
+        double receivedAtSeconds, double broadcastDelaySeconds)
+    {
+        QueueEntryId = queueEntryId;
+        PositionSeconds = positionSeconds;
+        Playing = playing;
+        ReceivedAtSeconds = receivedAtSeconds;
+        BroadcastDelaySeconds = Math.Clamp(broadcastDelaySeconds, 0, .5);
+    }
+
+    public string QueueEntryId { get; }
+    public double PositionSeconds { get; }
+    public bool Playing { get; }
+    public double ReceivedAtSeconds { get; }
+    public double BroadcastDelaySeconds { get; }
+}
+
+public static class OnlineTimelineProjection
+{
+    public const double DefaultRemoteLatencySeconds = .18;
+    public const double MinimumRemoteLatencySeconds = .06;
+    public const double MaximumRemoteLatencySeconds = 1.2;
+
+    public static double AudiblePosition(OnlineTimelineBeacon beacon, double nowSeconds,
+        double remoteLatencySeconds, double durationSeconds)
+    {
+        var elapsed = beacon.Playing ? Math.Max(0, nowSeconds - beacon.ReceivedAtSeconds) : 0;
+        var latency = Math.Clamp(remoteLatencySeconds,
+            MinimumRemoteLatencySeconds, MaximumRemoteLatencySeconds);
+        return Math.Clamp(beacon.PositionSeconds + elapsed - latency - beacon.BroadcastDelaySeconds,
+            0, Math.Max(0, durationSeconds));
+    }
+
+    public static double SmoothLatency(double currentSeconds, double measuredSeconds) =>
+        Math.Clamp(currentSeconds + (measuredSeconds - currentSeconds) * .2,
+            MinimumRemoteLatencySeconds, MaximumRemoteLatencySeconds);
+
+    public static double SmoothPosition(double currentSeconds, double measuredSeconds)
+    {
+        var difference = measuredSeconds - currentSeconds;
+        if (Math.Abs(difference) > .75) return measuredSeconds; // real seek/reconnect
+        return currentSeconds + Math.Clamp(difference * .25, -.04, .04);
+    }
+}
+
 public sealed class OnlinePartyStateMachine
 {
     private readonly List<OnlineParticipantInfo> _participants = new();

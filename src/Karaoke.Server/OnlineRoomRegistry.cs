@@ -10,12 +10,13 @@ internal sealed class OnlineSingerConflictException(string message) : InvalidOpe
 
 internal sealed class OnlineRoomRegistry(OnlineSettingsService configured, TimeProvider timeProvider)
 {
-    private sealed record Participant(string Id, string Name, OnlineRole Role, DateTimeOffset LastSeenAt);
+    private sealed record Participant(string Id, string Name, OnlineRole Role, Guid? LocationId,
+        bool AllowConversation, DateTimeOffset LastSeenAt);
     private readonly object _gate = new();
     private readonly Dictionary<string, Dictionary<string, Participant>> _rooms =
         new(StringComparer.OrdinalIgnoreCase);
 
-    public OnlineRoomStateDto Join(OnlineJoinRequest request)
+    public OnlineRoomStateDto Join(OnlineJoinRequest request, bool allowConversation = false)
     {
         var roomId = NormalizeRoomId(request.RoomId);
         var participantId = NormalizeParticipantId(request.ParticipantId);
@@ -25,7 +26,8 @@ internal sealed class OnlineRoomRegistry(OnlineSettingsService configured, TimeP
             var room = GetRoom(roomId);
             Expire(room);
             EnsureSingerAvailable(room, participantId, request.Role);
-            room[participantId] = new Participant(participantId, displayName, request.Role, timeProvider.GetUtcNow());
+            room[participantId] = new Participant(participantId, displayName, request.Role,
+                request.LocationId, allowConversation, timeProvider.GetUtcNow());
             return Snapshot(roomId, participantId, room);
         }
     }
@@ -73,6 +75,28 @@ internal sealed class OnlineRoomRegistry(OnlineSettingsService configured, TimeP
         }
     }
 
+    public int ParticipantCount(string roomId)
+    {
+        roomId = NormalizeRoomId(roomId);
+        lock (_gate)
+        {
+            if (!_rooms.TryGetValue(roomId, out var room)) return 0;
+            Expire(room);
+            return room.Count;
+        }
+    }
+
+    public bool IsLocationJoined(string roomId, Guid locationId)
+    {
+        roomId = NormalizeRoomId(roomId);
+        lock (_gate)
+        {
+            if (!_rooms.TryGetValue(roomId, out var room)) return false;
+            Expire(room);
+            return room.Values.Any(item => item.LocationId == locationId);
+        }
+    }
+
     private Dictionary<string, Participant> GetRoom(string roomId)
     {
         if (_rooms.TryGetValue(roomId, out var room)) return room;
@@ -111,7 +135,7 @@ internal sealed class OnlineRoomRegistry(OnlineSettingsService configured, TimeP
             .OrderByDescending(item => item.Role)
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .Select(item => new OnlineParticipantDto(item.Id, item.Name, item.Role, item.LastSeenAt))
-            .ToArray());
+            .ToArray(), local.AllowConversation);
     }
 
     internal static string NormalizeRoomId(string value)
@@ -157,6 +181,16 @@ internal sealed class LiveKitTokenIssuer(OnlineSettingsService configured, TimeP
             neonStageRole = state.Role.ToString(),
             neonStageRoom = state.RoomId
         }, JsonOptions);
+        var videoGrant = new Dictionary<string, object?>
+        {
+            ["roomJoin"] = true,
+            ["room"] = liveKitRoom,
+            ["canSubscribe"] = true,
+            ["canPublish"] = state.Role == OnlineRole.Singer || state.AllowConversation,
+            ["canPublishData"] = state.Role == OnlineRole.Singer
+        };
+        if (state.Role == OnlineRole.Listener && state.AllowConversation)
+            videoGrant["canPublishSources"] = new[] { "microphone" };
         var payload = new Dictionary<string, object?>
         {
             ["iss"] = options.ApiKey,
@@ -166,18 +200,15 @@ internal sealed class LiveKitTokenIssuer(OnlineSettingsService configured, TimeP
             ["exp"] = expires.ToUnixTimeSeconds(),
             ["jti"] = Guid.NewGuid().ToString("N"),
             ["metadata"] = metadata,
-            ["video"] = new
-            {
-                roomJoin = true,
-                room = liveKitRoom,
-                canSubscribe = true,
-                canPublish = state.Role == OnlineRole.Singer,
-                canPublishData = false
-            }
+            // Timeline beacons are sent by the active Singer over LiveKit's
+            // data channel. Conversation listeners may publish only a track
+            // explicitly marked as microphone.
+            ["video"] = videoGrant
         };
         var token = Sign(payload, options.ApiSecret);
         return new(true, "LiveKit", options.ServerUrl.TrimEnd('/'), state.RoomId,
-            state.ParticipantId, state.Role, token, expires, state.Participants);
+            state.ParticipantId, state.Role, token, expires, state.Participants,
+            state.AllowConversation);
     }
 
     internal static string Sign(IReadOnlyDictionary<string, object?> payload, string secret)

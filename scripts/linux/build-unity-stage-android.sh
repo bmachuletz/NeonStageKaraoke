@@ -27,6 +27,18 @@ if [[ -z "$unity_editor" || ! -x "$unity_editor" ]]; then
   exit 1
 fi
 
+# LiveKit Unity 2.0.0 cannot resolve its shaded ContextUtils class through
+# JNI FindClass on Android. Apply LiveKit's upstream managed fallback before
+# Unity compiles the player; the patch is idempotent.
+if ! find "$unity_project/Library/PackageCache" -mindepth 1 -maxdepth 1 -type d \
+  -name 'io.livekit.livekit-sdk@*' -print -quit 2>/dev/null | grep -q .; then
+  echo "Unity-Pakete werden vor dem Android-Build einmalig aufgelöst ..."
+  DOTNET_USE_POLLING_FILE_WATCHER=${DOTNET_USE_POLLING_FILE_WATCHER:-1} \
+  DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE=${DOTNET_HOSTBUILDER__RELOADCONFIGONCHANGE:-false} \
+  "$unity_editor" -batchmode -nographics -quit -projectPath "$unity_project" -logFile -
+fi
+"$project_root/scripts/unity/patch-livekit-android-context.sh" "$unity_project"
+
 # Unity's IL post-processor uses the .NET physical file provider. Polling keeps
 # builds reliable on development machines that already exhausted their inotify
 # watcher quota through editors, containers and language servers.

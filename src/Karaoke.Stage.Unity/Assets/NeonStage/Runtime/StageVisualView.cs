@@ -26,6 +26,8 @@ public sealed class StageVisualView
     private bool _promoting;
     private float _promotionStarted;
     private string _qrServer = "";
+    private string _qrLocationId = "";
+    private string _qrEventId = "";
     private bool _qrLoaded, _qrLoading;
     private float _nextQrAttempt;
     private float _energyPeak = .001f, _bassPeak = .001f, _midPeak = .001f, _treblePeak = .001f;
@@ -136,12 +138,16 @@ public sealed class StageVisualView
         _energy = _bass = _mid = _treble = _pulse = 0;
     }
 
-    public async Task LoadQrAsync(string server, bool force = false)
+    public async Task LoadQrAsync(string server, string locationId, string? eventId = null, bool force = false)
     {
         if (_qrLoading || (_qrLoaded && !force)) return;
         _qrServer = server;
+        _qrLocationId = locationId;
+        _qrEventId = eventId ?? "";
         _qrLoading = true;
-        using var request = UnityWebRequestTexture.GetTexture($"{server}/api/stage/guest-qr", true);
+        using var request = UnityWebRequestTexture.GetTexture(
+            $"{server}/api/stage/guest-qr?locationId={UnityWebRequest.EscapeURL(locationId)}" +
+            (string.IsNullOrWhiteSpace(eventId) ? "" : $"&eventId={UnityWebRequest.EscapeURL(eventId)}"), true);
         await request.SendWebRequest();
         if (request.result == UnityWebRequest.Result.Success)
         {
@@ -214,7 +220,7 @@ public sealed class StageVisualView
     {
         if (!_videoPerformanceMode && !_qrLoaded && !_qrLoading &&
             !string.IsNullOrWhiteSpace(_qrServer) && Time.unscaledTime >= _nextQrAttempt)
-            _ = LoadQrAsync(_qrServer);
+            _ = LoadQrAsync(_qrServer, _qrLocationId, _qrEventId);
         if (!_videoPerformanceMode)
         {
             if (offlineAnalysis is { } analyzed)

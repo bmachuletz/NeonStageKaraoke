@@ -1029,13 +1029,15 @@ var protocolJson = System.Text.Json.JsonSerializer.Serialize(new StageTestMessag
     type = StageTestProtocol.ReplaceSongState, sessionId = Guid.NewGuid().ToString("N"), revision = 7,
     stateJson = System.Text.Json.JsonSerializer.Serialize(new StageTestSongState
     {
-        songId = stageSong.Id.ToString(), title = stageSong.Title, lyricsJson = "{lyrics}", positionSeconds = 12.5
+        songId = stageSong.Id.ToString(), title = stageSong.Title, lyricsJson = "{lyrics}", positionSeconds = 12.5,
+        exportAudioPath = "/tmp/cached-master.wav"
     }, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { IncludeFields = true })
 }, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { IncludeFields = true });
 var protocolRoundTrip = System.Text.Json.JsonSerializer.Deserialize<StageTestMessage>(protocolJson,
     new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { IncludeFields = true });
 Assert(protocolRoundTrip is { type: StageTestProtocol.ReplaceSongState, revision: 7 } &&
-       protocolRoundTrip.stateJson.Contains("Human title", StringComparison.Ordinal),
+       protocolRoundTrip.stateJson.Contains("Human title", StringComparison.Ordinal) &&
+       protocolRoundTrip.stateJson.Contains("cached-master.wav", StringComparison.Ordinal),
     "Vollsync und inkrementelle Nachrichten verwenden ein verlustfreies NDJSON-kompatibles Protokoll.");
 var frozenExportRevision = protocolRoundTrip.revision;
 var exportRequest = new StageTestMessage
@@ -1071,6 +1073,24 @@ Assert(singerRoute.BroadcastContains(OnlineAudioBus.Music) &&
 var listenerRoute = OnlineAudioRouting.For(StageOnlineRole.Listener);
 Assert(listenerRoute.LocalOutput == OnlineAudioBus.Remote && listenerRoute.BroadcastOutput == OnlineAudioBus.None,
     "Ein Listener hört ausschließlich Remote-Audio und sendet keinen Broadcast.");
+const string stageLocationA = "9d777b0cfb8f4f8bafab129e80581fc0";
+const string stageLocationB = "42cde8b52ef34d42801aacb26a567308";
+Assert(OnlineRoleAutomation.ForQueueLocation(stageLocationA, stageLocationA, true) == StageOnlineRole.Singer &&
+       OnlineRoleAutomation.ForQueueLocation(stageLocationA, stageLocationB, true) == StageOnlineRole.Listener &&
+       OnlineRoleAutomation.ForQueueLocation(stageLocationA, stageLocationA, false) == StageOnlineRole.Listener &&
+       OnlineRoleAutomation.ForQueueLocation(null, stageLocationA, true) == StageOnlineRole.Listener,
+    "Die Standort-GUID des zugewiesenen Queue-Eintrags aktiviert genau die zugehörige Stage.");
+var onlineBeacon = new OnlineTimelineBeacon("entry-1", 42, true, 100);
+Assert(Math.Abs(OnlineTimelineProjection.AudiblePosition(onlineBeacon, 100.5, .2, 180) - 42.3) < .000001 &&
+       Math.Abs(OnlineTimelineProjection.AudiblePosition(
+           new OnlineTimelineBeacon("entry-1", 42, false, 100), 110, .2, 180) - 41.8) < .000001,
+    "Die Zuhörer-Timeline folgt dem Singer-Beacon und berücksichtigt die Remote-Audioverzögerung.");
+Assert(Math.Abs(OnlineTimelineProjection.AudiblePosition(
+           new OnlineTimelineBeacon("entry-1", 42, true, 100, .085), 100.5, .2, 180) - 42.215) < .000001,
+    "Die Zuhörer-Timeline berücksichtigt zusätzlich die senderseitige Musik-/Mikrofon-Ausrichtung.");
+Assert(Math.Abs(OnlineTimelineProjection.SmoothPosition(42, 42.4) - 42.04) < .000001 &&
+       Math.Abs(OnlineTimelineProjection.SmoothPosition(42, 44) - 44) < .000001,
+    "Netzwerkjitter wird weich korrigiert, während echte Seeks sofort übernommen werden.");
 
 var onlineState = new OnlinePartyStateMachine();
 onlineState.BeginJoin();
