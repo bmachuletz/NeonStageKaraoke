@@ -11,6 +11,7 @@ public sealed class StageLyricsView
     private const int MaxLines = 8;
     private readonly RectTransform _root;
     private readonly Image _backdrop;
+    private readonly TextMeshProUGUI[][] _outlines = new TextMeshProUGUI[MaxLines][];
     private readonly TextMeshProUGUI[] _base = new TextMeshProUGUI[MaxLines];
     private readonly TextMeshProUGUI[] _fill = new TextMeshProUGUI[MaxLines];
     private readonly TextMeshProUGUI[][] _burn = new TextMeshProUGUI[MaxLines][];
@@ -243,6 +244,7 @@ public sealed class StageLyricsView
             row.sizeDelta = new Vector2(0, rowHeight);
             _rowHeights[index] = rowHeight;
             _rowCenterY[index] = -(laneTop + (rowInLane + .5f) * rowHeight);
+            foreach (var outline in _outlines[index]) outline.text = lines[index];
             _base[index].text = lines[index];
             _fill[index].text = lines[index];
             ApplyVoicePalette(index, lane);
@@ -435,6 +437,13 @@ public sealed class StageLyricsView
         rowObject.transform.SetParent(_root, false);
         var row = rowObject.GetComponent<RectTransform>();
 
+        _outlines[index] = new[]
+        {
+            CreateText("Outline Left Top", row, Color.black),
+            CreateText("Outline Right Top", row, Color.black),
+            CreateText("Outline Left Bottom", row, Color.black),
+            CreateText("Outline Right Bottom", row, Color.black)
+        };
         _base[index] = CreateText("Base", row, new Color(0.92f, 0.87f, 0.96f));
         var flameObject = new GameObject("Singing Flame", typeof(RectTransform), typeof(Image));
         flameObject.transform.SetParent(row, false);
@@ -486,11 +495,23 @@ public sealed class StageLyricsView
         var milkGlass = _presentationStyle == "milk-glass";
         var highContrast = milkGlass || _videoBackground;
         var outlineWidth = Mathf.Lerp(0f, .45f, _outlineStrength / 100f);
+        var geometricOffset = Mathf.Lerp(.7f, 4.8f, _outlineStrength / 100f);
+        var outlineOffsets = new[]
+        {
+            new Vector2(-geometricOffset, geometricOffset), new Vector2(geometricOffset, geometricOffset),
+            new Vector2(-geometricOffset, -geometricOffset), new Vector2(geometricOffset, -geometricOffset)
+        };
+        for (var outlineIndex = 0; outlineIndex < _outlines[index].Length; outlineIndex++)
+        {
+            var outline = _outlines[index][outlineIndex];
+            outline.gameObject.SetActive(_outlineStrength > 0);
+            ((RectTransform)outline.transform).anchoredPosition = outlineOffsets[outlineIndex];
+            outline.color = Color.black;
+        }
         _base[index].color = _unsungColor;
         _fill[index].color = _sungColor;
-        _base[index].outlineColor = new Color32(0, 0, 0, 255);
-        _base[index].outlineWidth = outlineWidth;
         ConfigureTextUnderlay(_base[index], highContrast);
+        ConfigureTextOutline(_base[index], outlineWidth);
 
         var burnColors = new[]
         {
@@ -504,14 +525,28 @@ public sealed class StageLyricsView
 
         var material = _fill[index].fontMaterial;
         if (material == null) return;
-        _fill[index].outlineColor = new Color32(0, 0, 0, 255);
-        _fill[index].outlineWidth = outlineWidth * .86f;
         ConfigureTextUnderlay(_fill[index], highContrast);
+        ConfigureTextOutline(_fill[index], outlineWidth * .86f);
         if (material.HasProperty(ShaderUtilities.ID_GlowColor))
             material.SetColor(ShaderUtilities.ID_GlowColor, WithAlpha(_glowColor, .86f));
     }
 
     private static Color WithAlpha(Color color, float alpha) => new(color.r, color.g, color.b, alpha);
+
+    private static void ConfigureTextOutline(TextMeshProUGUI text, float width)
+    {
+        text.outlineColor = new Color32(0, 0, 0, 255);
+        text.outlineWidth = width;
+        var material = text.fontMaterial;
+        if (material == null || !material.HasProperty(ShaderUtilities.ID_OutlineWidth)) return;
+        if (width <= 0)
+            material.DisableKeyword(ShaderUtilities.Keyword_Outline);
+        else
+            material.EnableKeyword(ShaderUtilities.Keyword_Outline);
+        material.SetColor(ShaderUtilities.ID_OutlineColor, Color.black);
+        material.SetFloat(ShaderUtilities.ID_OutlineWidth, width);
+        text.UpdateMeshPadding();
+    }
 
     private static void ConfigureTextUnderlay(TextMeshProUGUI text, bool enabled)
     {
@@ -624,12 +659,14 @@ public sealed class StageLyricsView
         // A restrained SDF outline keeps the words readable over the animated
         // backdrop. The currently sung neon layer gets the stronger bloom.
         var isBurn = name.StartsWith("Burn", StringComparison.Ordinal);
-        text.outlineColor = isBurn ? Color.clear : name == "Neon Fill"
+        var isGeometricOutline = name.StartsWith("Outline", StringComparison.Ordinal);
+        var isEffectLayer = isBurn || isGeometricOutline;
+        text.outlineColor = isEffectLayer ? Color.clear : name == "Neon Fill"
             ? new Color32(176, 255, 0, 210)
             : new Color32(75, 25, 100, 190);
-        text.outlineWidth = isBurn ? 0 : name == "Neon Fill" ? 0.16f : 0.09f;
+        text.outlineWidth = isEffectLayer ? 0 : name == "Neon Fill" ? 0.16f : 0.09f;
         var material = text.fontMaterial;
-        if (!isBurn && material != null && material.HasProperty(ShaderUtilities.ID_GlowPower))
+        if (!isEffectLayer && material != null && material.HasProperty(ShaderUtilities.ID_GlowPower))
         {
             material.SetColor(ShaderUtilities.ID_GlowColor, name == "Neon Fill"
                 ? new Color(0.72f, 1f, 0.02f, 0.82f)
