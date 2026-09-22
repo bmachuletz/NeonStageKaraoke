@@ -195,6 +195,7 @@ public sealed class KaraokeColorSettingsDto
     public string sungColor = "#DFFF28";
     public string glowColor = "#FF5008";
     public int outlineStrength = 55;
+    public int burnIntensity = 50;
 }
 
 [Serializable]

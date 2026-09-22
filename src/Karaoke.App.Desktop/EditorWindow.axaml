@@ -158,7 +158,7 @@
                         ToolTip.Tip="Steuert die Füllgeschwindigkeit mit Basic-Pitch-Noten: singen läuft weiter, klare Pausen halten, neue Einsätze springen. Ohne belastbare Noten bleibt das lineare Highlight." />
               <Button Grid.Column="4" Content="🎨 FARBEN" Click="EditKaraokeColorsClick"
                       Margin="14,2,0,2" Padding="8,0" FontSize="10"
-                      ToolTip.Tip="Farben für ungesungene und gesungene Lyrics sowie den Glow dieses Songs einstellen." />
+                      ToolTip.Tip="Farben, Kontur und Burn-/Flammen-Intensität dieses Songs einstellen." />
             </Grid>
             <local:VlcBitmapVideoView x:Name="EditorVideoView" Grid.Row="1" IsVisible="{Binding HasSongVideo}" />
             <local:StageLyricsPreviewControl x:Name="LyricsPreview" Grid.Row="1" Document="{Binding TimingPreviewDocument}" Position="{Binding Playhead}"

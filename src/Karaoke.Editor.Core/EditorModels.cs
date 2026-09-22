@@ -128,18 +128,21 @@ public sealed class KaraokeColorSettings
     public const string DefaultSungColor = "#DFFF28";
     public const string DefaultGlowColor = "#FF5008";
     public const int DefaultOutlineStrength = 55;
+    public const int DefaultBurnIntensity = 50;
 
     public string UnsungColor { get; set; } = DefaultUnsungColor;
     public string SungColor { get; set; } = DefaultSungColor;
     public string GlowColor { get; set; } = DefaultGlowColor;
     public int OutlineStrength { get; set; } = DefaultOutlineStrength;
+    public int BurnIntensity { get; set; } = DefaultBurnIntensity;
 
     public KaraokeColorSettings Normalized() => new()
     {
         UnsungColor = NormalizeOrDefault(UnsungColor, DefaultUnsungColor),
         SungColor = NormalizeOrDefault(SungColor, DefaultSungColor),
         GlowColor = NormalizeOrDefault(GlowColor, DefaultGlowColor),
-        OutlineStrength = Math.Clamp(OutlineStrength, 0, 100)
+        OutlineStrength = Math.Clamp(OutlineStrength, 0, 100),
+        BurnIntensity = Math.Clamp(BurnIntensity, 0, 100)
     };
 
     public static string NormalizeOrDefault(string? value, string fallback) =>

@@ -445,11 +445,12 @@ var dto = new LyricsDto(songId, [new LyricsLineDto(TimeSpan.FromSeconds(1), "Hal
     [new LyricsWordDto(TimeSpan.FromSeconds(1), "Hallo", TimeSpan.FromSeconds(2), 0,
         [new LyricsSyllableDto(TimeSpan.FromSeconds(1), "Hal", TimeSpan.FromSeconds(1.5), 0, .8),
          new LyricsSyllableDto(TimeSpan.FromSeconds(1.5), "lo", TimeSpan.FromSeconds(2), 1, .9)], .85)])],
-    KaraokeColors: new("#102030", "#AABBCC", "#F05020", 80));
+    KaraokeColors: new("#102030", "#AABBCC", "#F05020", 80, 35));
 var imported = LyricsDocumentImporter.Import(dto, "run-1", "model-1");
 Assert(imported.Lines[0].Children[0].Children.Count == 2, "KI-Hierarchie wird vollständig importiert.");
 Assert(imported.KaraokeColors.UnsungColor == "#102030" && imported.KaraokeColors.SungColor == "#AABBCC" &&
-       imported.KaraokeColors.GlowColor == "#F05020" && imported.KaraokeColors.OutlineStrength == 80,
+       imported.KaraokeColors.GlowColor == "#F05020" && imported.KaraokeColors.OutlineStrength == 80 &&
+       imported.KaraokeColors.BurnIntensity == 35,
     "Song-spezifische Karaoke-Farben werden in das Editor-Dokument übernommen.");
 Assert(imported.Segments.All(segment => segment.OriginalStart == segment.Start), "KI-Originalzeiten bleiben erhalten.");
 var voiceDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
@@ -541,6 +542,24 @@ var carriedPage = protectedPageBreak.Evaluate(2.1);
 Assert(carriedPage.Lines.Any(line => line.Text == "Gefährdete Schlusszeile") &&
        carriedPage.Lines.Any(line => line.Text == "Erste Zeile der Folgeseite"),
     "Eine gefährdete Schlusszeile wird bei ausreichendem Platz auf die Folgeseite umgehängt.");
+var crowdedPresentation = new StagePresentationEngine(Enumerable.Range(0, 6)
+    .Select(index => new StagePresentationLine(0, 4, $"Parallele Zeile {index + 1}",
+        [new StagePresentationWord(0, 4, $"Parallele Zeile {index + 1}", [], .9)],
+        null, "Automatic", index % 2, index % 2 == 0 ? "Lead" : "Backing"))
+    .ToArray());
+Assert(crowdedPresentation.Evaluate(1).Lines.Count <= 4,
+    "Die gemeinsame Stage-Präsentation zeigt auch bei parallelen Stimmen höchstens vier Zeilen.");
+var fixedSizePhrase = "Eine ab morgen schon die andere ab jetzt";
+var fixedSizeWords = fixedSizePhrase.Split(' ')
+    .Select((text, index) => new StagePresentationWord(index * .4, (index + 1) * .4, text, [], .9))
+    .ToArray();
+var fixedSizeFrame = new StagePresentationEngine([
+    new StagePresentationLine(0, fixedSizeWords[^1].End, fixedSizePhrase, fixedSizeWords,
+        null, "Automatic", 0, "Lead")
+]).Evaluate(1);
+Assert(string.Join(" ", fixedSizeFrame.Lines.Select(line => line.Text)) == fixedSizePhrase &&
+       fixedSizeFrame.Lines.Count <= 4,
+    "Eine für die feste Schrift umgebrochene Phrase bleibt vollständig und in höchstens vier Zeilen sichtbar.");
 
 var sharedPresentation = new StagePresentationEngine(
 [
@@ -1026,14 +1045,16 @@ Assert(StageTestProtocol.IsCompatibleHello(compatibleHello, handshakeSession, ha
 var stageSong = new SongDto(technicalDocument.SongId, "Human title", "Human artist", "Album", 120, true);
 technicalDocument.KaraokeColors = new KaraokeColorSettings
 {
-    UnsungColor = "#102030", SungColor = "#AABBCC", GlowColor = "#F05020", OutlineStrength = 80
+    UnsungColor = "#102030", SungColor = "#AABBCC", GlowColor = "#F05020", OutlineStrength = 80,
+    BurnIntensity = 35
 };
 var stageLyrics = StageTestLyricsMapper.ToLyricsDto(technicalDocument, stageSong, true);
 Assert(stageLyrics.Lines[0].Text == "Don't stop!" && stageLyrics.Lines[0].Words![0].Text == "Don't" &&
        !stageLyrics.Lines[0].Text.Contains("dont stop", StringComparison.Ordinal),
     "Der Unity-Live-Test erhält sichtbare Menschen-Lyrics und niemals den technischen CTC-Text.");
 Assert(stageLyrics.KaraokeColors is
-       { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020", OutlineStrength: 80 },
+       { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020", OutlineStrength: 80,
+         BurnIntensity: 35 },
     "Der Unity-Live-Test erhält dieselben Karaoke-Farben wie die veröffentlichte Stage.");
 var protocolJson = System.Text.Json.JsonSerializer.Serialize(new StageTestMessage
 {

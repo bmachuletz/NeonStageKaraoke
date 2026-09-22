@@ -284,7 +284,8 @@ public sealed record KaraokeColorSettingsDto(
     string UnsungColor = "#FFFFFF",
     string SungColor = "#DFFF28",
     string GlowColor = "#FF5008",
-    int OutlineStrength = 55);
+    int OutlineStrength = 55,
+    int BurnIntensity = 50);
 public sealed record MusicalHighlightSettingsDto(
     bool Enabled,
     int TimelineVersion = 1);

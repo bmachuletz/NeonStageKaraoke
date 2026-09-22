@@ -106,13 +106,15 @@ public sealed class StageLyricsPreviewControl : Control
         if (frame.Lines.Count == 0) return;
         var rowHeight = presentationBounds.Height / frame.Lines.Count;
         var horizontalPadding = Math.Clamp(presentationBounds.Width * .045, 24, 56);
+        var stageScale = Math.Min(presentationBounds.Width / 1280d, presentationBounds.Height / 720d);
+        var stageFontSize = Math.Max(12, 42 * stageScale);
         var palette = PreviewPalette.From(Document?.KaraokeColors);
         for (var index = 0; index < frame.Lines.Count; index++)
             DrawLine(context, frame.Lines[index], new Rect(
                 presentationBounds.X + horizontalPadding,
                 presentationBounds.Y + index * rowHeight,
                 Math.Max(1, presentationBounds.Width - horizontalPadding * 2), rowHeight), frame.Alpha,
-                palette, HasVideoBackground);
+                palette, HasVideoBackground, stageFontSize);
         if (frame.ShowEntryCue)
             DrawCue(context, presentationBounds, rowHeight, frame.EntryCueProgress, frame.Alpha);
         if (HasVideoBackground)
@@ -120,10 +122,9 @@ public sealed class StageLyricsPreviewControl : Control
     }
 
     private static void DrawLine(DrawingContext context, StagePreviewLine line, Rect area, double alpha,
-        PreviewPalette palette, bool highContrast)
+        PreviewPalette palette, bool highContrast, double size)
     {
-        var size = FitFont(line.Text, area);
-        var typeface = new Typeface("Inter", FontStyle.Normal, FontWeight.Bold);
+        var typeface = new Typeface("Inter", FontStyle.Normal, FontWeight.Black);
         var baseBrush = new SolidColorBrush(WithAlpha(palette.Unsung, .95 * alpha));
         var text = new FormattedText(line.Text, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, typeface, size, baseBrush);
@@ -197,14 +198,4 @@ public sealed class StageLyricsPreviewControl : Control
             new Point(scanX, y - 4), new Point(scanX, y + height + 4));
     }
 
-    private static double FitFont(string text, Rect area)
-    {
-        for (var size = Math.Min(54, area.Height * .46); size >= 12; size -= 2)
-        {
-            var formatted = new FormattedText(text, System.Globalization.CultureInfo.CurrentCulture,
-                FlowDirection.LeftToRight, new Typeface("Inter", FontStyle.Normal, FontWeight.Bold), size, Brushes.White);
-            if (formatted.Width <= area.Width && formatted.Height <= area.Height - 4) return size;
-        }
-        return 12;
-    }
 }

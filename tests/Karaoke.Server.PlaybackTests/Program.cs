@@ -508,7 +508,8 @@ try
     {
         karaokeColors = new
         {
-            unsungColor = "#102030", sungColor = "#AABBCC", glowColor = "#F05020", outlineStrength = 80
+            unsungColor = "#102030", sungColor = "#AABBCC", glowColor = "#F05020", outlineStrength = 80,
+            burnIntensity = 35
         },
         lines = new[] { new
         {
@@ -527,7 +528,8 @@ try
     Assert(mappedRuntime.Lines[0].Text == "Hallo toys" && mappedRuntime.Lines[0].Words?.Count == 2,
         "Die Stage bildet den sichtbaren Zeilentext aus Menschen-Lyrics und ignoriert technischen CTC-Text.");
     Assert(mappedRuntime.KaraokeColors is
-           { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020", OutlineStrength: 80 },
+           { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020", OutlineStrength: 80,
+             BurnIntensity: 35 },
         "Die veröffentlichte Editor-Version liefert ihre song-spezifischen Karaoke-Farben an die Stage.");
 
     var noteRuntimeJson = JsonSerializer.Serialize(new

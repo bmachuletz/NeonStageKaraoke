@@ -8,7 +8,8 @@ namespace NeonStage.Stage
 {
 public sealed class StageLyricsView
 {
-    private const int MaxLines = 8;
+    private const int MaxLines = 4;
+    private const float StageFontSize = 42f;
     private readonly RectTransform _root;
     private readonly Image _backdrop;
     private readonly TextMeshProUGUI[][] _outlines = new TextMeshProUGUI[MaxLines][];
@@ -27,7 +28,6 @@ public sealed class StageLyricsView
     private readonly float[] _lastProgress = new float[MaxLines];
     private readonly int[] _voiceLanes = new int[MaxLines];
     private readonly List<LyricParticle> _particles = new();
-    private int _highlightCounter;
     private int _lineCount;
     private readonly GameObject _cueRoot;
     private readonly RectTransform _fuseTrack;
@@ -41,6 +41,7 @@ public sealed class StageLyricsView
     private Color _sungColor = new(0.875f, 1f, 0.157f, 1f);
     private Color _glowColor = new(1f, 0.314f, 0.031f, 1f);
     private int _outlineStrength = 55;
+    private int _burnIntensity = 50;
 
     public StageLyricsView(GameObject host)
     {
@@ -64,7 +65,7 @@ public sealed class StageLyricsView
         // the transport bar. Section pagination keeps this deliberately
         // smaller safe area readable instead of allowing text to spill out.
         _root.anchorMin = new Vector2(0.12f, 0.50f);
-        _root.anchorMax = new Vector2(0.94f, 0.73f);
+        _root.anchorMax = new Vector2(0.94f, 0.79f);
         _root.offsetMin = Vector2.zero;
         _root.offsetMax = Vector2.zero;
 
@@ -124,12 +125,14 @@ public sealed class StageLyricsView
             ApplyVoicePalette(index, _voiceLanes[index]);
     }
 
-    public void SetKaraokeColors(string? unsung, string? sung, string? glow, int outlineStrength)
+    public void SetKaraokeColors(string? unsung, string? sung, string? glow, int outlineStrength,
+        int burnIntensity)
     {
         _unsungColor = ParseColor(unsung, Color.white);
         _sungColor = ParseColor(sung, new Color(.875f, 1f, .157f, 1f));
         _glowColor = ParseColor(glow, new Color(1f, .314f, .031f, 1f));
         _outlineStrength = Mathf.Clamp(outlineStrength, 0, 100);
+        _burnIntensity = Mathf.Clamp(burnIntensity, 0, 100);
         for (var index = 0; index < _lineCount; index++)
             ApplyVoicePalette(index, _voiceLanes[index]);
     }
@@ -145,7 +148,7 @@ public sealed class StageLyricsView
         _videoPerformanceMode = active;
         for (var line = 0; line < MaxLines; line++)
         {
-            foreach (var burn in _burn[line]) burn.gameObject.SetActive(!active);
+            foreach (var burn in _burn[line]) burn.gameObject.SetActive(!active && _burnIntensity > 0);
             if (active) _flames[line].gameObject.SetActive(false);
         }
         if (!active) return;
@@ -218,7 +221,7 @@ public sealed class StageLyricsView
             : new Vector2(.12f, .50f);
         _root.anchorMax = laneOrder.Count > 1
             ? new Vector2(.74f, .73f)
-            : new Vector2(.94f, .73f);
+            : new Vector2(.94f, .79f);
         Canvas.ForceUpdateCanvases();
         var height = _root.rect.height > 0 ? _root.rect.height : 410;
         var laneGap = laneOrder.Count > 1 ? Mathf.Clamp(height * .055f, 22f, 34f) : 0f;
@@ -297,39 +300,61 @@ public sealed class StageLyricsView
         _masks[line].SetSizeWithCurrentAnchors(
             RectTransform.Axis.Horizontal,
             progressWidth);
-        if (_videoPerformanceMode)
+        var burnStrength = _burnIntensity / 100f;
+        if (_videoPerformanceMode || burnStrength <= 0)
         {
+            _flames[line].gameObject.SetActive(false);
             _fill[line].transform.localScale = Vector3.one;
-            _lastProgress[line] = p;
-            return;
         }
-        _flames[line].gameObject.SetActive(!_videoPerformanceMode && p > .002f && p < .998f);
-        _flames[line].anchoredPosition = new Vector2(
-            -_rowWidths[line] * .5f + _textLeft[line] + progressWidth,
-            Mathf.Sin(_songTime * Mathf.Lerp(7f, 19f, pace) + line) * Mathf.Lerp(1.2f, 3.2f, pace));
-        var pulse = 1f + Mathf.Sin(_songTime * Mathf.Lerp(8f, 24f, pace) + line * 1.7f) * Mathf.Lerp(.07f, .18f, pace);
-        _flames[line].sizeDelta = new Vector2(Mathf.Lerp(82f, 25f, pace), Mathf.Lerp(98f, 45f, pace));
-        _flames[line].localScale = new Vector3(pulse, 1f + (pulse - 1f) * Mathf.Lerp(1.1f, 2.2f, pace), 1);
-        var slowColor = WithAlpha(_glowColor, .9f);
-        var fastColor = WithAlpha(_sungColor, .88f);
-        _flameImages[line].color = Color.Lerp(slowColor, fastColor, pace);
-        var fillMaterial = _fill[line].fontMaterial;
-        if (fillMaterial != null && fillMaterial.HasProperty(ShaderUtilities.ID_GlowPower))
+        else
         {
-            fillMaterial.SetFloat(ShaderUtilities.ID_GlowOuter, Mathf.Lerp(.72f, .34f, pace));
-            fillMaterial.SetFloat(ShaderUtilities.ID_GlowPower, Mathf.Lerp(.82f, .52f, pace));
-            fillMaterial.SetColor(ShaderUtilities.ID_GlowColor, WithAlpha(_glowColor, Mathf.Lerp(.98f, .82f, pace)));
+            _flames[line].gameObject.SetActive(p > .002f && p < .998f);
+            _flames[line].anchoredPosition = new Vector2(
+                -_rowWidths[line] * .5f + _textLeft[line] + progressWidth,
+                3f + Mathf.Sin(_songTime * Mathf.Lerp(7f, 19f, pace) + line) * Mathf.Lerp(1.8f, 4.4f, pace));
+            var pulse = 1f + Mathf.Sin(_songTime * Mathf.Lerp(8f, 24f, pace) + line * 1.7f) * Mathf.Lerp(.07f, .18f, pace);
+            var flameHeight = Mathf.Min(Mathf.Lerp(104f, 58f, pace), _rowHeights[line] * 1.38f);
+            _flames[line].sizeDelta = new Vector2(Mathf.Lerp(88f, 34f, pace), flameHeight);
+            _flames[line].localScale = new Vector3(pulse, 1f + (pulse - 1f) * Mathf.Lerp(1.1f, 2.2f, pace), 1);
+            // Keep the travelling flame above the sung text. It used to be a
+            // sibling behind the progress mask and was almost entirely overdrawn.
+            _flames[line].SetAsLastSibling();
+            var slowColor = WithAlpha(_glowColor, .98f * burnStrength);
+            var fastColor = WithAlpha(Color.Lerp(_glowColor, _sungColor, .58f), .94f * burnStrength);
+            _flameImages[line].color = Color.Lerp(slowColor, fastColor, pace);
+            var rimMotion = Mathf.Lerp(.55f, 1f, burnStrength);
+            for (var burnIndex = 0; burnIndex < _burn[line].Length; burnIndex++)
+            {
+                // A small independently moving rim makes the already sung glyphs
+                // look hot instead of merely duplicating the fill in another color.
+                var side = burnIndex is 0 or 2 ? -1f : 1f;
+                var vertical = burnIndex < 2 ? 1f : -1f;
+                var flutter = Mathf.Sin(_songTime * (13f + burnIndex * 2.7f) + line * 1.3f);
+                ((RectTransform)_burn[line][burnIndex].transform).anchoredPosition = new Vector2(
+                    -_textLeft[line] + side * (3.2f + flutter * .75f) * rimMotion,
+                    vertical * (2.8f + flutter * 1.15f) * rimMotion);
+            }
+            var fillMaterial = _fill[line].fontMaterial;
+            if (fillMaterial != null && fillMaterial.HasProperty(ShaderUtilities.ID_GlowPower))
+            {
+                fillMaterial.SetFloat(ShaderUtilities.ID_GlowOuter, Mathf.Lerp(.72f, .34f, pace));
+                fillMaterial.SetFloat(ShaderUtilities.ID_GlowPower, Mathf.Lerp(.82f, .52f, pace));
+                fillMaterial.SetColor(ShaderUtilities.ID_GlowColor, WithAlpha(_glowColor, Mathf.Lerp(.98f, .82f, pace)));
+            }
         }
-        if (_lastProgress[line] < .985f && p >= .985f &&
-            (audioImpact >= .22f || !string.Equals(stageEffect, "Automatic", StringComparison.OrdinalIgnoreCase)))
+        const float completionThreshold = .975f;
+        if (_lastProgress[line] < completionThreshold && p >= completionThreshold)
         {
-            var explodes = string.Equals(stageEffect, "Shatter", StringComparison.OrdinalIgnoreCase) ||
-                           string.Equals(stageEffect, "EmberBurst", StringComparison.OrdinalIgnoreCase) ||
-                           (string.Equals(stageEffect, "Automatic", StringComparison.OrdinalIgnoreCase) && (_highlightCounter++ & 1) == 0);
-            if (!string.Equals(stageEffect, "Pulse", StringComparison.OrdinalIgnoreCase)) SpawnHighlight(line, explodes);
+            var automatic = string.Equals(stageEffect, "Automatic", StringComparison.OrdinalIgnoreCase);
+            var shatter = string.Equals(stageEffect, "Shatter", StringComparison.OrdinalIgnoreCase);
+            var emberBurst = string.Equals(stageEffect, "EmberBurst", StringComparison.OrdinalIgnoreCase);
+            var explodes = automatic || shatter || emberBurst;
+            var strength = shatter ? 1f : emberBurst ? .78f : automatic ? .48f + audioImpact * .12f : .62f;
+            if (!string.Equals(stageEffect, "Pulse", StringComparison.OrdinalIgnoreCase))
+                SpawnHighlight(line, explodes, strength);
             else _fill[line].transform.localScale = new Vector3(1.035f, 1.035f, 1);
         }
-        else if (p < .985f) _fill[line].transform.localScale = Vector3.one;
+        else if (p < completionThreshold) _fill[line].transform.localScale = Vector3.one;
         _lastProgress[line] = p;
     }
 
@@ -385,22 +410,24 @@ public sealed class StageLyricsView
         }
     }
 
-    private void SpawnHighlight(int line, bool explodes)
+    private void SpawnHighlight(int line, bool explodes, float strength)
     {
         var row = (RectTransform)_base[line].transform.parent;
-        var count = explodes ? 28 : 20;
+        strength = Mathf.Clamp01(strength);
+        var count = Mathf.RoundToInt((explodes ? 28 : 20) * Mathf.Lerp(.55f, 1f, strength));
         for (var index = 0; index < count; index++)
         {
             var go = new GameObject(explodes ? "Lyric Spark" : "Lyric Dissolve", typeof(RectTransform), typeof(Image));
             go.transform.SetParent(row, false);
             var rect = go.GetComponent<RectTransform>();
             rect.anchorMin = rect.anchorMax = new Vector2(.5f, .5f);
-            rect.sizeDelta = Vector2.one * UnityEngine.Random.Range(3f, 8f);
+            rect.sizeDelta = Vector2.one * UnityEngine.Random.Range(3f, Mathf.Lerp(5.5f, 8f, strength));
             rect.anchoredPosition = new Vector2(
                 UnityEngine.Random.Range(-_textWidths[line] * .48f, _textWidths[line] * .48f),
                 UnityEngine.Random.Range(-18f, 18f));
             var direction = explodes
-                ? new Vector2(rect.anchoredPosition.x * .45f, UnityEngine.Random.Range(25f, 95f))
+                ? new Vector2(rect.anchoredPosition.x * Mathf.Lerp(.24f, .45f, strength),
+                    UnityEngine.Random.Range(20f, Mathf.Lerp(58f, 95f, strength)))
                 : new Vector2(UnityEngine.Random.Range(-12f, 12f), UnityEngine.Random.Range(10f, 42f));
             var image = go.GetComponent<Image>();
             image.raycastTarget = false;
@@ -488,13 +515,15 @@ public sealed class StageLyricsView
         fillRect.pivot = new Vector2(0, .5f);
         fillRect.anchoredPosition = Vector2.zero;
         fillRect.sizeDelta = new Vector2(1126, 0);
+        // UI siblings are painted in hierarchy order. The travelling flame
+        // deliberately belongs above the clipped burn and fill layers.
+        _flames[index].SetAsLastSibling();
     }
 
     private void ApplyVoicePalette(int index, int lane)
     {
         var milkGlass = _presentationStyle == "milk-glass";
         var highContrast = milkGlass || _videoBackground;
-        var outlineWidth = Mathf.Lerp(0f, .45f, _outlineStrength / 100f);
         var geometricOffset = Mathf.Lerp(.7f, 4.8f, _outlineStrength / 100f);
         var outlineOffsets = new[]
         {
@@ -511,42 +540,28 @@ public sealed class StageLyricsView
         _base[index].color = _unsungColor;
         _fill[index].color = _sungColor;
         ConfigureTextUnderlay(_base[index], highContrast);
-        ConfigureTextOutline(_base[index], outlineWidth);
 
         var burnColors = new[]
         {
-            WithAlpha(_glowColor, .72f),
-            WithAlpha(Color.Lerp(_glowColor, _sungColor, .28f), .72f),
-            WithAlpha(Color.Lerp(_glowColor, Color.black, .12f), .72f),
-            WithAlpha(Color.Lerp(_glowColor, _sungColor, .5f), .72f)
+            WithAlpha(_glowColor, .92f * _burnIntensity / 100f),
+            WithAlpha(Color.Lerp(_glowColor, _sungColor, .28f), .90f * _burnIntensity / 100f),
+            WithAlpha(Color.Lerp(_glowColor, Color.black, .12f), .88f * _burnIntensity / 100f),
+            WithAlpha(Color.Lerp(_glowColor, _sungColor, .5f), .92f * _burnIntensity / 100f)
         };
         for (var burnIndex = 0; burnIndex < _burn[index].Length; burnIndex++)
+        {
+            _burn[index][burnIndex].gameObject.SetActive(!_videoPerformanceMode && _burnIntensity > 0);
             _burn[index][burnIndex].color = burnColors[burnIndex];
+        }
 
         var material = _fill[index].fontMaterial;
         if (material == null) return;
         ConfigureTextUnderlay(_fill[index], highContrast);
-        ConfigureTextOutline(_fill[index], outlineWidth * .86f);
         if (material.HasProperty(ShaderUtilities.ID_GlowColor))
             material.SetColor(ShaderUtilities.ID_GlowColor, WithAlpha(_glowColor, .86f));
     }
 
     private static Color WithAlpha(Color color, float alpha) => new(color.r, color.g, color.b, alpha);
-
-    private static void ConfigureTextOutline(TextMeshProUGUI text, float width)
-    {
-        text.outlineColor = new Color32(0, 0, 0, 255);
-        text.outlineWidth = width;
-        var material = text.fontMaterial;
-        if (material == null || !material.HasProperty(ShaderUtilities.ID_OutlineWidth)) return;
-        if (width <= 0)
-            material.DisableKeyword(ShaderUtilities.Keyword_Outline);
-        else
-            material.EnableKeyword(ShaderUtilities.Keyword_Outline);
-        material.SetColor(ShaderUtilities.ID_OutlineColor, Color.black);
-        material.SetFloat(ShaderUtilities.ID_OutlineWidth, width);
-        text.UpdateMeshPadding();
-    }
 
     private static void ConfigureTextUnderlay(TextMeshProUGUI text, bool enabled)
     {
@@ -592,15 +607,24 @@ public sealed class StageLyricsView
     private static Texture2D CreateFlameTexture()
     {
         var texture = new Texture2D(64, 64, TextureFormat.RGBA32, false);
+        texture.name = "NeonStage Singing Flame";
+        texture.filterMode = FilterMode.Bilinear;
+        texture.wrapMode = TextureWrapMode.Clamp;
         for (var y = 0; y < 64; y++)
         for (var x = 0; x < 64; x++)
         {
-            var dx = (x - 31.5f) / 25f;
-            var dy = (y - 25f) / 34f;
-            var radial = Mathf.Clamp01(1f - Mathf.Sqrt(dx * dx + dy * dy));
-            var lick = Mathf.Clamp01(1f - Mathf.Abs(dx + Mathf.Sin(y * .22f) * .12f) * 2.8f) * Mathf.Clamp01((y - 24f) / 30f);
-            var alpha = Mathf.Pow(Mathf.Max(radial * .65f, lick * .55f), 2f) * .68f;
-            texture.SetPixel(x, y, new Color(1f, .9f, .05f, alpha));
+            var u = (x - 31.5f) / 31.5f;
+            var v = y / 63f;
+            var bodyX = u + Mathf.Sin(v * 8.2f) * .10f;
+            var body = Mathf.Clamp01(1f - Mathf.Sqrt(bodyX * bodyX / .72f + (v - .30f) * (v - .30f) / .19f));
+            var lickOne = Mathf.Clamp01(1f - Mathf.Abs(u + .18f + Mathf.Sin(v * 12f) * .08f) * 4.2f)
+                          * Mathf.SmoothStep(.24f, .96f, v);
+            var lickTwo = Mathf.Clamp01(1f - Mathf.Abs(u - .22f - Mathf.Sin(v * 10f) * .07f) * 5.2f)
+                          * Mathf.SmoothStep(.18f, .78f, v) * (1f - Mathf.SmoothStep(.80f, 1f, v));
+            var alpha = Mathf.Clamp01(Mathf.Max(body * 1.3f, Mathf.Max(lickOne, lickTwo) * .92f));
+            alpha *= Mathf.SmoothStep(0f, .10f, v) * (1f - Mathf.SmoothStep(.96f, 1f, v));
+            var heat = Mathf.Clamp01(body * 1.5f);
+            texture.SetPixel(x, y, new Color(1f, Mathf.Lerp(.42f, 1f, heat), Mathf.Lerp(.02f, .45f, heat), alpha));
         }
         texture.Apply();
         return texture;
@@ -650,22 +674,42 @@ public sealed class StageLyricsView
         text.color = color;
         text.alignment = TextAlignmentOptions.Center;
         text.fontStyle = FontStyles.Bold;
-        text.enableAutoSizing = true;
-        text.fontSizeMin = 20;
-        text.fontSizeMax = 43;
+        // NeonStage's stage type treatment: compact, heavy glyphs stay legible
+        // at a distance without depending on a platform-installed font.
+        text.characterSpacing = -1f;
+        text.enableAutoSizing = false;
+        text.fontSize = StageFontSize;
+        text.fontSizeMin = StageFontSize;
+        text.fontSizeMax = StageFontSize;
         text.enableWordWrapping = false;
-        text.overflowMode = TextOverflowModes.Ellipsis;
+        // Lines are already wrapped by StagePresentationEngine. Overflow is
+        // safer than TMP's Ellipsis here: with a fixed font, a row that is a
+        // fraction too short can otherwise suppress the complete glyph mesh
+        // while the independently rendered flame remains visible.
+        text.overflowMode = TextOverflowModes.Overflow;
         text.raycastTarget = false;
         // A restrained SDF outline keeps the words readable over the animated
         // backdrop. The currently sung neon layer gets the stronger bloom.
         var isBurn = name.StartsWith("Burn", StringComparison.Ordinal);
         var isGeometricOutline = name.StartsWith("Outline", StringComparison.Ordinal);
         var isEffectLayer = isBurn || isGeometricOutline;
-        text.outlineColor = isEffectLayer ? Color.clear : name == "Neon Fill"
-            ? new Color32(176, 255, 0, 210)
-            : new Color32(75, 25, 100, 190);
-        text.outlineWidth = isEffectLayer ? 0 : name == "Neon Fill" ? 0.16f : 0.09f;
+        // The black readability contour is rendered as separate geometry.
+        // Keeping TMP's OUTLINE_ON disabled prevents it from replacing or
+        // overpainting the glow/burn shader variants in standalone builds.
+        text.outlineColor = Color.clear;
+        text.outlineWidth = 0;
         var material = text.fontMaterial;
+        if (material != null)
+        {
+            // Strengthen the existing SDF face independently of the geometric
+            // black contour and the neon glow. This also keeps all effect
+            // layers on precisely the same glyph silhouette.
+            if (material.HasProperty(ShaderUtilities.ID_WeightBold))
+                material.SetFloat(ShaderUtilities.ID_WeightBold, .82f);
+            if (material.HasProperty(ShaderUtilities.ID_FaceDilate))
+                material.SetFloat(ShaderUtilities.ID_FaceDilate, .12f);
+            text.UpdateMeshPadding();
+        }
         if (!isEffectLayer && material != null && material.HasProperty(ShaderUtilities.ID_GlowPower))
         {
             material.SetColor(ShaderUtilities.ID_GlowColor, name == "Neon Fill"

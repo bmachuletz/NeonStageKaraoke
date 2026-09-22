@@ -16,15 +16,17 @@ public sealed class KaraokeColorSettingsWindow : Window
     private readonly Border _glowSwatch;
     private readonly Slider _outlineStrength;
     private readonly TextBlock _outlineValue;
+    private readonly Slider _burnIntensity;
+    private readonly TextBlock _burnValue;
     private readonly TextBlock _error;
 
     public KaraokeColorSettingsWindow(KaraokeColorSettings? source)
     {
         var german = EditorLocale.German;
         var colors = (source ?? new KaraokeColorSettings()).Normalized();
-        Title = german ? "Lyrics-Farben" : "Lyrics colors";
+        Title = german ? "Lyrics-Darstellung" : "Lyrics appearance";
         Width = 520;
-        Height = 500;
+        Height = 555;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.Parse("#0D1016"));
@@ -48,6 +50,19 @@ public sealed class KaraokeColorSettingsWindow : Window
         };
         _outlineStrength.ValueChanged += (_, _) =>
             _outlineValue.Text = $"{Math.Round(_outlineStrength.Value):0}%";
+        _burnIntensity = new Slider
+        {
+            Minimum = 0, Maximum = 100, Value = colors.BurnIntensity,
+            TickFrequency = 5, Width = 220, VerticalAlignment = VerticalAlignment.Center
+        };
+        _burnValue = new TextBlock
+        {
+            Text = $"{colors.BurnIntensity}%", Width = 48,
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(Color.Parse("#FFFFFF"))
+        };
+        _burnIntensity.ValueChanged += (_, _) =>
+            _burnValue.Text = $"{Math.Round(_burnIntensity.Value):0}%";
         _error = new TextBlock
         {
             Foreground = new SolidColorBrush(Color.Parse("#FF6D88")),
@@ -71,6 +86,7 @@ public sealed class KaraokeColorSettingsWindow : Window
             _sung.Text = KaraokeColorSettings.DefaultSungColor;
             _glow.Text = KaraokeColorSettings.DefaultGlowColor;
             _outlineStrength.Value = KaraokeColorSettings.DefaultOutlineStrength;
+            _burnIntensity.Value = KaraokeColorSettings.DefaultBurnIntensity;
         };
         cancel.Click += (_, _) => Close(null);
         apply.Click += (_, _) => Apply(german);
@@ -78,21 +94,23 @@ public sealed class KaraokeColorSettingsWindow : Window
         var panel = new StackPanel { Margin = new Thickness(24), Spacing = 13 };
         panel.Children.Add(new TextBlock
         {
-            Text = german ? "KARAOKE-FARBEN" : "KARAOKE COLORS", FontSize = 21,
+            Text = german ? "KARAOKE-DARSTELLUNG" : "KARAOKE APPEARANCE", FontSize = 21,
             FontWeight = FontWeight.Bold, Foreground = new SolidColorBrush(Color.Parse("#DFFF28"))
         });
         panel.Children.Add(new TextBlock
         {
             Text = german
-                ? "Die Farben gelten für diesen Song. Auf Video legt die Stage automatisch eine dunkle Kontrastkante unter die Schrift."
-                : "These colors apply to this song. On video, the Stage automatically adds a dark contrast edge behind the text.",
+                ? "Farben und Burn-Intensität gelten für diesen Song. Auf Video legt die Stage automatisch eine dunkle Kontrastkante unter die Schrift."
+                : "Colors and burn intensity apply to this song. On video, the Stage automatically adds a dark contrast edge behind the text.",
             TextWrapping = TextWrapping.Wrap, Foreground = new SolidColorBrush(Color.Parse("#C0C6D2"))
         });
         panel.Children.Add(Row(german ? "UNGESUNGENE SCHRIFT" : "UNSUNG TEXT", _unsung, _unsungSwatch));
         panel.Children.Add(Row(german ? "GESUNGENE SCHRIFT" : "SUNG TEXT", _sung, _sungSwatch));
         panel.Children.Add(Row("GLOW", _glow, _glowSwatch));
-        panel.Children.Add(OutlineRow(german ? "SCHWARZE KONTUR" : "BLACK OUTLINE",
+        panel.Children.Add(StrengthRow(german ? "SCHWARZE KONTUR" : "BLACK OUTLINE",
             _outlineStrength, _outlineValue));
+        panel.Children.Add(StrengthRow(german ? "BURN-/FLAMMEN-INTENSITÄT" : "BURN / FLAME INTENSITY",
+            _burnIntensity, _burnValue));
         panel.Children.Add(_error);
         panel.Children.Add(new StackPanel
         {
@@ -130,7 +148,7 @@ public sealed class KaraokeColorSettingsWindow : Window
         return grid;
     }
 
-    private static Control OutlineRow(string label, Slider slider, TextBlock value)
+    private static Control StrengthRow(string label, Slider slider, TextBlock value)
     {
         var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), ColumnSpacing = 10 };
         grid.Children.Add(new TextBlock
@@ -165,7 +183,8 @@ public sealed class KaraokeColorSettingsWindow : Window
         Close(new KaraokeColorSettings
         {
             UnsungColor = unsung, SungColor = sung, GlowColor = glow,
-            OutlineStrength = (int)Math.Round(_outlineStrength.Value)
+            OutlineStrength = (int)Math.Round(_outlineStrength.Value),
+            BurnIntensity = (int)Math.Round(_burnIntensity.Value)
         });
     }
 }

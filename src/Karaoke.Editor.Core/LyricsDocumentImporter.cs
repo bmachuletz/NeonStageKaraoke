@@ -25,7 +25,9 @@ public static class LyricsDocumentImporter
                 GlowColor = KaraokeColorSettings.NormalizeOrDefault(source.KaraokeColors?.GlowColor,
                     KaraokeColorSettings.DefaultGlowColor),
                 OutlineStrength = Math.Clamp(source.KaraokeColors?.OutlineStrength ??
-                    KaraokeColorSettings.DefaultOutlineStrength, 0, 100)
+                    KaraokeColorSettings.DefaultOutlineStrength, 0, 100),
+                BurnIntensity = Math.Clamp(source.KaraokeColors?.BurnIntensity ??
+                    KaraokeColorSettings.DefaultBurnIntensity, 0, 100)
             },
             HasUltraStarTimingHeritage = source.HasUltraStarTimingHeritage ||
                 hasUltraStarTimingHeritage || detailedOrigin == SegmentOrigin.ImportedFromUltraStar,

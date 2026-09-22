@@ -62,7 +62,8 @@ internal static class EditorLyricsRuntimeMapper
             HtmlColorOrDefault(StringOrNull(colors, "unsungColor"), defaults.UnsungColor),
             HtmlColorOrDefault(StringOrNull(colors, "sungColor"), defaults.SungColor),
             HtmlColorOrDefault(StringOrNull(colors, "glowColor"), defaults.GlowColor),
-            Math.Clamp(IntegerOrNull(colors, "outlineStrength") ?? defaults.OutlineStrength, 0, 100));
+            Math.Clamp(IntegerOrNull(colors, "outlineStrength") ?? defaults.OutlineStrength, 0, 100),
+            Math.Clamp(IntegerOrNull(colors, "burnIntensity") ?? defaults.BurnIntensity, 0, 100));
     }
 
     private static string HtmlColorOrDefault(string? value, string fallback)

@@ -24,10 +24,13 @@ public sealed class StagePresentationEngine
     private const double PerceptualPostRollSeconds = 0.65;
     private const double TransitionSeconds = 0.28;
     private const int MaxSectionLines = 3;
-    private const int MaxSectionCharacters = 125;
-    private const int MaxVisibleLines = 8;
-    private const int MaxVisualRowUnits = 48;
-    private const int MinVisualRowUnits = 14;
+    private const int MaxSectionCharacters = 100;
+    private const int MaxVisibleLines = 4;
+    // Fixed-size stage typography needs a predictable maximum row width.
+    // 34 units also fit the narrower duet safe area without touching cards,
+    // QR code or transport controls.
+    private const int MaxVisualRowUnits = 34;
+    private const int MinVisualRowUnits = 10;
 
     private readonly List<StagePresentationLine> _lines;
     private readonly Dictionary<StagePresentationWord, KaraokeHighlightTimeline> _highlightTimelines =
