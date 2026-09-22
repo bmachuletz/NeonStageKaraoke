@@ -38,6 +38,6 @@ public static class StageTestLyricsMapper
     private static KaraokeColorSettingsDto ToDto(KaraokeColorSettings? source)
     {
         var colors = (source ?? new KaraokeColorSettings()).Normalized();
-        return new(colors.UnsungColor, colors.SungColor, colors.GlowColor);
+        return new(colors.UnsungColor, colors.SungColor, colors.GlowColor, colors.OutlineStrength);
     }
 }

@@ -61,7 +61,8 @@ internal static class EditorLyricsRuntimeMapper
         return new KaraokeColorSettingsDto(
             HtmlColorOrDefault(StringOrNull(colors, "unsungColor"), defaults.UnsungColor),
             HtmlColorOrDefault(StringOrNull(colors, "sungColor"), defaults.SungColor),
-            HtmlColorOrDefault(StringOrNull(colors, "glowColor"), defaults.GlowColor));
+            HtmlColorOrDefault(StringOrNull(colors, "glowColor"), defaults.GlowColor),
+            Math.Clamp(IntegerOrNull(colors, "outlineStrength") ?? defaults.OutlineStrength, 0, 100));
     }
 
     private static string HtmlColorOrDefault(string? value, string fallback)

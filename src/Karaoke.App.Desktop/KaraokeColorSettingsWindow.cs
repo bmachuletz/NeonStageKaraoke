@@ -14,6 +14,8 @@ public sealed class KaraokeColorSettingsWindow : Window
     private readonly Border _unsungSwatch;
     private readonly Border _sungSwatch;
     private readonly Border _glowSwatch;
+    private readonly Slider _outlineStrength;
+    private readonly TextBlock _outlineValue;
     private readonly TextBlock _error;
 
     public KaraokeColorSettingsWindow(KaraokeColorSettings? source)
@@ -22,7 +24,7 @@ public sealed class KaraokeColorSettingsWindow : Window
         var colors = (source ?? new KaraokeColorSettings()).Normalized();
         Title = german ? "Lyrics-Farben" : "Lyrics colors";
         Width = 520;
-        Height = 430;
+        Height = 500;
         CanResize = false;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = new SolidColorBrush(Color.Parse("#0D1016"));
@@ -33,6 +35,19 @@ public sealed class KaraokeColorSettingsWindow : Window
         _unsungSwatch = Swatch(colors.UnsungColor);
         _sungSwatch = Swatch(colors.SungColor);
         _glowSwatch = Swatch(colors.GlowColor);
+        _outlineStrength = new Slider
+        {
+            Minimum = 0, Maximum = 100, Value = colors.OutlineStrength,
+            TickFrequency = 5, Width = 220, VerticalAlignment = VerticalAlignment.Center
+        };
+        _outlineValue = new TextBlock
+        {
+            Text = $"{colors.OutlineStrength}%", Width = 48,
+            HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(Color.Parse("#FFFFFF"))
+        };
+        _outlineStrength.ValueChanged += (_, _) =>
+            _outlineValue.Text = $"{Math.Round(_outlineStrength.Value):0}%";
         _error = new TextBlock
         {
             Foreground = new SolidColorBrush(Color.Parse("#FF6D88")),
@@ -55,6 +70,7 @@ public sealed class KaraokeColorSettingsWindow : Window
             _unsung.Text = KaraokeColorSettings.DefaultUnsungColor;
             _sung.Text = KaraokeColorSettings.DefaultSungColor;
             _glow.Text = KaraokeColorSettings.DefaultGlowColor;
+            _outlineStrength.Value = KaraokeColorSettings.DefaultOutlineStrength;
         };
         cancel.Click += (_, _) => Close(null);
         apply.Click += (_, _) => Apply(german);
@@ -75,6 +91,8 @@ public sealed class KaraokeColorSettingsWindow : Window
         panel.Children.Add(Row(german ? "UNGESUNGENE SCHRIFT" : "UNSUNG TEXT", _unsung, _unsungSwatch));
         panel.Children.Add(Row(german ? "GESUNGENE SCHRIFT" : "SUNG TEXT", _sung, _sungSwatch));
         panel.Children.Add(Row("GLOW", _glow, _glowSwatch));
+        panel.Children.Add(OutlineRow(german ? "SCHWARZE KONTUR" : "BLACK OUTLINE",
+            _outlineStrength, _outlineValue));
         panel.Children.Add(_error);
         panel.Children.Add(new StackPanel
         {
@@ -112,6 +130,21 @@ public sealed class KaraokeColorSettingsWindow : Window
         return grid;
     }
 
+    private static Control OutlineRow(string label, Slider slider, TextBlock value)
+    {
+        var grid = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,Auto"), ColumnSpacing = 10 };
+        grid.Children.Add(new TextBlock
+        {
+            Text = label, VerticalAlignment = VerticalAlignment.Center,
+            Foreground = new SolidColorBrush(Color.Parse("#FF3CBD")), FontSize = 11
+        });
+        Grid.SetColumn(slider, 1);
+        Grid.SetColumn(value, 2);
+        grid.Children.Add(slider);
+        grid.Children.Add(value);
+        return grid;
+    }
+
     private static void UpdateSwatch(TextBox input, Border swatch)
     {
         if (KaraokeColorSettings.TryNormalize(input.Text, out var value))
@@ -129,6 +162,10 @@ public sealed class KaraokeColorSettingsWindow : Window
                 : "Enter colors as #RRGGBB or #RGB.";
             return;
         }
-        Close(new KaraokeColorSettings { UnsungColor = unsung, SungColor = sung, GlowColor = glow });
+        Close(new KaraokeColorSettings
+        {
+            UnsungColor = unsung, SungColor = sung, GlowColor = glow,
+            OutlineStrength = (int)Math.Round(_outlineStrength.Value)
+        });
     }
 }

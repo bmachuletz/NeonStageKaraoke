@@ -39,6 +39,7 @@ public sealed class StageLyricsView
     private Color _unsungColor = Color.white;
     private Color _sungColor = new(0.875f, 1f, 0.157f, 1f);
     private Color _glowColor = new(1f, 0.314f, 0.031f, 1f);
+    private int _outlineStrength = 55;
 
     public StageLyricsView(GameObject host)
     {
@@ -122,11 +123,12 @@ public sealed class StageLyricsView
             ApplyVoicePalette(index, _voiceLanes[index]);
     }
 
-    public void SetKaraokeColors(string? unsung, string? sung, string? glow)
+    public void SetKaraokeColors(string? unsung, string? sung, string? glow, int outlineStrength)
     {
         _unsungColor = ParseColor(unsung, Color.white);
         _sungColor = ParseColor(sung, new Color(.875f, 1f, .157f, 1f));
         _glowColor = ParseColor(glow, new Color(1f, .314f, .031f, 1f));
+        _outlineStrength = Mathf.Clamp(outlineStrength, 0, 100);
         for (var index = 0; index < _lineCount; index++)
             ApplyVoicePalette(index, _voiceLanes[index]);
     }
@@ -483,10 +485,11 @@ public sealed class StageLyricsView
     {
         var milkGlass = _presentationStyle == "milk-glass";
         var highContrast = milkGlass || _videoBackground;
+        var outlineWidth = Mathf.Lerp(0f, .45f, _outlineStrength / 100f);
         _base[index].color = _unsungColor;
         _fill[index].color = _sungColor;
-        _base[index].outlineColor = highContrast ? new Color32(0, 0, 0, 255) : new Color32(30, 10, 40, 210);
-        _base[index].outlineWidth = highContrast ? .24f : .11f;
+        _base[index].outlineColor = new Color32(0, 0, 0, 255);
+        _base[index].outlineWidth = outlineWidth;
         ConfigureTextUnderlay(_base[index], highContrast);
 
         var burnColors = new[]
@@ -501,18 +504,14 @@ public sealed class StageLyricsView
 
         var material = _fill[index].fontMaterial;
         if (material == null) return;
-        _fill[index].outlineColor = highContrast ? new Color32(0, 0, 0, 255) : ToColor32(_glowColor, 220);
-        _fill[index].outlineWidth = highContrast ? .20f : .16f;
+        _fill[index].outlineColor = new Color32(0, 0, 0, 255);
+        _fill[index].outlineWidth = outlineWidth * .86f;
         ConfigureTextUnderlay(_fill[index], highContrast);
         if (material.HasProperty(ShaderUtilities.ID_GlowColor))
             material.SetColor(ShaderUtilities.ID_GlowColor, WithAlpha(_glowColor, .86f));
     }
 
     private static Color WithAlpha(Color color, float alpha) => new(color.r, color.g, color.b, alpha);
-
-    private static Color32 ToColor32(Color color, byte alpha) => new(
-        (byte)Mathf.RoundToInt(color.r * 255), (byte)Mathf.RoundToInt(color.g * 255),
-        (byte)Mathf.RoundToInt(color.b * 255), alpha);
 
     private static void ConfigureTextUnderlay(TextMeshProUGUI text, bool enabled)
     {

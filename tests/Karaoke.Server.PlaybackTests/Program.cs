@@ -506,7 +506,10 @@ try
 
     var editedRuntimeJson = JsonSerializer.Serialize(new
     {
-        karaokeColors = new { unsungColor = "#102030", sungColor = "#AABBCC", glowColor = "#F05020" },
+        karaokeColors = new
+        {
+            unsungColor = "#102030", sungColor = "#AABBCC", glowColor = "#F05020", outlineStrength = 80
+        },
         lines = new[] { new
         {
             start = "00:00:01", end = "00:00:03", text = "Veralteter Zeilentext",
@@ -523,7 +526,8 @@ try
     var mappedRuntime = EditorLyricsRuntimeMapper.Map(enhancedLyrics, editedRuntimeJson);
     Assert(mappedRuntime.Lines[0].Text == "Hallo toys" && mappedRuntime.Lines[0].Words?.Count == 2,
         "Die Stage bildet den sichtbaren Zeilentext aus Menschen-Lyrics und ignoriert technischen CTC-Text.");
-    Assert(mappedRuntime.KaraokeColors is { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020" },
+    Assert(mappedRuntime.KaraokeColors is
+           { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020", OutlineStrength: 80 },
         "Die veröffentlichte Editor-Version liefert ihre song-spezifischen Karaoke-Farben an die Stage.");
 
     var noteRuntimeJson = JsonSerializer.Serialize(new

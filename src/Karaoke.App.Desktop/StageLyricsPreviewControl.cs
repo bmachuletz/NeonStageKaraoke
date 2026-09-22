@@ -128,7 +128,8 @@ public sealed class StageLyricsPreviewControl : Control
         var text = new FormattedText(line.Text, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, typeface, size, baseBrush);
         var origin = new Point(area.Center.X - text.Width / 2, area.Center.Y - text.Height / 2);
-        DrawContrastEdge(context, line.Text, typeface, size, origin, alpha, highContrast);
+        DrawContrastEdge(context, line.Text, typeface, size, origin, alpha, highContrast,
+            palette.OutlineStrength);
         context.DrawText(text, origin);
         if (line.Progress <= 0) return;
 
@@ -151,12 +152,13 @@ public sealed class StageLyricsPreviewControl : Control
     }
 
     private static void DrawContrastEdge(DrawingContext context, string value, Typeface typeface, double size,
-        Point origin, double alpha, bool highContrast)
+        Point origin, double alpha, bool highContrast, int outlineStrength)
     {
+        if (outlineStrength <= 0) return;
         var edge = new FormattedText(value, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, typeface, size,
-            new SolidColorBrush(Color.FromArgb((byte)((highContrast ? 220 : 120) * alpha), 0, 0, 0)));
-        var radius = highContrast ? 2d : 1d;
+            new SolidColorBrush(Color.FromArgb((byte)((highContrast ? 230 : 205) * alpha), 0, 0, 0)));
+        var radius = .5 + Math.Clamp(outlineStrength, 0, 100) / 100d * 3.5;
         foreach (var offset in new[]
                  {
                      new Vector(-radius, 0), new Vector(radius, 0), new Vector(0, -radius), new Vector(0, radius),
@@ -169,13 +171,13 @@ public sealed class StageLyricsPreviewControl : Control
     private static Color WithAlpha(Color color, double alpha) =>
         Color.FromArgb((byte)(255 * Math.Clamp(alpha, 0, 1)), color.R, color.G, color.B);
 
-    private readonly record struct PreviewPalette(Color Unsung, Color Sung, Color Glow)
+    private readonly record struct PreviewPalette(Color Unsung, Color Sung, Color Glow, int OutlineStrength)
     {
         public static PreviewPalette From(KaraokeColorSettings? colors)
         {
             var normalized = (colors ?? new KaraokeColorSettings()).Normalized();
             return new(Color.Parse(normalized.UnsungColor), Color.Parse(normalized.SungColor),
-                Color.Parse(normalized.GlowColor));
+                Color.Parse(normalized.GlowColor), normalized.OutlineStrength);
         }
     }
 

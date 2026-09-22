@@ -445,11 +445,11 @@ var dto = new LyricsDto(songId, [new LyricsLineDto(TimeSpan.FromSeconds(1), "Hal
     [new LyricsWordDto(TimeSpan.FromSeconds(1), "Hallo", TimeSpan.FromSeconds(2), 0,
         [new LyricsSyllableDto(TimeSpan.FromSeconds(1), "Hal", TimeSpan.FromSeconds(1.5), 0, .8),
          new LyricsSyllableDto(TimeSpan.FromSeconds(1.5), "lo", TimeSpan.FromSeconds(2), 1, .9)], .85)])],
-    KaraokeColors: new("#102030", "#AABBCC", "#F05020"));
+    KaraokeColors: new("#102030", "#AABBCC", "#F05020", 80));
 var imported = LyricsDocumentImporter.Import(dto, "run-1", "model-1");
 Assert(imported.Lines[0].Children[0].Children.Count == 2, "KI-Hierarchie wird vollständig importiert.");
 Assert(imported.KaraokeColors.UnsungColor == "#102030" && imported.KaraokeColors.SungColor == "#AABBCC" &&
-       imported.KaraokeColors.GlowColor == "#F05020",
+       imported.KaraokeColors.GlowColor == "#F05020" && imported.KaraokeColors.OutlineStrength == 80,
     "Song-spezifische Karaoke-Farben werden in das Editor-Dokument übernommen.");
 Assert(imported.Segments.All(segment => segment.OriginalStart == segment.Start), "KI-Originalzeiten bleiben erhalten.");
 var voiceDocument = new LyricsEditorDocument { SongId = Guid.NewGuid() };
@@ -1026,13 +1026,14 @@ Assert(StageTestProtocol.IsCompatibleHello(compatibleHello, handshakeSession, ha
 var stageSong = new SongDto(technicalDocument.SongId, "Human title", "Human artist", "Album", 120, true);
 technicalDocument.KaraokeColors = new KaraokeColorSettings
 {
-    UnsungColor = "#102030", SungColor = "#AABBCC", GlowColor = "#F05020"
+    UnsungColor = "#102030", SungColor = "#AABBCC", GlowColor = "#F05020", OutlineStrength = 80
 };
 var stageLyrics = StageTestLyricsMapper.ToLyricsDto(technicalDocument, stageSong, true);
 Assert(stageLyrics.Lines[0].Text == "Don't stop!" && stageLyrics.Lines[0].Words![0].Text == "Don't" &&
        !stageLyrics.Lines[0].Text.Contains("dont stop", StringComparison.Ordinal),
     "Der Unity-Live-Test erhält sichtbare Menschen-Lyrics und niemals den technischen CTC-Text.");
-Assert(stageLyrics.KaraokeColors is { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020" },
+Assert(stageLyrics.KaraokeColors is
+       { UnsungColor: "#102030", SungColor: "#AABBCC", GlowColor: "#F05020", OutlineStrength: 80 },
     "Der Unity-Live-Test erhält dieselben Karaoke-Farben wie die veröffentlichte Stage.");
 var protocolJson = System.Text.Json.JsonSerializer.Serialize(new StageTestMessage
 {
