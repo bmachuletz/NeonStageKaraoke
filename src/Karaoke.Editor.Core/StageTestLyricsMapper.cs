@@ -31,6 +31,13 @@ public static class StageTestLyricsMapper
 
         return new LyricsDto(document.SongId, lines, song.Artist, song.Title, song.Album,
             HasUltraStarTimingHeritage: document.HasUltraStarTimingHeritage,
-            MusicalHighlight: new MusicalHighlightSettingsDto(musicalHighlightEnabled));
+            MusicalHighlight: new MusicalHighlightSettingsDto(musicalHighlightEnabled),
+            KaraokeColors: ToDto(document.KaraokeColors));
+    }
+
+    private static KaraokeColorSettingsDto ToDto(KaraokeColorSettings? source)
+    {
+        var colors = (source ?? new KaraokeColorSettings()).Normalized();
+        return new(colors.UnsungColor, colors.SungColor, colors.GlowColor);
     }
 }

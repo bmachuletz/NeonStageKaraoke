@@ -538,6 +538,20 @@ public partial class EditorWindow : Window
         if (offset is { } milliseconds) viewModel.ShiftAllLyrics(milliseconds);
     }
 
+    private async void EditKaraokeColorsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
+    {
+        if (DataContext is not EditorViewModel { Document: not null } viewModel)
+        {
+            (DataContext as EditorViewModel)?.ReportTimelineStatus(EditorLocale.German
+                ? "Bitte zuerst einen Song mit Lyrics laden."
+                : "Load a song with lyrics first.");
+            return;
+        }
+        var colors = await new KaraokeColorSettingsWindow(viewModel.Document.KaraokeColors)
+            .ShowDialog<KaraokeColorSettings?>(this);
+        if (colors is not null) viewModel.SetKaraokeColors(colors);
+    }
+
     private async void RecognizeLyricsClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         if (DataContext is not EditorViewModel { SelectedSong: { } song } viewModel)

@@ -185,6 +185,15 @@ public sealed class LyricsDto
     public LyricsLineDto[] lines = Array.Empty<LyricsLineDto>();
     public bool hasUltraStarTimingHeritage;
     public MusicalHighlightSettingsDto musicalHighlight = new();
+    public KaraokeColorSettingsDto karaokeColors = new();
+}
+
+[Serializable]
+public sealed class KaraokeColorSettingsDto
+{
+    public string unsungColor = "#FFFFFF";
+    public string sungColor = "#DFFF28";
+    public string glowColor = "#FF5008";
 }
 
 [Serializable]

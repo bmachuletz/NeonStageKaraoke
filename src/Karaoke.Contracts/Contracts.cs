@@ -278,7 +278,12 @@ public sealed record LyricsDto(
     string? Author = null,
     int OffsetMilliseconds = 0,
     bool HasUltraStarTimingHeritage = false,
-    MusicalHighlightSettingsDto? MusicalHighlight = null);
+    MusicalHighlightSettingsDto? MusicalHighlight = null,
+    KaraokeColorSettingsDto? KaraokeColors = null);
+public sealed record KaraokeColorSettingsDto(
+    string UnsungColor = "#FFFFFF",
+    string SungColor = "#DFFF28",
+    string GlowColor = "#FF5008");
 public sealed record MusicalHighlightSettingsDto(
     bool Enabled,
     int TimelineVersion = 1);

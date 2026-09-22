@@ -36,6 +36,9 @@ public sealed class StageLyricsView
     private bool _videoBackground;
     private bool _videoPerformanceMode;
     private float _songTime;
+    private Color _unsungColor = Color.white;
+    private Color _sungColor = new(0.875f, 1f, 0.157f, 1f);
+    private Color _glowColor = new(1f, 0.314f, 0.031f, 1f);
 
     public StageLyricsView(GameObject host)
     {
@@ -115,7 +118,23 @@ public sealed class StageLyricsView
     {
         _videoBackground = active;
         ApplyBackdrop(_presentationStyle == "milk-glass");
+        for (var index = 0; index < _lineCount; index++)
+            ApplyVoicePalette(index, _voiceLanes[index]);
     }
+
+    public void SetKaraokeColors(string? unsung, string? sung, string? glow)
+    {
+        _unsungColor = ParseColor(unsung, Color.white);
+        _sungColor = ParseColor(sung, new Color(.875f, 1f, .157f, 1f));
+        _glowColor = ParseColor(glow, new Color(1f, .314f, .031f, 1f));
+        for (var index = 0; index < _lineCount; index++)
+            ApplyVoicePalette(index, _voiceLanes[index]);
+    }
+
+    private static Color ParseColor(string? value, Color fallback) =>
+        !string.IsNullOrWhiteSpace(value) && ColorUtility.TryParseHtmlString(value, out var parsed)
+            ? new Color(parsed.r, parsed.g, parsed.b, 1f)
+            : fallback;
 
     public void SetVideoPerformanceMode(bool active)
     {
@@ -287,18 +306,15 @@ public sealed class StageLyricsView
         var pulse = 1f + Mathf.Sin(_songTime * Mathf.Lerp(8f, 24f, pace) + line * 1.7f) * Mathf.Lerp(.07f, .18f, pace);
         _flames[line].sizeDelta = new Vector2(Mathf.Lerp(82f, 25f, pace), Mathf.Lerp(98f, 45f, pace));
         _flames[line].localScale = new Vector3(pulse, 1f + (pulse - 1f) * Mathf.Lerp(1.1f, 2.2f, pace), 1);
-        var lane = _voiceLanes[line];
-        var slowColor = lane == 0 ? new Color(1f, .3f, .015f, .9f) : new Color(.15f, .7f, 1f, .9f);
-        var fastColor = lane == 0 ? new Color(.86f, 1f, .03f, .88f) : new Color(1f, .2f, .78f, .9f);
+        var slowColor = WithAlpha(_glowColor, .9f);
+        var fastColor = WithAlpha(_sungColor, .88f);
         _flameImages[line].color = Color.Lerp(slowColor, fastColor, pace);
         var fillMaterial = _fill[line].fontMaterial;
         if (fillMaterial != null && fillMaterial.HasProperty(ShaderUtilities.ID_GlowPower))
         {
             fillMaterial.SetFloat(ShaderUtilities.ID_GlowOuter, Mathf.Lerp(.72f, .34f, pace));
             fillMaterial.SetFloat(ShaderUtilities.ID_GlowPower, Mathf.Lerp(.82f, .52f, pace));
-            fillMaterial.SetColor(ShaderUtilities.ID_GlowColor, lane == 0
-                ? Color.Lerp(new Color(1f, .22f, .01f, .98f), new Color(.72f, 1f, .02f, .82f), pace)
-                : Color.Lerp(new Color(.05f, .62f, 1f, .98f), new Color(1f, .12f, .72f, .88f), pace));
+            fillMaterial.SetColor(ShaderUtilities.ID_GlowColor, WithAlpha(_glowColor, Mathf.Lerp(.98f, .82f, pace)));
         }
         if (_lastProgress[line] < .985f && p >= .985f &&
             (audioImpact >= .22f || !string.Equals(stageEffect, "Automatic", StringComparison.OrdinalIgnoreCase)))
@@ -384,9 +400,8 @@ public sealed class StageLyricsView
                 : new Vector2(UnityEngine.Random.Range(-12f, 12f), UnityEngine.Random.Range(10f, 42f));
             var image = go.GetComponent<Image>();
             image.raycastTarget = false;
-            image.color = _voiceLanes[line] == 0
-                ? Color.Lerp(new Color(1f, .2f, .02f, .9f), new Color(.8f, 1f, .04f, .95f), UnityEngine.Random.value)
-                : Color.Lerp(new Color(.08f, .68f, 1f, .9f), new Color(1f, .18f, .74f, .95f), UnityEngine.Random.value);
+            image.color = Color.Lerp(WithAlpha(_glowColor, .9f), WithAlpha(_sungColor, .95f),
+                UnityEngine.Random.value);
             var life = UnityEngine.Random.Range(.45f, explodes ? .8f : 1.15f);
             _particles.Add(new LyricParticle(rect, image, direction, UnityEngine.Random.Range(-220f, 220f), life, explodes));
         }
@@ -466,43 +481,38 @@ public sealed class StageLyricsView
 
     private void ApplyVoicePalette(int index, int lane)
     {
-        var alternate = lane > 0;
         var milkGlass = _presentationStyle == "milk-glass";
-        _base[index].color = milkGlass
-            ? alternate ? new Color(.90f, .96f, 1f, 1f) : new Color(.98f, .98f, 1f, 1f)
-            : alternate ? new Color(.78f, .9f, 1f, 1f) : new Color(.92f, .87f, .96f, 1f);
-        _fill[index].color = milkGlass
-            ? alternate ? new Color(1f, .24f, .78f, 1f) : new Color(.87f, 1f, .04f, 1f)
-            : alternate ? new Color(1f, .22f, .78f, 1f) : new Color(.87f, 1f, .05f, 1f);
-        _base[index].outlineColor = milkGlass ? new Color32(0, 4, 12, 255) : new Color32(75, 25, 100, 190);
-        _base[index].outlineWidth = milkGlass ? .24f : .09f;
-        ConfigureTextUnderlay(_base[index], milkGlass);
+        var highContrast = milkGlass || _videoBackground;
+        _base[index].color = _unsungColor;
+        _fill[index].color = _sungColor;
+        _base[index].outlineColor = highContrast ? new Color32(0, 0, 0, 255) : new Color32(30, 10, 40, 210);
+        _base[index].outlineWidth = highContrast ? .24f : .11f;
+        ConfigureTextUnderlay(_base[index], highContrast);
 
-        var burnColors = alternate
-            ? new[]
-            {
-                new Color(.12f, .68f, 1f, .72f), new Color(.5f, .28f, 1f, .72f),
-                new Color(1f, .12f, .7f, .72f), new Color(.18f, .78f, 1f, .72f)
-            }
-            : new[]
-            {
-                new Color(1f, .25f, .02f, .72f), new Color(1f, .48f, .01f, .72f),
-                new Color(1f, .18f, .02f, .72f), new Color(1f, .62f, .01f, .72f)
-            };
+        var burnColors = new[]
+        {
+            WithAlpha(_glowColor, .72f),
+            WithAlpha(Color.Lerp(_glowColor, _sungColor, .28f), .72f),
+            WithAlpha(Color.Lerp(_glowColor, Color.black, .12f), .72f),
+            WithAlpha(Color.Lerp(_glowColor, _sungColor, .5f), .72f)
+        };
         for (var burnIndex = 0; burnIndex < _burn[index].Length; burnIndex++)
             _burn[index][burnIndex].color = burnColors[burnIndex];
 
         var material = _fill[index].fontMaterial;
         if (material == null) return;
-        _fill[index].outlineColor = milkGlass
-            ? new Color32(0, 4, 12, 255)
-            : alternate ? new Color32(255, 40, 190, 220) : new Color32(176, 255, 0, 210);
-        _fill[index].outlineWidth = milkGlass ? .15f : .16f;
+        _fill[index].outlineColor = highContrast ? new Color32(0, 0, 0, 255) : ToColor32(_glowColor, 220);
+        _fill[index].outlineWidth = highContrast ? .20f : .16f;
+        ConfigureTextUnderlay(_fill[index], highContrast);
         if (material.HasProperty(ShaderUtilities.ID_GlowColor))
-            material.SetColor(ShaderUtilities.ID_GlowColor, milkGlass
-                ? alternate ? new Color(1f, .08f, .62f, .82f) : new Color(.72f, 1f, .02f, .84f)
-                : alternate ? new Color(.2f, .65f, 1f, .86f) : new Color(.72f, 1f, .02f, .82f));
+            material.SetColor(ShaderUtilities.ID_GlowColor, WithAlpha(_glowColor, .86f));
     }
+
+    private static Color WithAlpha(Color color, float alpha) => new(color.r, color.g, color.b, alpha);
+
+    private static Color32 ToColor32(Color color, byte alpha) => new(
+        (byte)Mathf.RoundToInt(color.r * 255), (byte)Mathf.RoundToInt(color.g * 255),
+        (byte)Mathf.RoundToInt(color.b * 255), alpha);
 
     private static void ConfigureTextUnderlay(TextMeshProUGUI text, bool enabled)
     {

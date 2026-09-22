@@ -138,7 +138,7 @@
         </Grid.RowDefinitions>
         <Border Background="#08040F" BorderBrush="#2A303B" BorderThickness="0,0,0,1">
           <Grid RowDefinitions="28,*">
-            <Grid ColumnDefinitions="*,Auto,Auto,Auto" Margin="10,0">
+            <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" Margin="10,0">
               <TextBlock Text="UNITY-STAGE LIVE-VORSCHAU · 16:9" Foreground="#8993A6" FontSize="10"
                          VerticalAlignment="Center" />
               <CheckBox Grid.Column="1" Content="Wahrnehmungs-Vorlauf · 80 ms"
@@ -156,6 +156,9 @@
                         IsEnabled="{Binding KaraokeTimingAvailable}"
                         Margin="14,0,0,0" FontSize="10" Foreground="#DFFF28"
                         ToolTip.Tip="Steuert die Füllgeschwindigkeit mit Basic-Pitch-Noten: singen läuft weiter, klare Pausen halten, neue Einsätze springen. Ohne belastbare Noten bleibt das lineare Highlight." />
+              <Button Grid.Column="4" Content="🎨 FARBEN" Click="EditKaraokeColorsClick"
+                      Margin="14,2,0,2" Padding="8,0" FontSize="10"
+                      ToolTip.Tip="Farben für ungesungene und gesungene Lyrics sowie den Glow dieses Songs einstellen." />
             </Grid>
             <local:VlcBitmapVideoView x:Name="EditorVideoView" Grid.Row="1" IsVisible="{Binding HasSongVideo}" />
             <local:StageLyricsPreviewControl x:Name="LyricsPreview" Grid.Row="1" Document="{Binding TimingPreviewDocument}" Position="{Binding Playhead}"

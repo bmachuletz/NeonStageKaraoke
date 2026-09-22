@@ -100,6 +100,8 @@ public sealed class LyricsEditorDocument
     /// perception projection never modifies already authored karaoke timing.
     /// </summary>
     public bool HasUltraStarTimingHeritage { get; set; }
+    /// <summary>Song-specific Stage colors. Missing settings retain the NeonStage defaults.</summary>
+    public KaraokeColorSettings KaraokeColors { get; set; } = new();
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.UtcNow;
     public DateTimeOffset ModifiedAt { get; set; } = DateTimeOffset.UtcNow;
     public List<LyricSegment> Lines { get; init; } = [];
@@ -118,4 +120,38 @@ public sealed class LyricsEditorDocument
         AnalysisRunId?.StartsWith("usdb:", StringComparison.OrdinalIgnoreCase) == true ||
         ModelVersion?.Contains("UltraStar", StringComparison.OrdinalIgnoreCase) == true ||
         Segments.Any(segment => segment.Origin == SegmentOrigin.ImportedFromUltraStar);
+}
+
+public sealed class KaraokeColorSettings
+{
+    public const string DefaultUnsungColor = "#FFFFFF";
+    public const string DefaultSungColor = "#DFFF28";
+    public const string DefaultGlowColor = "#FF5008";
+
+    public string UnsungColor { get; set; } = DefaultUnsungColor;
+    public string SungColor { get; set; } = DefaultSungColor;
+    public string GlowColor { get; set; } = DefaultGlowColor;
+
+    public KaraokeColorSettings Normalized() => new()
+    {
+        UnsungColor = NormalizeOrDefault(UnsungColor, DefaultUnsungColor),
+        SungColor = NormalizeOrDefault(SungColor, DefaultSungColor),
+        GlowColor = NormalizeOrDefault(GlowColor, DefaultGlowColor)
+    };
+
+    public static string NormalizeOrDefault(string? value, string fallback) =>
+        TryNormalize(value, out var normalized) ? normalized : fallback;
+
+    public static bool TryNormalize(string? value, out string normalized)
+    {
+        normalized = string.Empty;
+        var candidate = value?.Trim();
+        if (candidate is null) return false;
+        if (!candidate.StartsWith('#')) candidate = "#" + candidate;
+        if (candidate.Length == 4)
+            candidate = $"#{candidate[1]}{candidate[1]}{candidate[2]}{candidate[2]}{candidate[3]}{candidate[3]}";
+        if (candidate.Length != 7 || !candidate.AsSpan(1).ToArray().All(Uri.IsHexDigit)) return false;
+        normalized = candidate.ToUpperInvariant();
+        return true;
+    }
 }

@@ -106,36 +106,40 @@ public sealed class StageLyricsPreviewControl : Control
         if (frame.Lines.Count == 0) return;
         var rowHeight = presentationBounds.Height / frame.Lines.Count;
         var horizontalPadding = Math.Clamp(presentationBounds.Width * .045, 24, 56);
+        var palette = PreviewPalette.From(Document?.KaraokeColors);
         for (var index = 0; index < frame.Lines.Count; index++)
             DrawLine(context, frame.Lines[index], new Rect(
                 presentationBounds.X + horizontalPadding,
                 presentationBounds.Y + index * rowHeight,
-                Math.Max(1, presentationBounds.Width - horizontalPadding * 2), rowHeight), frame.Alpha);
+                Math.Max(1, presentationBounds.Width - horizontalPadding * 2), rowHeight), frame.Alpha,
+                palette, HasVideoBackground);
         if (frame.ShowEntryCue)
             DrawCue(context, presentationBounds, rowHeight, frame.EntryCueProgress, frame.Alpha);
         if (HasVideoBackground)
             context.DrawRectangle(null, new Pen(new SolidColorBrush(Color.Parse("#526070")), 1), presentationBounds);
     }
 
-    private static void DrawLine(DrawingContext context, StagePreviewLine line, Rect area, double alpha)
+    private static void DrawLine(DrawingContext context, StagePreviewLine line, Rect area, double alpha,
+        PreviewPalette palette, bool highContrast)
     {
         var size = FitFont(line.Text, area);
         var typeface = new Typeface("Inter", FontStyle.Normal, FontWeight.Bold);
-        var baseBrush = new SolidColorBrush(Color.FromArgb((byte)(235 * alpha), 240, 224, 247));
+        var baseBrush = new SolidColorBrush(WithAlpha(palette.Unsung, .95 * alpha));
         var text = new FormattedText(line.Text, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, typeface, size, baseBrush);
         var origin = new Point(area.Center.X - text.Width / 2, area.Center.Y - text.Height / 2);
+        DrawContrastEdge(context, line.Text, typeface, size, origin, alpha, highContrast);
         context.DrawText(text, origin);
         if (line.Progress <= 0) return;
 
         var neon = new FormattedText(line.Text, System.Globalization.CultureInfo.CurrentCulture,
             FlowDirection.LeftToRight, typeface, size,
-            new SolidColorBrush(Color.FromArgb((byte)(255 * alpha), 223, 255, 40)));
+            new SolidColorBrush(WithAlpha(palette.Sung, alpha)));
         var clipWidth = text.Width * Math.Clamp(line.Progress, 0, 1);
         using (context.PushClip(new Rect(origin.X, area.Y, clipWidth, area.Height)))
         {
             var glowAlpha = (byte)(Math.Clamp(.24 + (1 - line.Pace) * .28, 0, 1) * 255 * alpha);
-            var glow = new SolidColorBrush(Color.FromArgb(glowAlpha, 255, 80, 8));
+            var glow = new SolidColorBrush(Color.FromArgb(glowAlpha, palette.Glow.R, palette.Glow.G, palette.Glow.B));
             foreach (var offset in new[] { new Vector(-2, 0), new Vector(2, 0), new Vector(0, -2), new Vector(0, 2) })
             {
                 var glowText = new FormattedText(line.Text, System.Globalization.CultureInfo.CurrentCulture,
@@ -143,6 +147,35 @@ public sealed class StageLyricsPreviewControl : Control
                 context.DrawText(glowText, origin + offset);
             }
             context.DrawText(neon, origin);
+        }
+    }
+
+    private static void DrawContrastEdge(DrawingContext context, string value, Typeface typeface, double size,
+        Point origin, double alpha, bool highContrast)
+    {
+        var edge = new FormattedText(value, System.Globalization.CultureInfo.CurrentCulture,
+            FlowDirection.LeftToRight, typeface, size,
+            new SolidColorBrush(Color.FromArgb((byte)((highContrast ? 220 : 120) * alpha), 0, 0, 0)));
+        var radius = highContrast ? 2d : 1d;
+        foreach (var offset in new[]
+                 {
+                     new Vector(-radius, 0), new Vector(radius, 0), new Vector(0, -radius), new Vector(0, radius),
+                     new Vector(-radius, -radius), new Vector(radius, -radius),
+                     new Vector(-radius, radius), new Vector(radius, radius)
+                 })
+            context.DrawText(edge, origin + offset);
+    }
+
+    private static Color WithAlpha(Color color, double alpha) =>
+        Color.FromArgb((byte)(255 * Math.Clamp(alpha, 0, 1)), color.R, color.G, color.B);
+
+    private readonly record struct PreviewPalette(Color Unsung, Color Sung, Color Glow)
+    {
+        public static PreviewPalette From(KaraokeColorSettings? colors)
+        {
+            var normalized = (colors ?? new KaraokeColorSettings()).Normalized();
+            return new(Color.Parse(normalized.UnsungColor), Color.Parse(normalized.SungColor),
+                Color.Parse(normalized.GlowColor));
         }
     }
 

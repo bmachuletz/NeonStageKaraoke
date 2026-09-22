@@ -16,6 +16,7 @@ public sealed class StageIdleMusic : MonoBehaviour
     private const float FadeOutSeconds = .55f;
     private AudioSource _source = null!;
     private bool _requested = true;
+    private bool _suppressed;
     private bool _paused;
 
     private void Awake()
@@ -33,6 +34,23 @@ public sealed class StageIdleMusic : MonoBehaviour
     public void SetIdle(bool active, bool immediate = false)
     {
         _requested = active;
+        ApplyRequestedState(immediate);
+    }
+
+    /// <summary>
+    /// Test and export players never represent a lobby. Suppression is kept
+    /// separately from the requested lobby state so no later status update can
+    /// accidentally bring the intro music back while such a player lives.
+    /// </summary>
+    public void SetSuppressed(bool suppressed)
+    {
+        _suppressed = suppressed;
+        ApplyRequestedState(immediate: true);
+    }
+
+    private void ApplyRequestedState(bool immediate)
+    {
+        var active = _requested && !_suppressed;
         if (active && _paused)
         {
             _source.UnPause();
@@ -49,11 +67,12 @@ public sealed class StageIdleMusic : MonoBehaviour
 
     private void Update()
     {
-        var target = _requested ? MaximumVolume : 0;
-        var seconds = _requested ? FadeInSeconds : FadeOutSeconds;
+        var active = _requested && !_suppressed;
+        var target = active ? MaximumVolume : 0;
+        var seconds = active ? FadeInSeconds : FadeOutSeconds;
         _source.volume = Mathf.MoveTowards(_source.volume, target,
             MaximumVolume * Time.unscaledDeltaTime / seconds);
-        if (!_requested && _source.volume <= .0001f && !_paused)
+        if (!active && _source.volume <= .0001f && !_paused)
         {
             _source.Pause();
             _paused = true;
@@ -67,7 +86,7 @@ public sealed class StageIdleMusic : MonoBehaviour
 
     private static AudioClip ComposeLoop(int sampleRate)
     {
-        const float beatsPerMinute = 116f;
+        const float beatsPerMinute = 132f;
         const int bars = 16;
         const int stepsPerBar = 16;
         var stepSeconds = 60f / beatsPerMinute / 4f;
@@ -94,6 +113,7 @@ public sealed class StageIdleMusic : MonoBehaviour
             var third = minor[chordIndex] ? 3 : 4;
             var chord = new[] { 0, third, 7, 12 };
             var start = step * stepSeconds;
+            var punkSection = bar % 4 is 2 or 3;
 
             // Paula-like channel pair: the arpeggio jumps between the hard-ish
             // left/right positions used by classic four-channel MOD playback.
@@ -108,6 +128,18 @@ public sealed class StageIdleMusic : MonoBehaviour
                 AddTone(samples, frameCount, sampleRate, start, stepSeconds * 2.15f,
                     Midi(bassNote), .115f, Wave.Saw, -.36f, .48f,
                     slideSemitones: inBar == 14 ? -1.2f : 0);
+            }
+
+            // Every second pair of bars opens into a wide punk wall: tightly
+            // doubled power-chord downstrokes on the eighth-note grid. Short
+            // muted strokes leave room for the tracker arpeggio while the
+            // first and third beats ring out like an emphatic guitar accent.
+            if (punkSection && inBar % 2 == 0)
+            {
+                var openStroke = inBar is 0 or 8;
+                AddPowerChord(samples, frameCount, sampleRate, start,
+                    stepSeconds * (openStroke ? 1.72f : .68f), root,
+                    openStroke ? .082f : .061f);
             }
 
             // Short sampled chord stabs make the result feel like a small MOD
@@ -135,10 +167,17 @@ public sealed class StageIdleMusic : MonoBehaviour
             if (inBar % 2 == 0)
                 AddHat(samples, frameCount, sampleRate, start, .027f, step * 7919,
                     inBar % 4 == 0 ? -.72f : .72f);
-            if (inBar is 0 or 8 || (inBar == 10 && bar % 4 == 3))
-                AddKick(samples, frameCount, sampleRate, start, .135f);
+            if ((!punkSection && inBar is 0 or 8) ||
+                (punkSection && inBar is 0 or 3 or 6 or 8 or 11 or 14))
+                AddKick(samples, frameCount, sampleRate, start, punkSection ? .175f : .135f);
             if (inBar is 4 or 12)
-                AddSnare(samples, frameCount, sampleRate, start, .095f, step * 3571, .28f);
+                AddSnare(samples, frameCount, sampleRate, start,
+                    punkSection ? .155f : .095f, step * 3571, .28f);
+            if (punkSection && inBar == 0)
+                AddCrash(samples, frameCount, sampleRate, start, .072f, step * 1237);
+            if (punkSection && bar % 4 == 3 && inBar is 13 or 14 or 15)
+                AddTom(samples, frameCount, sampleRate, start,
+                    118f - (inBar - 13) * 19f, .105f, (inBar - 14) * .42f);
 
             var lead = melody[(step + (bar / 4) * 7) % melody.Length];
             if (lead >= 0 && bar % 4 is 1 or 2)
@@ -237,6 +276,62 @@ public sealed class StageIdleMusic : MonoBehaviour
             phase += Mathf.Lerp(112f, 43f, progress) / rate;
             AddFrame(target, frames, first + offset, Mathf.Sin(phase * Mathf.PI * 2) *
                 Mathf.Pow(1f - progress, 2.35f) * amplitude, 0);
+        }
+    }
+
+    private static void AddPowerChord(float[] target, int frames, int rate, float startSeconds,
+        float durationSeconds, int rootNote, float amplitude)
+    {
+        var intervals = new[] { 0, 7, 12 };
+        var weights = new[] { 1f, .82f, .61f };
+        for (var voice = 0; voice < intervals.Length; voice++)
+        {
+            var frequency = Midi(rootNote + intervals[voice]);
+            var strum = voice * .0028f;
+            // Two slightly detuned and offset saw/pulse takes create the broad
+            // double-tracked-guitar impression without using a sampled riff.
+            AddTone(target, frames, rate, startSeconds + strum, durationSeconds,
+                frequency * .9965f, amplitude * weights[voice], Wave.Saw,
+                -.72f, .5f, vibrato: .018f, slideSemitones: -.08f);
+            AddTone(target, frames, rate, startSeconds + strum + .0055f, durationSeconds,
+                frequency * 1.0042f, amplitude * weights[voice] * .92f, Wave.Pulse,
+                .72f, .43f, vibrato: .014f, slideSemitones: -.05f);
+        }
+    }
+
+    private static void AddCrash(float[] target, int frames, int rate, float startSeconds,
+        float amplitude, int seed)
+    {
+        var first = Mathf.RoundToInt(startSeconds * rate);
+        var length = Mathf.RoundToInt(.72f * rate);
+        var previous = 0f;
+        for (var offset = 0; offset < length; offset++)
+        {
+            var progress = offset / (float)length;
+            var noise = HashNoise(offset * 3 + seed);
+            var high = noise - previous * .78f;
+            previous = noise;
+            var metal = Mathf.Sin(offset * 421f / rate * Mathf.PI * 2) * .22f +
+                        Mathf.Sin(offset * 653f / rate * Mathf.PI * 2) * .16f;
+            AddFrame(target, frames, first + offset, (high + metal) *
+                Mathf.Pow(1f - progress, 1.35f) * amplitude, -.18f);
+        }
+    }
+
+    private static void AddTom(float[] target, int frames, int rate, float startSeconds,
+        float frequency, float amplitude, float pan)
+    {
+        var first = Mathf.RoundToInt(startSeconds * rate);
+        var length = Mathf.RoundToInt(.13f * rate);
+        var phase = 0f;
+        for (var offset = 0; offset < length; offset++)
+        {
+            var progress = offset / (float)length;
+            phase += Mathf.Lerp(frequency * 1.34f, frequency, progress) / rate;
+            var body = Mathf.Sin(phase * Mathf.PI * 2);
+            var click = HashNoise(offset + first) * Mathf.Pow(1f - progress, 12f) * .25f;
+            AddFrame(target, frames, first + offset, (body + click) *
+                Mathf.Pow(1f - progress, 2.15f) * amplitude, pan);
         }
     }
 

@@ -16,6 +16,15 @@ public static class LyricsDocumentImporter
             AnalysisRunId = analysisRunId,
             ModelVersion = modelVersion,
             Status = LyricsReviewStatus.NeedsReview,
+            KaraokeColors = new KaraokeColorSettings
+            {
+                UnsungColor = KaraokeColorSettings.NormalizeOrDefault(source.KaraokeColors?.UnsungColor,
+                    KaraokeColorSettings.DefaultUnsungColor),
+                SungColor = KaraokeColorSettings.NormalizeOrDefault(source.KaraokeColors?.SungColor,
+                    KaraokeColorSettings.DefaultSungColor),
+                GlowColor = KaraokeColorSettings.NormalizeOrDefault(source.KaraokeColors?.GlowColor,
+                    KaraokeColorSettings.DefaultGlowColor)
+            },
             HasUltraStarTimingHeritage = source.HasUltraStarTimingHeritage ||
                 hasUltraStarTimingHeritage || detailedOrigin == SegmentOrigin.ImportedFromUltraStar,
         };

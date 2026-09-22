@@ -78,6 +78,14 @@ Masterclock für Transport und Driftkorrektur.
 
 Der Parameter `--editor-test` ist intern für diesen Startweg reserviert. In
 diesem Modus greift die Stage nicht auf Queue oder Playback-Controller-Lease zu.
+Die Lobby-/Intro-Musik bleibt für die komplette Lebensdauer des Testfensters
+unterdrückt. Play, Pause, Seek, Stop und Snapshot-Wechsel können sie nicht erneut
+aktivieren; hörbar ist ausschließlich das zum Test geladene Songmaterial.
+
+Außerhalb des Testmodus verbindet das prozedurale, nahtlos geloopte Intro den
+Amiga-/Tracker-Kern mit einer eigenständigen Punk-Schicht: doppelt geführte
+Powerchord-Downstrokes, treibende Kick/Snare-Akzente, Crashs und kurze Tom-Fills.
+Es werden weiterhin keine fremden Samples oder Melodien verwendet.
 
 ## Deterministischer MP4-Basisexport
 

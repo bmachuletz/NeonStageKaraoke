@@ -69,6 +69,7 @@ public static class KaraokeTimingProjection
         ModelVersion = source.ModelVersion,
         AudioSha256 = source.AudioSha256,
         HasUltraStarTimingHeritage = source.HasUltraStarTimingHeritage,
+        KaraokeColors = source.KaraokeColors?.Normalized() ?? new KaraokeColorSettings(),
         CreatedAt = source.CreatedAt,
         ModifiedAt = source.ModifiedAt,
         Lines = source.Lines.Select(CloneSegment).ToList()

@@ -40,15 +40,36 @@ internal static class EditorLyricsRuntimeMapper
                 StringComparison.OrdinalIgnoreCase) == true ||
             sourceLines.EnumerateArray().SelectMany(line => DescendantsAndSelf(line))
                 .Any(segment => StringOrNull(segment, "origin") == "ImportedFromUltraStar");
+        var karaokeColors = KaraokeColors(document.RootElement, fallback.KaraokeColors);
 
         return lines.Length == 0 ? fallback : fallback with
         {
             Lines = lines,
+            KaraokeColors = karaokeColors,
             HasUltraStarTimingHeritage = fallback.HasUltraStarTimingHeritage || ultraStarHeritage,
             MusicalHighlight = musicalHighlight is { Enabled: true } && !ultraStarHeritage
                 ? new(true, musicalHighlight.TimelineVersion)
                 : new(false, musicalHighlight?.TimelineVersion ?? 1)
         };
+    }
+
+    private static KaraokeColorSettingsDto KaraokeColors(JsonElement root, KaraokeColorSettingsDto? fallback)
+    {
+        var defaults = fallback ?? new KaraokeColorSettingsDto();
+        if (!root.TryGetProperty("karaokeColors", out var colors) || colors.ValueKind != JsonValueKind.Object)
+            return defaults;
+        return new KaraokeColorSettingsDto(
+            HtmlColorOrDefault(StringOrNull(colors, "unsungColor"), defaults.UnsungColor),
+            HtmlColorOrDefault(StringOrNull(colors, "sungColor"), defaults.SungColor),
+            HtmlColorOrDefault(StringOrNull(colors, "glowColor"), defaults.GlowColor));
+    }
+
+    private static string HtmlColorOrDefault(string? value, string fallback)
+    {
+        var candidate = value?.Trim();
+        if (candidate is null || candidate.Length != 7 || candidate[0] != '#' ||
+            !candidate.Skip(1).All(Uri.IsHexDigit)) return fallback;
+        return candidate.ToUpperInvariant();
     }
 
     private static IEnumerable<JsonElement> Children(JsonElement parent, string type) =>

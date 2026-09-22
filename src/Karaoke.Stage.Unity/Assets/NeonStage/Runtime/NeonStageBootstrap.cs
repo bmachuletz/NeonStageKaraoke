@@ -123,6 +123,8 @@ public sealed class NeonStageBootstrap : MonoBehaviour
             Application.targetFrameRate = 30;
         }
         ConfigureStageCamera();
+        var hasEditorTestSettings = TryGetEditorTestSettings(
+            out var testHost, out var testPort, out var testSession, out var testToken);
         if (FindAnyObjectByType<AudioListener>() == null)
             gameObject.AddComponent<AudioListener>();
         _server = ResolveServer();
@@ -138,6 +140,7 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         }
         _audio = gameObject.AddComponent<StageAudioEngine>();
         _idleMusic = gameObject.AddComponent<StageIdleMusic>();
+        _idleMusic.SetSuppressed(hasEditorTestSettings);
         _audio.ConfigureOutputLatencySeconds(ResolveOutputLatencySeconds());
         _clock = new AudioStageClock(_audio);
         _audio.PlaybackEnded += HandlePlaybackEnded;
@@ -148,10 +151,9 @@ public sealed class NeonStageBootstrap : MonoBehaviour
         _reactions = new StageReactionView(gameObject);
         _visuals.SetSessionActive(false);
         _editorExportMode = HasArgument("--editor-export");
-        if (TryGetEditorTestSettings(out var testHost, out var testPort, out var testSession, out var testToken))
+        if (hasEditorTestSettings)
         {
             _editorTestMode = true;
-            _idleMusic.SetIdle(false, immediate: true);
             Screen.fullScreenMode = FullScreenMode.Windowed;
             Screen.SetResolution(1280, 720, FullScreenMode.Windowed);
             _hasActiveSession = true;
@@ -357,6 +359,9 @@ public sealed class NeonStageBootstrap : MonoBehaviour
 
     private void HandleEditorTestMessage(StageTestMessage message)
     {
+        // Defensive invariant: Pause, Stop and replacement snapshots must
+        // never turn a test/export process back into a lobby.
+        _idleMusic.SetSuppressed(true);
         switch (message.type)
         {
             case StageTestProtocol.ReplaceSongState:

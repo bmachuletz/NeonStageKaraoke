@@ -2647,6 +2647,15 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
             $"All lyrics were shifted by {milliseconds:+#;-#;0} ms. Undo is available.");
     }
 
+    public void SetKaraokeColors(KaraokeColorSettings colors)
+    {
+        if (Document is null) return;
+        Document.KaraokeColors = colors.Normalized();
+        RefreshTimingProjection();
+        RefreshEditor();
+        Status = Localized("Lyrics-Farben gespeichert.", "Lyrics colors saved.");
+    }
+
     public void ResizeSelected(bool startEdge, int milliseconds)
     {
         if (SelectedSegment is not { Type: LyricSegmentType.Line or LyricSegmentType.Word or LyricSegmentType.Syllable } segment) return;

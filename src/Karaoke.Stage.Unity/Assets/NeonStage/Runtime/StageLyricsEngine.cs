@@ -77,6 +77,8 @@ public sealed class StageLyricsEngine
     {
         _presentation = null;
         _shownPage = -1;
+        _view?.SetKaraokeColors(lyrics.karaokeColors?.unsungColor, lyrics.karaokeColors?.sungColor,
+            lyrics.karaokeColors?.glowColor);
         if (clearView) _view?.Show(Array.Empty<string>(), Array.Empty<int>());
         var lines = new List<StagePresentationLine>();
         foreach (var line in lyrics.lines)
