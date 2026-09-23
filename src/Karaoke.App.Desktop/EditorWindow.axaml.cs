@@ -1,5 +1,6 @@
 using System.Collections.Specialized;
 using System.Diagnostics;
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Controls.Primitives;
@@ -58,8 +59,11 @@ public partial class EditorWindow : Window
         _editorVideoTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(100) };
         _editorVideoTimer.Tick += (_, _) => SynchronizeEditorVideo();
         _editorVideoTimer.Start();
+        SizeChanged += (_, _) => ApplyResponsiveLayout();
         Opened += async (_, _) =>
         {
+            FitToCurrentScreen();
+            ApplyResponsiveLayout();
             EditorLocale.Apply(this);
             if (DataContext is not EditorViewModel viewModel) return;
             Timeline.History = viewModel.History;
@@ -107,6 +111,44 @@ public partial class EditorWindow : Window
             EditorVideoView.Dispose();
         };
         KeyDown += OnEditorKeyDown;
+    }
+
+    private void FitToCurrentScreen()
+    {
+        var screen = Screens.ScreenFromWindow(this) ?? Screens.Primary;
+        if (screen is null) return;
+        var scaling = Math.Max(screen.Scaling, .1);
+        var availableWidth = screen.WorkingArea.Width / scaling;
+        var availableHeight = screen.WorkingArea.Height / scaling;
+        Width = Math.Max(MinWidth, Math.Min(Width, availableWidth * .96));
+        Height = Math.Max(MinHeight, Math.Min(Height, availableHeight * .94));
+        Position = new PixelPoint(
+            screen.WorkingArea.X + Math.Max(0, (screen.WorkingArea.Width - (int)Math.Round(Width * scaling)) / 2),
+            screen.WorkingArea.Y + Math.Max(0, (screen.WorkingArea.Height - (int)Math.Round(Height * scaling)) / 2));
+    }
+
+    private void ApplyResponsiveLayout()
+    {
+        var width = ClientSize.Width;
+        var height = ClientSize.Height;
+        var narrow = width < 1200;
+        var veryNarrow = width < 920;
+        var shortWindow = height < 760;
+
+        MainWorkspace.ColumnDefinitions[0].Width = new GridLength(veryNarrow ? 185 : narrow ? 220 : 280);
+        MainWorkspace.ColumnDefinitions[2].Width = new GridLength(veryNarrow ? 190 : narrow ? 220 : 250);
+        HeaderSongSummary.IsVisible = width >= 1050;
+        ServerAddressStatus.IsVisible = width >= 1080;
+
+        EditorWorkspace.RowDefinitions[0].MinHeight = shortWindow ? 185 : 260;
+        EditorWorkspace.RowDefinitions[2].MinHeight = shortWindow ? 105 : 140;
+        EditorWorkspace.RowDefinitions[3].Height = new GridLength(shortWindow ? 48 : 56);
+        var coverSize = shortWindow ? 88 : 140;
+        CoverDropZone.Width = coverSize;
+        CoverDropZone.Height = coverSize;
+
+        ConsolePanel.Height = Math.Clamp(height * .72, 300, 620);
+        VersionsPanel.Width = Math.Clamp(width - 36, 320, 470);
     }
 
     private void LoadEditorVideo()

@@ -4,20 +4,24 @@
         x:Class="Karaoke.App.Desktop.EditorWindow"
         Title="Neon Stage · Lyrics Timing Editor"
         Icon="avares://Karaoke.App/Assets/neon-stage-icon.png"
-        Width="1500" Height="1000" MinWidth="1050" MinHeight="760"
+        Width="1400" Height="900" MinWidth="680" MinHeight="450"
+        WindowStartupLocation="CenterScreen"
         Background="#0D1016">
-  <Grid RowDefinitions="58,*,34">
+  <Grid RowDefinitions="Auto,*,34">
     <Border Grid.Row="0" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,0,0,1" Padding="16,8">
-      <Grid ColumnDefinitions="Auto,*,Auto">
+      <Grid ColumnDefinitions="Auto,Auto,*" ColumnSpacing="14" MinHeight="41">
         <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
           <TextBlock Text="NEON STAGE" Foreground="#DFFF28" FontSize="18" FontWeight="Bold" />
           <TextBlock Text="LYRICS EDITOR" Foreground="#8993A6" FontSize="12" VerticalAlignment="Center" />
         </StackPanel>
-        <StackPanel Grid.Column="1" HorizontalAlignment="Center">
-          <TextBlock Text="{Binding SongHeading}" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" />
-          <TextBlock Text="{Binding ReviewSummary}" Foreground="#8993A6" FontSize="11" HorizontalAlignment="Center" />
+        <StackPanel x:Name="HeaderSongSummary" Grid.Column="1" Width="190" VerticalAlignment="Center">
+          <TextBlock Text="{Binding SongHeading}" FontSize="15" FontWeight="SemiBold"
+                     TextTrimming="CharacterEllipsis" HorizontalAlignment="Center" />
+          <TextBlock Text="{Binding ReviewSummary}" Foreground="#8993A6" FontSize="10"
+                     TextTrimming="CharacterEllipsis" HorizontalAlignment="Center" />
         </StackPanel>
-        <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="7">
+        <ScrollViewer Grid.Column="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+        <StackPanel Orientation="Horizontal" Spacing="7">
           <Button Content="＋ Neues Lied" Click="NewSongClick" Background="#FF3CBD" />
           <Button Content="Bearbeiten ▾" ToolTip.Tip="Bibliothek und Stage bearbeiten">
             <Button.Flyout><MenuFlyout>
@@ -69,10 +73,16 @@
           <Button Content="{Binding SongReleaseActionLabel}" Click="ApproveSongClick" Background="#DFFF28" Foreground="#11151C" />
           <Button Content="🗑 Song löschen" Click="DeleteSongClick" Background="#D94762" Foreground="White" />
         </StackPanel>
+        </ScrollViewer>
       </Grid>
     </Border>
 
-    <Grid Grid.Row="1" ColumnDefinitions="280,*,250">
+    <Grid x:Name="MainWorkspace" Grid.Row="1">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="280" />
+        <ColumnDefinition Width="*" />
+        <ColumnDefinition Width="250" />
+      </Grid.ColumnDefinitions>
       <Border Grid.Column="0" Background="#121720" BorderBrush="#2A303B" BorderThickness="0,0,1,0" Padding="12">
         <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,Auto">
           <TextBlock Text="SONGS" Foreground="#8993A6" FontSize="11" FontWeight="SemiBold" />
@@ -129,16 +139,17 @@
         </Grid>
       </Border>
 
-      <Grid Grid.Column="1">
+      <Grid x:Name="EditorWorkspace" Grid.Column="1">
         <Grid.RowDefinitions>
-          <RowDefinition Height="3*" MinHeight="340" />
+          <RowDefinition Height="3*" MinHeight="260" />
           <RowDefinition Height="5" />
-          <RowDefinition Height="2*" MinHeight="180" />
-          <RowDefinition Height="64" />
+          <RowDefinition Height="2*" MinHeight="140" />
+          <RowDefinition Height="56" />
         </Grid.RowDefinitions>
         <Border Background="#08040F" BorderBrush="#2A303B" BorderThickness="0,0,0,1">
           <Grid RowDefinitions="28,*">
-            <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" Margin="10,0">
+            <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+            <Grid ColumnDefinitions="*,Auto,Auto,Auto,Auto" Margin="10,0" MinWidth="730">
               <TextBlock Text="UNITY-STAGE LIVE-VORSCHAU · 16:9" Foreground="#8993A6" FontSize="10"
                          VerticalAlignment="Center" />
               <CheckBox Grid.Column="1" Content="Wahrnehmungs-Vorlauf · 80 ms"
@@ -160,6 +171,7 @@
                       Margin="14,2,0,2" Padding="8,0" FontSize="10"
                       ToolTip.Tip="Farben, Kontur und Burn-/Flammen-Intensität dieses Songs einstellen." />
             </Grid>
+            </ScrollViewer>
             <local:VlcBitmapVideoView x:Name="EditorVideoView" Grid.Row="1" IsVisible="{Binding HasSongVideo}" />
             <local:StageLyricsPreviewControl x:Name="LyricsPreview" Grid.Row="1" Document="{Binding TimingPreviewDocument}" Position="{Binding Playhead}"
                                              Revision="{Binding PreviewRevision}"
@@ -196,6 +208,7 @@
           </local:EditorTimelineControl.ContextMenu>
         </local:EditorTimelineControl>
         <Border Grid.Row="3" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0">
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
           <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
             <Button Content="◀" ToolTip.Tip="Zurück" />
             <Button Content="▶ / Ⅱ" Click="PlayPauseClick" MinWidth="82" />
@@ -211,10 +224,12 @@
                        Width="48" VerticalAlignment="Center" />
             <TextBlock Text="{Binding PlayheadLabel}" FontFamily="monospace" Foreground="#DFFF28" VerticalAlignment="Center" Margin="12,0,0,0" />
           </StackPanel>
+          </ScrollViewer>
         </Border>
       </Grid>
 
       <Border Grid.Column="2" Background="#121720" BorderBrush="#2A303B" BorderThickness="1,0,0,0" Padding="14">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <StackPanel Spacing="12">
           <TextBlock Text="INSPEKTOR" Foreground="#8993A6" FontSize="11" FontWeight="SemiBold" />
           <TextBlock Text="{Binding SelectedSegmentHeading}" FontSize="15" FontWeight="SemiBold" TextWrapping="Wrap" />
@@ -275,17 +290,20 @@
           <Button Content="Nächster unsicherer Bereich  N" HorizontalAlignment="Stretch" Click="NextReviewClick" />
           <Button Content="Als geprüft markieren  R" HorizontalAlignment="Stretch" Click="MarkReviewedClick" />
         </StackPanel>
+        </ScrollViewer>
       </Border>
     </Grid>
 
     <Border Grid.Row="2" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0" Padding="12,0">
       <Grid ColumnDefinitions="*,Auto,Auto">
-        <TextBlock Text="{Binding Status}" VerticalAlignment="Center" Foreground="#AAB2C1" />
+        <TextBlock Text="{Binding Status}" VerticalAlignment="Center" Foreground="#AAB2C1"
+                   TextTrimming="CharacterEllipsis" />
         <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center">
           <TextBlock Text="{Binding StageTestStatus}" Foreground="#45E6D0" />
           <TextBlock Text="{Binding Mp4ExportStatus}" Foreground="#DFFF28" FontSize="11" />
         </StackPanel>
-        <TextBlock Grid.Column="2" Text="{Binding ServerAddress}" VerticalAlignment="Center" Foreground="#677185" />
+        <TextBlock x:Name="ServerAddressStatus" Grid.Column="2" Text="{Binding ServerAddress}"
+                   VerticalAlignment="Center" Foreground="#677185" />
       </Grid>
     </Border>
     <Border x:Name="ConsolePanel" Grid.Row="0" Grid.RowSpan="3" HorizontalAlignment="Stretch" VerticalAlignment="Bottom"
@@ -377,7 +395,7 @@
                  FontFamily="monospace" FontSize="11" BorderThickness="0" Padding="8" />
       </Grid>
     </Border>
-    <Border Grid.Row="0" Grid.RowSpan="3" HorizontalAlignment="Right" VerticalAlignment="Stretch"
+    <Border x:Name="VersionsPanel" Grid.Row="0" Grid.RowSpan="3" HorizontalAlignment="Right" VerticalAlignment="Stretch"
             Width="470" Margin="18" Padding="18" CornerRadius="10" IsVisible="{Binding VersionsVisible}"
             Background="#FA111620" BorderBrush="#FF3CBD" BorderThickness="1" BoxShadow="0 14 46 0 #E0000000">
       <Grid RowDefinitions="Auto,Auto,*,Auto">

@@ -93,7 +93,9 @@ try {
     $libVlc = Get-ChildItem $editorPublish -Recurse -File -Filter 'libvlc.dll' | Select-Object -First 1
     $vlcPlugins = Get-ChildItem $editorPublish -Recurse -Directory -Filter 'plugins' |
         Where-Object { Test-Path (Join-Path $_.FullName 'access') } | Select-Object -First 1
-    if (-not $libVlc -or -not $vlcPlugins) {
+    $vlcAudioPlugin = Get-ChildItem $editorPublish -Recurse -File -Filter 'mmdevice*_plugin.dll' |
+        Select-Object -First 1
+    if (-not $libVlc -or -not $vlcPlugins -or -not $vlcAudioPlugin) {
         throw 'The Windows editor package does not contain the expected LibVLC runtime and plugins.'
     }
 

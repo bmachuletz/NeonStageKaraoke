@@ -10,6 +10,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     private readonly LibVLC _libVlc;
     private readonly MediaPlayer _player;
     private readonly MediaPlayer _vocalPlayer;
+    private readonly string _audioOutputStatus;
     private Media? _media;
     private Media? _vocalMedia;
     private int _requestedVocalVolume;
@@ -38,6 +39,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         };
         _player = new MediaPlayer(_libVlc);
         _vocalPlayer = new MediaPlayer(_libVlc);
+        _audioOutputStatus = ConfigureWindowsAudioOutput(_player, _vocalPlayer);
         _vocalPlayer.Playing += (_, _) =>
         {
             _vocalPlayer.SetRate((float)_requestedPlaybackRate);
@@ -69,7 +71,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
             var generation = _playGeneration;
             if (Interlocked.Exchange(ref _vocalStartScheduled, 1) == 0)
                 ThreadPool.QueueUserWorkItem(_ => StartVocalMuted(generation));
-            StateChanged?.Invoke(this, "Wiedergabe läuft");
+            StateChanged?.Invoke(this, $"Wiedergabe läuft · {_audioOutputStatus}");
             PlaybackStarted?.Invoke(this, EventArgs.Empty);
         };
         _player.Paused += (_, _) => StateChanged?.Invoke(this, "Wiedergabe pausiert");
@@ -95,6 +97,27 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         libraryName == "libvlc" && NativeLibrary.TryLoad("libvlc.so.5", assembly, searchPath, out var handle)
             ? handle
             : IntPtr.Zero;
+
+    private static string ConfigureWindowsAudioOutput(MediaPlayer player, MediaPlayer vocalPlayer)
+    {
+        if (!OperatingSystem.IsWindows()) return "System-Audioausgabe";
+
+        // VLC 3 kann auf Windows noch auf alte oder unvollständig installierte
+        // Ausgabemodule zurückfallen. MMDevice folgt dem Windows-Standardgerät
+        // (inklusive eines zur Laufzeit gewechselten USB-/Bluetooth-Geräts).
+        // DirectSound bleibt der Fallback für ältere Windows-Installationen.
+        foreach (var module in new[] { "mmdevice", "directsound" })
+        {
+            var masterConfigured = player.SetAudioOutput(module);
+            var vocalConfigured = vocalPlayer.SetAudioOutput(module);
+            if (masterConfigured && vocalConfigured)
+                return $"Windows-Audio: {module}";
+        }
+
+        // Die automatische VLC-Auswahl darf weiterhin funktionieren. Der Status
+        // macht einen fehlenden Plugin-Ordner in portablen Builds aber sichtbar.
+        return "Windows-Audio: VLC-Systemstandard (mmdevice-Plugin nicht verfügbar)";
+    }
 
     public TimeSpan Position => TimeSpan.FromMilliseconds(Math.Max(_player.Time, 0));
     public TimeSpan Duration => TimeSpan.FromMilliseconds(Math.Max(_player.Length, 0));
@@ -148,6 +171,8 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _vocalAwaitingAlignment = startPosition is not null;
         Interlocked.Exchange(ref _vocalStartScheduled, 0);
         Interlocked.Exchange(ref _vocalAlignmentScheduled, 0);
+        _player.Mute = false;
+        _vocalPlayer.Mute = false;
         _player.Volume = startPosition is null ? _requestedMasterVolume : 0;
         _media = new Media(_libVlc, source);
         _sourcesAreLocal = source.IsFile && (vocalsSource is null || vocalsSource.IsFile);
