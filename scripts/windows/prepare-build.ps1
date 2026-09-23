@@ -138,21 +138,43 @@ if (-not $versionLine) { throw 'Unity-Version konnte nicht gelesen werden.' }
 $unityVersion = $versionLine.Substring('m_EditorVersion: '.Length).Trim()
 
 function Resolve-UnityEditor {
-    if ($env:UNITY_EDITOR) { return $env:UNITY_EDITOR }
-    return Join-Path $env:ProgramFiles "Unity\Hub\Editor\$unityVersion\Editor\Unity.exe"
+    if ($env:UNITY_EDITOR -and (Test-Path $env:UNITY_EDITOR -PathType Leaf)) {
+        return $env:UNITY_EDITOR
+    }
+
+    $hubRoot = Join-Path $env:ProgramFiles 'Unity\Hub\Editor'
+    $exact = Join-Path $hubRoot "$unityVersion\Editor\Unity.exe"
+    if (Test-Path $exact -PathType Leaf) { return $exact }
+    if (-not (Test-Path $hubRoot -PathType Container)) { return $null }
+
+    # Das Projekt benötigt Unity 6, aber nicht exakt dieselbe Patchversion.
+    # Bevorzugt wird die neueste installierte 6000.x-Version.
+    $installations = Get-ChildItem $hubRoot -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -match '^6000\.(\d+)\.(\d+)' } |
+        Sort-Object {
+            if ($_.Name -match '^6000\.(\d+)\.(\d+)') {
+                [Version]::new(6000, [int]$Matches[1], [int]$Matches[2])
+            } else { [Version]::new(0, 0, 0) }
+        } -Descending
+    foreach ($installation in $installations) {
+        $candidate = Join-Path $installation.FullName 'Editor\Unity.exe'
+        if (Test-Path $candidate -PathType Leaf) { return $candidate }
+    }
+    return $null
 }
 
 if (-not $SkipUnity) {
     $unity = Resolve-UnityEditor
     if (-not $unity -or -not (Test-Path $unity -PathType Leaf)) {
-        throw "Unity $unityVersion wurde nicht gefunden. Installiere Unity 6 oder setze UNITY_EDITOR."
+        throw "Keine installierte Unity-6000.x-Version wurde gefunden. Installiere Unity 6 oder setze UNITY_EDITOR."
     }
+    $env:UNITY_EDITOR = $unity
     $windowsSupport = Join-Path (Split-Path $unity -Parent) 'Data\PlaybackEngines\WindowsStandaloneSupport'
     if (-not (Test-Path $windowsSupport -PathType Container)) {
         throw "Unity-Modul 'Windows Build Support (Mono)' fehlt: $windowsSupport"
     }
     New-Item -ItemType Directory -Force -Path "$repoRoot\Builds" | Out-Null
-    Write-Host "Prepare Windows: Unity $unityVersion · $unity"
+    Write-Host "Prepare Windows: Projekt $unityVersion · verwendet $unity"
     Invoke-NativeChecked -FilePath $unity -Description 'Unity-Prepare' -ArgumentList @(
         '-batchmode', '-nographics', '-quit', '-projectPath', $unityProject,
         '-logFile', "$repoRoot\Builds\windows-prepare.log"

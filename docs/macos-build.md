@@ -3,7 +3,8 @@
 ## Voraussetzungen
 
 - Apple-Silicon-Mac (M1 oder neuer)
-- Unity Hub mit der in `ProjectSettings/ProjectVersion.txt` festgelegten Unity-Version
+- Unity Hub mit Unity 6 (`6000.x`); die in `ProjectSettings/ProjectVersion.txt`
+  festgelegte Version wird bevorzugt, eine andere installierte 6000.x-Version ist zulässig
 - Modul **Mac Build Support (Mono)**
 - Internetzugang beim ersten Öffnen, damit Unity das LiveKit-Paket von OpenUPM auflöst
 
@@ -14,7 +15,7 @@ scripts/macos/build-unity-stage-macos.sh
 ```
 
 Der Builder führt automatisch zuerst `scripts/macos/prepare-build.sh` aus. Das
-Prepare prüft macOS, die im Projekt festgelegte Unity-Version sowie **Mac Build
+Prepare prüft macOS, eine installierte Unity-6000.x-Version sowie **Mac Build
 Support (Mono)** und lässt Unity Pakete auflösen und die Stage-Skripte
 kompilieren. Für die isolierte Prüfung eines Build-Macs kann das Prepare-Skript
 auch direkt gestartet werden.

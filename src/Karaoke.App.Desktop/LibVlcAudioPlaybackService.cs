@@ -31,7 +31,9 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     {
         ConfigureLinuxLibraryResolver();
         Core.Initialize();
-        _libVlc = new LibVLC("--no-video", "--network-caching=750");
+        _libVlc = OperatingSystem.IsWindows()
+            ? new LibVLC("--no-video", "--network-caching=750", "--aout=mmdevice")
+            : new LibVLC("--no-video", "--network-caching=750");
         _libVlc.Log += (_, eventArgs) =>
         {
             if (!string.IsNullOrWhiteSpace(eventArgs.Message))
@@ -73,6 +75,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
                 ThreadPool.QueueUserWorkItem(_ => StartVocalMuted(generation));
             StateChanged?.Invoke(this, $"Wiedergabe läuft · {_audioOutputStatus}");
             PlaybackStarted?.Invoke(this, EventArgs.Empty);
+            _ = EnsureAudiblePlaybackAsync(generation);
         };
         _player.Paused += (_, _) => StateChanged?.Invoke(this, "Wiedergabe pausiert");
         _player.Stopped += (_, _) => StateChanged?.Invoke(this, "Wiedergabe gestoppt");
@@ -106,7 +109,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         // Ausgabemodule zurückfallen. MMDevice folgt dem Windows-Standardgerät
         // (inklusive eines zur Laufzeit gewechselten USB-/Bluetooth-Geräts).
         // DirectSound bleibt der Fallback für ältere Windows-Installationen.
-        foreach (var module in new[] { "mmdevice", "directsound" })
+        foreach (var module in new[] { "mmdevice", "wasapi", "directsound", "waveout" })
         {
             var masterConfigured = player.SetAudioOutput(module);
             var vocalConfigured = vocalPlayer.SetAudioOutput(module);
@@ -160,6 +163,13 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     public async Task PlayAsync(Uri source, Uri? vocalsSource = null, TimeSpan? startPosition = null, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        // Der Editor reicht auch am Songanfang explizit 00:00.000 durch. Dafür
+        // ist kein Decoder-Seek nötig. Insbesondere VLC unter Windows konnte
+        // andernfalls bereits laufen, während der zum Seek gesetzte Mute-Zustand
+        // nicht wieder freigegeben wurde: Video und Text liefen, Audio blieb still.
+        var initialSeek = startPosition is { } requested && requested > TimeSpan.FromMilliseconds(30)
+            ? requested
+            : (TimeSpan?)null;
         Interlocked.Increment(ref _playGeneration);
         Interlocked.Increment(ref _seekGeneration);
         _player.Stop();
@@ -167,13 +177,13 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _media?.Dispose();
         _vocalMedia?.Dispose();
         _vocalMedia = null;
-        _userSeekInProgress = startPosition is not null;
-        _vocalAwaitingAlignment = startPosition is not null;
+        _userSeekInProgress = initialSeek is not null;
+        _vocalAwaitingAlignment = initialSeek is not null;
         Interlocked.Exchange(ref _vocalStartScheduled, 0);
         Interlocked.Exchange(ref _vocalAlignmentScheduled, 0);
         _player.Mute = false;
         _vocalPlayer.Mute = false;
-        _player.Volume = startPosition is null ? _requestedMasterVolume : 0;
+        _player.Volume = initialSeek is null ? _requestedMasterVolume : 0;
         _media = new Media(_libVlc, source);
         _sourcesAreLocal = source.IsFile && (vocalsSource is null || vocalsSource.IsFile);
         if (vocalsSource is not null)
@@ -186,13 +196,13 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _player.SetRate((float)_requestedPlaybackRate);
         var generation = _playGeneration;
         WatchPlaybackStart(generation);
-        if (startPosition is not null)
+        if (initialSeek is not null)
         {
             for (var attempt = 0; attempt < 60 && generation == _playGeneration &&
                  (!_player.IsSeekable || !_player.IsPlaying); attempt++)
                 await Task.Delay(50, cancellationToken);
             if (generation == _playGeneration && _player.IsSeekable)
-                await SeekAsync(startPosition.Value, cancellationToken);
+                await SeekAsync(initialSeek.Value, cancellationToken);
             else if (generation == _playGeneration)
             {
                 _userSeekInProgress = false;
@@ -200,6 +210,21 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
                 _player.Volume = _requestedMasterVolume;
             }
         }
+    }
+
+    private async Task EnsureAudiblePlaybackAsync(int generation)
+    {
+        // Sicherheitsnetz für Windows-Audiotreiber: ein abgebrochener initialer
+        // Seek darf den Master nicht dauerhaft stumm lassen. Bei einem bewusst
+        // stummen Stage-Test ist _requestedMasterVolume bereits 0 und bleibt 0.
+        await Task.Delay(TimeSpan.FromSeconds(3));
+        if (generation != _playGeneration || !_player.IsPlaying || _requestedMasterVolume <= 0 ||
+            _userSeekInProgress || _player.Volume > 0) return;
+        _vocalAwaitingAlignment = false;
+        _player.Mute = false;
+        _player.Volume = _requestedMasterVolume;
+        StateChanged?.Invoke(this,
+            $"Windows-Audio reaktiviert · {_audioOutputStatus} · Pegel {_player.Volume}%");
     }
 
     private async void WatchPlaybackStart(int generation)

@@ -17,8 +17,27 @@ unity_editor=${UNITY_EDITOR:-}
 if [[ -z "$unity_editor" ]]; then
   unity_editor="/Applications/Unity/Hub/Editor/$unity_version/Unity.app/Contents/MacOS/Unity"
 fi
+if [[ ! -x "$unity_editor" ]]; then
+  unity_editor=""
+  best_minor=-1
+  best_patch=-1
+  for candidate in /Applications/Unity/Hub/Editor/6000.*/Unity.app/Contents/MacOS/Unity; do
+    [[ -x "$candidate" ]] || continue
+    installation=${candidate#/Applications/Unity/Hub/Editor/}
+    installation=${installation%%/*}
+    if [[ $installation =~ ^6000\.([0-9]+)\.([0-9]+) ]]; then
+      minor=${BASH_REMATCH[1]}
+      patch=${BASH_REMATCH[2]}
+      if (( minor > best_minor || (minor == best_minor && patch > best_patch) )); then
+        unity_editor=$candidate
+        best_minor=$minor
+        best_patch=$patch
+      fi
+    fi
+  done
+fi
 [[ -n "$unity_editor" && -x "$unity_editor" ]] || {
-  echo "Unity $unity_version wurde nicht gefunden. UNITY_EDITOR auf Unity.app/Contents/MacOS/Unity setzen." >&2
+  echo "Keine Unity-6000.x-Version wurde gefunden. UNITY_EDITOR auf Unity.app/Contents/MacOS/Unity setzen." >&2
   exit 2
 }
 

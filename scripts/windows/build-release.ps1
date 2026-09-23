@@ -93,7 +93,7 @@ try {
     $libVlc = Get-ChildItem $editorPublish -Recurse -File -Filter 'libvlc.dll' | Select-Object -First 1
     $vlcPlugins = Get-ChildItem $editorPublish -Recurse -Directory -Filter 'plugins' |
         Where-Object { Test-Path (Join-Path $_.FullName 'access') } | Select-Object -First 1
-    $vlcAudioPlugin = Get-ChildItem $editorPublish -Recurse -File -Filter 'mmdevice*_plugin.dll' |
+    $vlcAudioPlugin = Get-ChildItem $editorPublish -Recurse -File -Filter 'libmmdevice_plugin.dll' |
         Select-Object -First 1
     if (-not $libVlc -or -not $vlcPlugins -or -not $vlcAudioPlugin) {
         throw 'The Windows editor package does not contain the expected LibVLC runtime and plugins.'
@@ -106,7 +106,18 @@ try {
         $env:NEONSTAGE_VERSION = $Version
         $env:NEONSTAGE_BUILD_NUMBER = $BuildNumber.ToString()
         $env:NEONSTAGE_RELEASE_BUILD = '1'
-        & "$repoRoot\scripts\windows\build-unity-stage-windows.ps1" -SkipPrepare
+        try {
+            & "$repoRoot\scripts\windows\build-unity-stage-windows.ps1" -SkipPrepare
+            if (-not $?) { throw 'Das Unity-Buildskript wurde ohne Erfolg beendet.' }
+        }
+        catch {
+            $unityLog = Join-Path $repoRoot 'Builds\windows-unity.log'
+            if (Test-Path $unityLog -PathType Leaf) {
+                Write-Host 'Letzte Meldungen aus dem Unity-Buildlog:' -ForegroundColor Yellow
+                Get-Content $unityLog -Tail 40 | Out-Host
+            }
+            throw "Windows-Stage-Build fehlgeschlagen: $($_.Exception.Message)"
+        }
 
         $stageSource = "$repoRoot\src\Karaoke.Stage.Unity\Builds\Windows"
         if (-not (Test-Path "$stageSource\NeonStage.exe" -PathType Leaf)) {

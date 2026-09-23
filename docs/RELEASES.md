@@ -93,7 +93,8 @@ automatically. It first uses WinGet with the exact package IDs
 places private copies under the ignored `.tools/windows/` directory. An
 existing FFmpeg can still be selected with
 `FFMPEG_EXE=C:\path\to\ffmpeg.exe`. Unity and its Windows Build Support module
-are only validated and are never installed automatically. Use `--skip-unity`
+are only validated and are never installed automatically. The project version
+is preferred; otherwise the newest installed Unity `6000.x` editor is used. Use `--skip-unity`
 when only the Windows Server and Editor should be produced. The
 native PowerShell component packager can also be called directly by tooling as
 `scripts/windows/build-release.ps1`; the cross-platform entry point remains
@@ -161,8 +162,9 @@ scripts/windows/build-unity-stage-windows.ps1
 ```
 
 The native Windows and macOS build scripts always run their matching prepare
-step first. The macOS prepare checks the host, exact Unity project version and
-Mac Build Support module, then resolves Unity packages and compiles the Stage
+step first. The macOS prepare checks the host, prefers the Unity project version
+and otherwise accepts the newest installed Unity `6000.x` editor. It also checks
+the Mac Build Support module, then resolves Unity packages and compiles the Stage
 scripts. The standalone Windows Stage builder does the equivalent for Windows.
 The full Windows release build additionally installs missing .NET/FFmpeg
 dependencies and restores the Server and Editor projects. Pass

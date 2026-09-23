@@ -4,11 +4,14 @@ set -Eeuo pipefail
 project_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 unity_project="$project_root/src/Karaoke.Stage.Unity"
 unity_editor=${UNITY_EDITOR:-}
+project_unity_version=$(sed -n 's/^m_EditorVersion: //p' \
+  "$unity_project/ProjectSettings/ProjectVersion.txt" | head -n 1)
 
 if [[ -z "$unity_editor" ]]; then
   for candidate in \
+    "$HOME/Unity/Hub/Editor/$project_unity_version/Editor/Unity" \
     /opt/unity/Editor/Unity \
-    "$HOME/Unity/Hub/Editor/6000.5.4f1/Editor/Unity"; do
+    "$HOME"/Unity/Hub/Editor/6000.*/Editor/Unity; do
     if [[ -x "$candidate" ]]; then
       unity_editor=$candidate
       break
@@ -17,8 +20,8 @@ if [[ -z "$unity_editor" ]]; then
 fi
 
 if [[ -z "$unity_editor" && -d "$HOME/Unity/Hub/Editor" ]]; then
-  unity_editor=$(find "$HOME/Unity/Hub/Editor" -mindepth 3 -maxdepth 3 -type f -path '*/Editor/Unity' -perm -111 \
-    -print -quit)
+  unity_editor=$(find "$HOME/Unity/Hub/Editor" -mindepth 3 -maxdepth 3 -type f \
+    -path '*/6000.*/Editor/Unity' -perm -111 -print | sort -V -r | head -n 1)
 fi
 
 if [[ -z "$unity_editor" || ! -x "$unity_editor" ]]; then
