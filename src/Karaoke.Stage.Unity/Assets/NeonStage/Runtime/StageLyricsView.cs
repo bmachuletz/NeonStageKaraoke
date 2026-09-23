@@ -681,7 +681,7 @@ public sealed class StageLyricsView
         text.fontSize = StageFontSize;
         text.fontSizeMin = StageFontSize;
         text.fontSizeMax = StageFontSize;
-        text.enableWordWrapping = false;
+        text.textWrappingMode = TextWrappingModes.NoWrap;
         // Lines are already wrapped by StagePresentationEngine. Overflow is
         // safer than TMP's Ellipsis here: with a fixed font, a row that is a
         // fraction too short can otherwise suppress the complete glyph mesh
