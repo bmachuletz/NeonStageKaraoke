@@ -21,13 +21,16 @@ $prepareArguments = @{}
 if ($SkipUnity) { $prepareArguments['SkipUnity'] = $true }
 if ($FfmpegExe) { $prepareArguments['FfmpegExe'] = $FfmpegExe }
 & "$repoRoot\scripts\windows\prepare-build.ps1" @prepareArguments
-if ($LASTEXITCODE -ne 0) { throw "Windows-Prepare fehlgeschlagen ($LASTEXITCODE)." }
+# PowerShell script failures propagate through ErrorActionPreference=Stop.
+# LASTEXITCODE is reserved for native executables and can be undefined here.
 
 function Invoke-Checked {
     param([string]$Command, [string[]]$Arguments)
+    $global:LASTEXITCODE = 0
     & $Command @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "Command failed ($LASTEXITCODE): $Command $($Arguments -join ' ')"
+    $exitCode = [int]$global:LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Command failed ($exitCode): $Command $($Arguments -join ' ')"
     }
 }
 
@@ -101,7 +104,6 @@ try {
         $env:NEONSTAGE_BUILD_NUMBER = $BuildNumber.ToString()
         $env:NEONSTAGE_RELEASE_BUILD = '1'
         & "$repoRoot\scripts\windows\build-unity-stage-windows.ps1" -SkipPrepare
-        if ($LASTEXITCODE -ne 0) { throw "Unity build failed ($LASTEXITCODE)." }
 
         $stageSource = "$repoRoot\src\Karaoke.Stage.Unity\Builds\Windows"
         if (-not (Test-Path "$stageSource\NeonStage.exe" -PathType Leaf)) {
