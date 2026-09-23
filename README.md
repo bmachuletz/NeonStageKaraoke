@@ -465,6 +465,11 @@ Create the first local release as product version `0.1.0`, build `1`:
 ./scripts/release/build-release.sh --platform windows --reuse-build
 ```
 
+On Windows, `scripts/windows/prepare-build.ps1` automatically installs a
+missing .NET 10 SDK and FFmpeg. It prefers WinGet and falls back to local tools
+under the ignored `.tools/windows/` directory. Unity and its platform modules
+remain the only deliberately manual dependency.
+
 The product version follows Semantic Versioning, while the monotonically
 increasing build number distinguishes rebuilt artifacts without pretending that
 the product gained a new feature version. `release-version.env` begins at

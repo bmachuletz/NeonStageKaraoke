@@ -23,6 +23,7 @@ if ($FfmpegExe) { $prepareArguments['FfmpegExe'] = $FfmpegExe }
 & "$repoRoot\scripts\windows\prepare-build.ps1" @prepareArguments
 # PowerShell script failures propagate through ErrorActionPreference=Stop.
 # LASTEXITCODE is reserved for native executables and can be undefined here.
+if (-not $FfmpegExe -and $env:FFMPEG_EXE) { $FfmpegExe = $env:FFMPEG_EXE }
 
 function Invoke-Checked {
     param([string]$Command, [string[]]$Arguments)
