@@ -11,6 +11,7 @@ public partial class SettingsWindow : Window
     private bool _managedByEnvironment;
     private bool _geniusManagedByEnvironment;
     private bool _onlineManagedByEnvironment;
+    private IReadOnlyList<EditorAudioOutputDevice> _audioOutputDevices = [];
 
     public SettingsWindow() : this(new Uri(
         (Environment.GetEnvironmentVariable("NEONSTAGE_SERVER_URL") ??
@@ -24,6 +25,7 @@ public partial class SettingsWindow : Window
         _http = new HttpClient { BaseAddress = serverAddress, Timeout = TimeSpan.FromSeconds(30) };
         ServerUrlBox.Text = serverAddress.AbsoluteUri.TrimEnd('/');
         TransportWarning.IsVisible = serverAddress.Scheme != Uri.UriSchemeHttps && !serverAddress.IsLoopback;
+        AudioTab.IsVisible = OperatingSystem.IsWindows();
         Opened += async (_, _) =>
         {
             EditorLocale.Apply(this);
@@ -35,6 +37,7 @@ public partial class SettingsWindow : Window
     private async Task LoadAsync()
     {
         SetBusy(true);
+        RefreshAudioDevices();
         try
         {
             var libraryTask = _http.GetFromJsonAsync<LibrarySettingsDto>("/api/settings/library");
@@ -107,8 +110,14 @@ public partial class SettingsWindow : Window
     private async void SaveClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {
         SetBusy(true);
+        var audioSaved = false;
         try
         {
+            if (OperatingSystem.IsWindows() && AudioOutputDeviceBox.SelectedItem is EditorAudioOutputDevice device)
+            {
+                new EditorAudioSettings(device.Id, device.Label).Save();
+                audioSaved = true;
+            }
             using var libraryResponse = await _http.PutAsJsonAsync("/api/settings/library",
                 new LibrarySettingsDto(LibraryPathBox.Text?.Trim() ?? string.Empty));
             await EnsureSuccessAsync(libraryResponse);
@@ -152,18 +161,48 @@ public partial class SettingsWindow : Window
             ClearGeniusAccessTokenBox.IsChecked = false;
             ClearLiveKitApiSecretBox.IsChecked = false;
             await LoadAsync();
-            StatusText.Text = Text("Einstellungen wurden auf dem Server gespeichert.",
-                "Settings were saved on the server.");
+            StatusText.Text = Text("Einstellungen gespeichert. Eine geänderte Audioausgabe gilt nach einem Editor-Neustart.",
+                "Settings saved. A changed audio output takes effect after restarting the editor.");
         }
         catch (Exception exception)
         {
-            StatusText.Text = Text("Speichern fehlgeschlagen: ", "Save failed: ") + exception.Message;
+            StatusText.Text = (audioSaved
+                ? Text("Audioausgabe wurde lokal gespeichert; Server-Einstellungen fehlgeschlagen: ",
+                    "Audio output was saved locally; server settings failed: ")
+                : Text("Speichern fehlgeschlagen: ", "Save failed: ")) + exception.Message;
         }
         finally { SetBusy(false); }
     }
 
     private async void OpenQobuzClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
         await new QobuzPluginSettingsWindow(_serverAddress).ShowDialog(this);
+
+    private void RefreshAudioDevicesClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs) =>
+        RefreshAudioDevices();
+
+    private void RefreshAudioDevices()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            var selected = EditorAudioSettings.Load();
+            _audioOutputDevices = LibVlcAudioPlaybackService.GetWindowsAudioOutputDevices();
+            AudioOutputDeviceBox.ItemsSource = _audioOutputDevices;
+            AudioOutputDeviceBox.SelectedItem = _audioOutputDevices.FirstOrDefault(device =>
+                device.Id == selected.OutputDeviceId) ?? _audioOutputDevices[0];
+            AudioDeviceStatusText.Text = Text(
+                $"{_audioOutputDevices.Count - 1} Windows-Audiogerät(e) erkannt.",
+                $"Detected {_audioOutputDevices.Count - 1} Windows audio device(s).");
+        }
+        catch (Exception exception)
+        {
+            _audioOutputDevices = [new(null, Text("Windows-Standardgerät", "Windows default device"))];
+            AudioOutputDeviceBox.ItemsSource = _audioOutputDevices;
+            AudioOutputDeviceBox.SelectedIndex = 0;
+            AudioDeviceStatusText.Text = Text("Audiogeräte konnten nicht gelesen werden: ",
+                "Could not enumerate audio devices: ") + exception.Message;
+        }
+    }
 
     private async void TestAnimuxClick(object? sender, Avalonia.Interactivity.RoutedEventArgs eventArgs)
     {

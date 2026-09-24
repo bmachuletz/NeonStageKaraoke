@@ -63,13 +63,7 @@ internal sealed record EditorExportSettings(EditorVideoEncoderMode VideoEncoder 
         {
             using var process = new Process
             {
-                StartInfo = new ProcessStartInfo("ffmpeg")
-                {
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    CreateNoWindow = true
-                }
+                StartInfo = FfmpegLocator.CreateStartInfo(redirectStandardOutput: true)
             };
             foreach (var argument in new[]
                      {

@@ -26,6 +26,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     private readonly SemaphoreSlim _seekLock = new(1, 1);
     private string _lastLibVlcMessage = "keine native Diagnose";
     private bool _sourcesAreLocal;
+    private string? _configuredOutputDeviceId;
 
     public LibVlcAudioPlaybackService()
     {
@@ -42,6 +43,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _player = new MediaPlayer(_libVlc);
         _vocalPlayer = new MediaPlayer(_libVlc);
         _audioOutputStatus = ConfigureWindowsAudioOutput(_player, _vocalPlayer);
+        ApplyConfiguredWindowsOutputDevice();
         _vocalPlayer.Playing += (_, _) =>
         {
             _vocalPlayer.SetRate((float)_requestedPlaybackRate);
@@ -120,6 +122,36 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         // Die automatische VLC-Auswahl darf weiterhin funktionieren. Der Status
         // macht einen fehlenden Plugin-Ordner in portablen Builds aber sichtbar.
         return "Windows-Audio: VLC-Systemstandard (mmdevice-Plugin nicht verfügbar)";
+    }
+
+    internal static IReadOnlyList<EditorAudioOutputDevice> GetWindowsAudioOutputDevices()
+    {
+        var result = new List<EditorAudioOutputDevice>
+        {
+            new(null, "Windows-Standardgerät (empfohlen)")
+        };
+        if (!OperatingSystem.IsWindows()) return result;
+        Core.Initialize();
+        using var libVlc = new LibVLC("--no-video", "--aout=mmdevice");
+        foreach (var device in libVlc.AudioOutputDevices("mmdevice") ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(device.DeviceIdentifier) ||
+                result.Any(item => item.Id == device.DeviceIdentifier)) continue;
+            result.Add(new(device.DeviceIdentifier,
+                string.IsNullOrWhiteSpace(device.Description) ? device.DeviceIdentifier : device.Description));
+        }
+        return result;
+    }
+
+    private void ApplyConfiguredWindowsOutputDevice()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var configured = EditorAudioSettings.Load().OutputDeviceId;
+        if (configured == _configuredOutputDeviceId) return;
+        _configuredOutputDeviceId = configured;
+        if (string.IsNullOrWhiteSpace(configured)) return;
+        _player.SetOutputDevice(configured, "mmdevice");
+        _vocalPlayer.SetOutputDevice(configured, "mmdevice");
     }
 
     public TimeSpan Position => TimeSpan.FromMilliseconds(Math.Max(_player.Time, 0));

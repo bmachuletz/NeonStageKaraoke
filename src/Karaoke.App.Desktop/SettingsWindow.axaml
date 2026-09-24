@@ -136,6 +136,25 @@
         </StackPanel>
       </TabItem>
 
+      <TabItem x:Name="AudioTab" Header="Audio">
+        <ScrollViewer><StackPanel Margin="18" Spacing="14">
+          <TextBlock Text="WINDOWS-AUDIOAUSGABE" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
+          <TextBlock Text="Ausgabegerät für die Wiedergabe im Lyrics-Editor und die Katalogvorschau"
+                     Foreground="#AAB2C1" TextWrapping="Wrap" />
+          <ComboBox x:Name="AudioOutputDeviceBox" />
+          <Button Content="Audiogeräte neu einlesen" Click="RefreshAudioDevicesClick"
+                  HorizontalAlignment="Left" />
+          <Border Padding="12" CornerRadius="7" Background="#171D28">
+            <StackPanel Spacing="5">
+              <TextBlock x:Name="AudioDeviceStatusText" Foreground="#45E6D0"
+                         FontFamily="monospace" TextWrapping="Wrap" />
+              <TextBlock Text="Das Windows-Standardgerät folgt Gerätewechseln automatisch. Eine feste Auswahl ist sinnvoll, wenn Windows oder die Dockingstation den Editor auf den falschen Ausgang legt. Die Änderung gilt nach einem Neustart des Editors."
+                         Foreground="#AAB2C1" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+        </StackPanel></ScrollViewer>
+      </TabItem>
+
       <TabItem Header="Video-Export">
         <ScrollViewer><StackPanel Margin="18" Spacing="14">
           <TextBlock Text="MP4-ENCODER" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />

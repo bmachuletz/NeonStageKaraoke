@@ -18,13 +18,7 @@ internal sealed class FfmpegWaveformService
         if (File.Exists(cache))
             try { return await ReadCacheAsync(cache, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
 
-        var start = new ProcessStartInfo("ffmpeg")
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        var start = FfmpegLocator.CreateStartInfo(redirectStandardOutput: true);
         foreach (var argument in new[] { "-nostdin", "-hide_banner", "-loglevel", "error", "-i", audio.AbsoluteUri,
                      "-vn", "-ac", "1", "-ar", SampleRate.ToString(), "-f", "f32le", "pipe:1" })
             start.ArgumentList.Add(argument);

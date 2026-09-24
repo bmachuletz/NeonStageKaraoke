@@ -79,10 +79,7 @@ internal sealed class EditorAudioCache(HttpClient http)
     private static async Task RunFfmpegAsync(IEnumerable<string> arguments, CancellationToken cancellationToken,
         string failureMessage)
     {
-        var start = new System.Diagnostics.ProcessStartInfo("ffmpeg")
-        {
-            UseShellExecute = false, RedirectStandardError = true, CreateNoWindow = true
-        };
+        var start = FfmpegLocator.CreateStartInfo();
         foreach (var argument in new[] { "-y", "-nostdin", "-hide_banner", "-loglevel", "error" })
             start.ArgumentList.Add(argument);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
