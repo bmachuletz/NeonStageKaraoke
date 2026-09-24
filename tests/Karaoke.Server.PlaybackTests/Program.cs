@@ -573,7 +573,7 @@ try
 
 finally
 {
-    if (File.Exists(databasePath)) File.Delete(databasePath);
+    DeleteSqliteDatabase(databasePath);
     var settingsPath = Path.Combine(Path.GetDirectoryName(databasePath)!, Path.GetFileNameWithoutExtension(databasePath) + ".server-settings.json");
     if (File.Exists(settingsPath)) File.Delete(settingsPath);
     var qobuzPath = Path.Combine(Path.GetDirectoryName(databasePath)!,
@@ -581,7 +581,7 @@ finally
     if (File.Exists(qobuzPath)) File.Delete(qobuzPath);
     if (adoptionLibraryPath is not null && Directory.Exists(adoptionLibraryPath))
         Directory.Delete(adoptionLibraryPath, recursive: true);
-    if (adoptionDatabasePath is not null && File.Exists(adoptionDatabasePath)) File.Delete(adoptionDatabasePath);
+    if (adoptionDatabasePath is not null) DeleteSqliteDatabase(adoptionDatabasePath);
 }
 
 static void VerifyEasyAlignerRequestContract()
@@ -596,6 +596,30 @@ static void Assert(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException("Test fehlgeschlagen: " + message);
     Console.WriteLine("OK: " + message);
+}
+
+static void DeleteSqliteDatabase(string databasePath)
+{
+    // Microsoft.Data.Sqlite gibt geschlossene Verbindungen standardmäßig an
+    // seinen Pool zurück. Unix kann die Datei trotzdem unlinken; Windows hält
+    // sie bis zum Leeren des Pools exklusiv geöffnet.
+    SqliteConnection.ClearAllPools();
+    foreach (var suffix in new[] { "", "-shm", "-wal" })
+    {
+        var path = databasePath + suffix;
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            try
+            {
+                File.Delete(path);
+                break;
+            }
+            catch (IOException) when (attempt < 5)
+            {
+                Thread.Sleep(40 * (attempt + 1));
+            }
+        }
+    }
 }
 
 static async Task VerifyFirstSongSelectsSingerWithoutStartingAsync()
@@ -628,8 +652,7 @@ static async Task VerifyFirstSongSelectsSingerWithoutStartingAsync()
     }
     finally
     {
-        foreach (var suffix in new[] { "", "-shm", "-wal" })
-            if (File.Exists(database + suffix)) File.Delete(database + suffix);
+        DeleteSqliteDatabase(database);
     }
 }
 
@@ -850,7 +873,7 @@ static async Task VerifyUsdbEditorPickerCreatesIsolatedVersionAsync()
     }
     finally
     {
-        if (File.Exists(database)) File.Delete(database);
+        DeleteSqliteDatabase(database);
     }
 }
 
@@ -1117,8 +1140,7 @@ static async Task VerifyOverlappingAlignmentSnapshotsLandInReviewCategoryAsync()
     }
     finally
     {
-        foreach (var suffix in new[] { "", "-shm", "-wal" })
-            if (File.Exists(database + suffix)) File.Delete(database + suffix);
+        DeleteSqliteDatabase(database);
         if (Directory.Exists(libraryRoot)) Directory.Delete(libraryRoot, recursive: true);
     }
 }
