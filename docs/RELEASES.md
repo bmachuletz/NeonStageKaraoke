@@ -64,9 +64,11 @@ Examples:
 # Linux plus a production-signed Android/ARMv7 APK
 ./scripts/release/build-release.sh --platform linux,android
 
-# On the matching hosts, reuse the same release identity
+# On macOS, reuse the same release identity
 ./scripts/release/build-release.sh --platform macos --reuse-build
-./scripts/release/build-release.sh --platform windows --reuse-build
+
+# In Windows PowerShell or cmd.exe, without Git Bash/WSL
+.\scripts\windows\release.cmd -ReuseBuild
 
 # Preview validation, paths and next number without changing anything
 ./scripts/release/build-release.sh --platform linux --dry-run
@@ -116,10 +118,18 @@ are only validated and are never installed automatically. The project version
 is preferred; otherwise the newest installed Unity `6000.x` editor is used. Use `--skip-unity`
 when only the Windows Server and Editor should be produced. The
 native PowerShell component packager can also be called directly by tooling as
-`scripts/windows/build-release.ps1`; the cross-platform entry point remains
-`scripts/release/build-release.sh` because it owns numbering, checksums, and the
-optional GitHub upload. The Stage builder discovers a normal Unity Hub
+`scripts/windows/build-release.ps1`; the user-facing Windows entry point is
+`scripts/windows/release.ps1` because it owns numbering, checksums, tests, and
+the optional GitHub upload. The Stage builder discovers a normal Unity Hub
 installation automatically; `UNITY_EDITOR=C:\path\to\Unity.exe` overrides it.
+
+Windows users do not need Git Bash or WSL. From PowerShell run
+`.\scripts\windows\release.ps1`; alternatively start
+`.\scripts\windows\release.cmd`. Both own the Windows release counter, tests,
+packaging, checksums and optional GitHub upload. Useful switches are
+`-ReuseBuild`, `-SkipUnity`, `-SkipTests`, `-AllowDirty`, `-Publish` and
+`-NoPublish`. The lower-level `build-release.ps1` remains available for callers
+which explicitly provide output directory, version and build number.
 
 The Windows ZIPs and portable EXEs are not Authenticode-signed, so Windows
 SmartScreen may show an unknown-publisher warning. Code signing can be added

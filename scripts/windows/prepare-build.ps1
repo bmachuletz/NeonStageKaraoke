@@ -216,6 +216,10 @@ if (-not $UnityOnly) {
         -ArgumentList @('restore', "$repoRoot\src\Karaoke.App.Desktop\Karaoke.App.Desktop.csproj")
     Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore des portablen Windows-Launchers' `
         -ArgumentList @('restore', "$repoRoot\src\NeonStage.PortableLauncher\NeonStage.PortableLauncher.csproj")
+    Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore der Editor-Core-Tests' `
+        -ArgumentList @('restore', "$repoRoot\tests\Karaoke.Editor.Core.Tests\Karaoke.Editor.Core.Tests.csproj")
+    Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore der Server-Integrationstests' `
+        -ArgumentList @('restore', "$repoRoot\tests\Karaoke.Server.PlaybackTests\Karaoke.Server.PlaybackTests.csproj")
     Write-Host ".NET SDK 10: $dotnetExe"
     Write-Host "FFmpeg: $env:FFMPEG_EXE"
 }

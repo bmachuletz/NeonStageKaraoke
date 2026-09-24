@@ -431,7 +431,7 @@ the result only when the operator creates a new version.
 | Start editor | `./scripts/linux/start-desktop.sh [server-url]` |
 | Start Linux stage | `./scripts/linux/start-unity-stage.sh [server-url]` |
 | Build macOS Stage | `./scripts/macos/build-unity-stage-macos.sh` (on macOS) |
-| Build Windows Server, Editor and Stage | `./scripts/release/build-release.sh --platform windows` (on Windows) |
+| Build Windows Server, Editor and Stage | `.\scripts\windows\release.cmd` (no Git Bash/WSL required) |
 | Build Android stage | `./scripts/linux/build-unity-stage-android.sh` |
 | Match library lyrics | `./scripts/linux/match-library-lrc.sh` |
 | Align library | `./scripts/linux/align-library.sh --force` |
@@ -461,8 +461,9 @@ Create the first local release as product version `0.1.0`, build `1`:
 # Linux plus signed Android/ARMv7 in one numbered release
 ./scripts/release/build-release.sh --platform linux,android
 
-# On Windows: portable ZIPs plus single-EXE launchers for Server, Editor and Stage
-./scripts/release/build-release.sh --platform windows --reuse-build
+# In Windows PowerShell or by double-clicking release.cmd:
+.\scripts\windows\release.ps1 -ReuseBuild
+.\scripts\windows\release.cmd -ReuseBuild
 
 # On macOS: self-contained ARM64 Server, Editor.app and Unity Stage ZIPs
 ./scripts/release/build-release.sh --platform macos --reuse-build

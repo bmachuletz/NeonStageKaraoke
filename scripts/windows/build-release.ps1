@@ -8,6 +8,7 @@ param(
     [ValidateRange(1, 2147483647)]
     [int]$BuildNumber,
     [switch]$SkipUnity,
+    [switch]$SkipPrepare,
     [string]$FfmpegExe = $env:FFMPEG_EXE
 )
 
@@ -17,13 +18,15 @@ $repoRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $suffix = "v$Version-build.$BuildNumber"
 
-$prepareArguments = @{}
-if ($SkipUnity) { $prepareArguments['SkipUnity'] = $true }
-if ($FfmpegExe) { $prepareArguments['FfmpegExe'] = $FfmpegExe }
-& "$repoRoot\scripts\windows\prepare-build.ps1" @prepareArguments
-# PowerShell script failures propagate through ErrorActionPreference=Stop.
-# LASTEXITCODE is reserved for native executables and can be undefined here.
-if (-not $FfmpegExe -and $env:FFMPEG_EXE) { $FfmpegExe = $env:FFMPEG_EXE }
+if (-not $SkipPrepare) {
+    $prepareArguments = @{}
+    if ($SkipUnity) { $prepareArguments['SkipUnity'] = $true }
+    if ($FfmpegExe) { $prepareArguments['FfmpegExe'] = $FfmpegExe }
+    & "$repoRoot\scripts\windows\prepare-build.ps1" @prepareArguments
+    # PowerShell script failures propagate through ErrorActionPreference=Stop.
+    # LASTEXITCODE is reserved for native executables and can be undefined here.
+    if (-not $FfmpegExe -and $env:FFMPEG_EXE) { $FfmpegExe = $env:FFMPEG_EXE }
+}
 
 function Invoke-Checked {
     param([string]$Command, [string[]]$Arguments)
