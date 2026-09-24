@@ -4,6 +4,9 @@ namespace Karaoke.App.Desktop;
 
 internal static class FfmpegLocator
 {
+    private static readonly string DiagnosticRoot = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NeonStage", "logs");
+
     public static string ExecutablePath
     {
         get
@@ -26,4 +29,14 @@ internal static class FfmpegLocator
         RedirectStandardError = true,
         CreateNoWindow = true
     };
+
+    public static string WriteDiagnostic(string operation, string details)
+    {
+        Directory.CreateDirectory(DiagnosticRoot);
+        var path = Path.Combine(DiagnosticRoot, $"ffmpeg-{operation}.log");
+        File.WriteAllText(path,
+            $"Zeit: {DateTimeOffset.Now:O}{Environment.NewLine}" +
+            $"FFmpeg: {ExecutablePath}{Environment.NewLine}" + details.Trim() + Environment.NewLine);
+        return path;
+    }
 }

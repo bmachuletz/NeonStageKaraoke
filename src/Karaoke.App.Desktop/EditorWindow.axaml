@@ -297,7 +297,7 @@
     <Border Grid.Row="2" Background="#171B24" BorderBrush="#2A303B" BorderThickness="0,1,0,0" Padding="12,0">
       <Grid ColumnDefinitions="*,Auto,Auto">
         <TextBlock Text="{Binding Status}" VerticalAlignment="Center" Foreground="#AAB2C1"
-                   TextTrimming="CharacterEllipsis" />
+                   TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Status}" />
         <StackPanel Grid.Column="1" Margin="12,0" VerticalAlignment="Center">
           <TextBlock Text="{Binding StageTestStatus}" Foreground="#45E6D0" />
           <TextBlock Text="{Binding Mp4ExportStatus}" Foreground="#DFFF28" FontSize="11" />

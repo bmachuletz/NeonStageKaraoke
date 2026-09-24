@@ -18,8 +18,11 @@ internal sealed class FfmpegWaveformService
         if (File.Exists(cache))
             try { return await ReadCacheAsync(cache, ct); } catch (Exception) when (!ct.IsCancellationRequested) { }
 
+        var input = audio.IsFile ? audio.LocalPath : audio.AbsoluteUri;
+        if (audio.IsFile && !File.Exists(input))
+            throw new InvalidOperationException($"Waveform-Quelldatei fehlt: {input}");
         var start = FfmpegLocator.CreateStartInfo(redirectStandardOutput: true);
-        foreach (var argument in new[] { "-nostdin", "-hide_banner", "-loglevel", "error", "-i", audio.AbsoluteUri,
+        foreach (var argument in new[] { "-nostdin", "-hide_banner", "-loglevel", "error", "-i", input,
                      "-vn", "-ac", "1", "-ar", SampleRate.ToString(), "-f", "f32le", "pipe:1" })
             start.ArgumentList.Add(argument);
         using var process = Process.Start(start) ?? throw new InvalidOperationException("FFmpeg konnte nicht gestartet werden.");
@@ -28,7 +31,22 @@ internal sealed class FfmpegWaveformService
         await process.StandardOutput.BaseStream.CopyToAsync(memory, ct);
         await process.WaitForExitAsync(ct);
         var error = await errorTask;
-        if (process.ExitCode != 0) throw new InvalidOperationException("FFmpeg-Waveform fehlgeschlagen: " + error.Trim());
+        if (process.ExitCode != 0)
+        {
+            var logPath = FfmpegLocator.WriteDiagnostic("waveform",
+                $"Eingabe: {input}{Environment.NewLine}Exitcode: {process.ExitCode}{Environment.NewLine}{error}");
+            var summary = error.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim()).LastOrDefault() ?? "unbekannter FFmpeg-Fehler";
+            if (summary.Length > 220) summary = summary[..220] + "…";
+            throw new InvalidOperationException(
+                $"FFmpeg-Waveform fehlgeschlagen: {summary} · Diagnose: {logPath}");
+        }
+        if (memory.Length == 0)
+        {
+            var logPath = FfmpegLocator.WriteDiagnostic("waveform",
+                $"Eingabe: {input}{Environment.NewLine}FFmpeg lieferte keine Audiosamples.");
+            throw new InvalidOperationException($"FFmpeg lieferte keine Waveform-Samples. Diagnose: {logPath}");
+        }
         var byteCount = (int)(memory.Length / sizeof(float) * sizeof(float));
         var samples = MemoryMarshal.Cast<byte, float>(memory.GetBuffer().AsSpan(0, byteCount));
         var pyramid = WaveformPyramid.Create(samples, SampleRate);
