@@ -23,15 +23,17 @@ internal static class Program
                     StringComparer.OrdinalIgnoreCase);
             var profile = Required(metadata, "NeonStage.Launcher.Profile");
             var entryPoint = Required(metadata, "NeonStage.Launcher.EntryPoint");
+            var payloadId = SanitizePathPart(Required(metadata, "NeonStage.Launcher.PayloadId"));
             var version = SanitizePathPart(
                 assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
                 ?? assembly.GetName().Version?.ToString() ?? "unknown");
+            var extractionVersion = version + "-" + payloadId;
             var profileKey = SanitizePathPart(profile.ToLowerInvariant());
             var extractionRoot = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "NeonStage", "portable", profileKey, version);
+                "NeonStage", "portable", profileKey, extractionVersion);
 
-            using var mutex = new Mutex(false, MutexName(profileKey, version));
+            using var mutex = new Mutex(false, MutexName(profileKey, extractionVersion));
             var ownsMutex = false;
             try
             {
@@ -140,8 +142,10 @@ internal static class Program
             Directory.CreateDirectory(data);
             Directory.CreateDirectory(library);
             start.Environment["ASPNETCORE_ENVIRONMENT"] = "Production";
-            start.Environment["ASPNETCORE_URLS"] = LocalServer;
-            start.Environment["Karaoke__PublicBaseUrl"] = LocalServer;
+            start.Environment["ASPNETCORE_URLS"] = "http://0.0.0.0:5274";
+            // Keine feste PublicBaseUrl: der Server leitet aus dem lokalen
+            // Request automatisch eine vom Handy erreichbare LAN-IP ab.
+            start.Environment.Remove("Karaoke__PublicBaseUrl");
             start.Environment["Karaoke__LibraryPath"] = library;
             start.Environment["Karaoke__DatabasePath"] = Path.Combine(data, "karaoke.db");
             start.Environment["Usdb__CachePath"] = Path.Combine(data, "usdb-cache");

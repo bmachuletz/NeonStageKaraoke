@@ -36,9 +36,13 @@ public sealed class PublicServerUrlResolver(IOptions<KaraokeOptions> options)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
         if (!Uri.TryCreate(value.Trim(), UriKind.Absolute, out var uri) ||
-            uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps || IsLocalOnlyHost(uri.Host))
+            uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
             throw new InvalidOperationException(
-                "Karaoke:PublicBaseUrl must be an absolute guest-reachable HTTP(S) URL, not localhost or 0.0.0.0.");
+                "Karaoke:PublicBaseUrl must be an absolute guest-reachable HTTP(S) URL.");
+        // localhost/0.0.0.0 sind gültige lokale Servervorgaben, aber keine
+        // scanbaren Gästeadressen. In diesem Fall automatisch die LAN-Adresse
+        // ermitteln, statt den QR-Endpunkt mit HTTP 500 scheitern zu lassen.
+        if (IsLocalOnlyHost(uri.Host)) return null;
         return uri.GetLeftPart(UriPartial.Authority).TrimEnd('/');
     }
 

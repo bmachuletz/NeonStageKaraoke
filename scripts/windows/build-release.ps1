@@ -63,6 +63,7 @@ function New-PortableExecutable {
     )
     $launcherName = [IO.Path]::GetFileNameWithoutExtension($ArtifactName)
     $launcherOutput = Join-Path $workRoot ("launcher-" + $Profile)
+    $payloadId = (Get-FileHash $PayloadArchive -Algorithm SHA256).Hash.Substring(0, 12).ToLowerInvariant()
     Invoke-Checked 'dotnet' @(
         'publish', "$repoRoot\src\NeonStage.PortableLauncher\NeonStage.PortableLauncher.csproj",
         '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
@@ -71,6 +72,7 @@ function New-PortableExecutable {
         "-p:Version=$Version", "-p:InformationalVersion=$Version+build.$BuildNumber",
         "-p:AssemblyName=$launcherName", "-p:OutputType=$LauncherOutputType",
         "-p:LauncherProfile=$Profile", "-p:LauncherEntryPoint=$EntryPoint",
+        "-p:LauncherPayloadId=$payloadId",
         "-p:PayloadArchive=$PayloadArchive", '-o', $launcherOutput
     )
     $launcher = Join-Path $launcherOutput ($launcherName + '.exe')

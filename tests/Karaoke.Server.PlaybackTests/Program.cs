@@ -1,6 +1,7 @@
 using Karaoke.Contracts;
 using Karaoke.Editor.Core;
 using Karaoke.Server;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -16,6 +17,7 @@ string? adoptionDatabasePath = null;
 try
 {
     VerifyEasyAlignerRequestContract();
+    VerifyLoopbackPublicUrlFallsBackSafely();
     await VerifyOnlineRoomAndTokenContractAsync();
     await VerifyUsdbHttpAndMatchingAsync();
     await VerifyLegacyUsdbChartSkipsAiAlignmentAsync();
@@ -590,6 +592,21 @@ static void VerifyEasyAlignerRequestContract()
     var request = new SongRealignmentRequest(sourceVersion, 12);
     Assert(request.SourceVersionId == sourceVersion && request.MaximumSongs == 12,
         "Der einzige Realignment-Vertrag enthält nur Lyrics-Quelle und optionale Songgrenze.");
+}
+
+static void VerifyLoopbackPublicUrlFallsBackSafely()
+{
+    var resolver = new PublicServerUrlResolver(Options.Create(new KaraokeOptions
+    {
+        PublicBaseUrl = "http://127.0.0.1:5274"
+    }));
+    var context = new DefaultHttpContext();
+    context.Request.Scheme = "http";
+    context.Request.Host = new HostString("127.0.0.1", 5274);
+    context.Connection.LocalPort = 5274;
+    var resolved = new Uri(resolver.GetBaseUrl(context.Request));
+    Assert(resolved.Scheme == Uri.UriSchemeHttp && resolved.Port == 5274,
+        "Eine lokale PublicBaseUrl lässt den QR-Endpunkt sicher auf eine LAN-/Request-Adresse zurückfallen.");
 }
 
 static void Assert(bool condition, string message)

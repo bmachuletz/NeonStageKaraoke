@@ -3,8 +3,9 @@ NEON STAGE FOR WINDOWS
 
 Server
 ------
-Start-NeonStage-Server.cmd starts the local-only server on 127.0.0.1:5274.
-LiveKit is disabled by default. The package uses:
+Start-NeonStage-Server.cmd starts the server on port 5274. Editor and Stage use
+127.0.0.1; the server also listens in the LAN so guest phones can open the QR
+code. LiveKit is disabled by default. The package uses:
 
   Library:  %USERPROFILE%\Music\NeonStage
   Database: %LOCALAPPDATA%\NeonStage\server\karaoke.db
@@ -12,7 +13,7 @@ LiveKit is disabled by default. The package uses:
 
 The single-EXE package keeps its server data below
 %LOCALAPPDATA%\NeonStage\standalone-server. Use the regular server deployment
-instead when the service must be reachable from the LAN or Internet.
+instead when the service must be reachable from the Internet.
 
 Lyrics Editor
 -------------

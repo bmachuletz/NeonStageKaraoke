@@ -103,8 +103,9 @@ they extract the immutable build below `%LOCALAPPDATA%\NeonStage\portable` and
 start it from there; no installed .NET runtime is required. This indirection is
 necessary because Unity data files and VLC plugins cannot safely operate as a
 literal one-file application. The standalone trio is deliberately local-first:
-Server, Editor and Stage use `http://127.0.0.1:5274`, the Server only binds to
-that loopback address, and LiveKit starts disabled. Its persistent server data
+Server, Editor and Stage use `http://127.0.0.1:5274` internally, and LiveKit
+starts disabled. Port 5274 is additionally available in the LAN so the
+automatically generated guest QR URL can be opened from a phone. Its persistent server data
 lives below `%LOCALAPPDATA%\NeonStage\standalone-server` and the library defaults
 to `%USERPROFILE%\Music\NeonStage`.
 

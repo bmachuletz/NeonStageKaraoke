@@ -477,9 +477,11 @@ remain the only deliberately manual dependency.
 Every Windows component is emitted both as a conventional portable ZIP and as
 an AppImage-like single EXE which self-extracts its versioned payload below
 `%LOCALAPPDATA%\NeonStage\portable`. The standalone Server, Editor and Stage are
-preconfigured for `http://127.0.0.1:5274`; the Server binds only to localhost,
-uses `%LOCALAPPDATA%\NeonStage\standalone-server` for state, and starts with
-LiveKit disabled. Unity and VLC still require their native companion files at
+preconfigured for `http://127.0.0.1:5274`. The Server uses
+`%LOCALAPPDATA%\NeonStage\standalone-server` for state and starts with LiveKit
+disabled. For guest QR codes it listens on port 5274 in the local network and
+automatically advertises the appropriate private LAN address.
+Unity and VLC still require their native companion files at
 runtime, which is why the EXE performs a managed extraction instead of pretending
 those applications are physically one file.
 

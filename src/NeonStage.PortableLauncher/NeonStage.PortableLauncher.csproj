@@ -4,6 +4,7 @@
     <AssemblyName Condition="'$(AssemblyName)' == ''">NeonStage.PortableLauncher</AssemblyName>
     <LauncherProfile Condition="'$(LauncherProfile)' == ''">development</LauncherProfile>
     <LauncherEntryPoint Condition="'$(LauncherEntryPoint)' == ''">missing.exe</LauncherEntryPoint>
+    <LauncherPayloadId Condition="'$(LauncherPayloadId)' == ''">development</LauncherPayloadId>
     <ApplicationIcon>../Karaoke.App.Desktop/Assets/neon-stage.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
@@ -12,5 +13,6 @@
                       Condition="'$(PayloadArchive)' != '' and Exists('$(PayloadArchive)')" />
     <AssemblyMetadata Include="NeonStage.Launcher.Profile" Value="$(LauncherProfile)" />
     <AssemblyMetadata Include="NeonStage.Launcher.EntryPoint" Value="$(LauncherEntryPoint)" />
+    <AssemblyMetadata Include="NeonStage.Launcher.PayloadId" Value="$(LauncherPayloadId)" />
   </ItemGroup>
 </Project>
