@@ -77,8 +77,17 @@ rejects unsupported host/target combinations instead of silently producing a
 different artifact. Linux can additionally build the Android target when the
 Unity Android module is installed.
 
-The Windows target creates three portable, self-contained archives with the
-same release identity:
+The macOS target always runs `scripts/macos/prepare-build.sh` before tests and
+packaging. Missing Homebrew-managed .NET 10, FFmpeg, dylibbundler and VLC
+dependencies are installed automatically; Unity 6 and Mac Build Support remain
+manual because Unity requires Hub installation and licensing. The target emits
+self-contained ARM64 Server and Lyrics Editor ZIPs plus the Unity Stage unless
+`--skip-unity` is selected. The Editor is a native `.app` containing portable
+FFmpeg, LibVLC and VLC plugins. Local apps are ad-hoc signed; public distribution
+still requires Developer-ID signing and notarization.
+
+The Windows target creates three portable, self-contained archives and three
+AppImage-like single-EXE launchers with the same release identity:
 
 - `NeonStage-Server-…-windows-x64.zip` with the ASP.NET Core runtime, web
   portals, `ffmpeg.exe`, license files, and a launcher using per-user data paths;
@@ -86,6 +95,16 @@ same release identity:
   its plugins, `ffmpeg.exe`, licenses, and a server-aware launcher;
 - `NeonStage-Stage-…-windows-x64.zip` with the compiled Unity player and license
   notices.
+
+The matching `.exe` artifacts embed those complete payloads. On first launch
+they extract the immutable build below `%LOCALAPPDATA%\NeonStage\portable` and
+start it from there; no installed .NET runtime is required. This indirection is
+necessary because Unity data files and VLC plugins cannot safely operate as a
+literal one-file application. The standalone trio is deliberately local-first:
+Server, Editor and Stage use `http://127.0.0.1:5274`, the Server only binds to
+that loopback address, and LiveKit starts disabled. Its persistent server data
+lives below `%LOCALAPPDATA%\NeonStage\standalone-server` and the library defaults
+to `%USERPROFILE%\Music\NeonStage`.
 
 The Windows prepare script installs a missing .NET 10 SDK and FFmpeg
 automatically. It first uses WinGet with the exact package IDs
@@ -102,7 +121,7 @@ native PowerShell component packager can also be called directly by tooling as
 optional GitHub upload. The Stage builder discovers a normal Unity Hub
 installation automatically; `UNITY_EDITOR=C:\path\to\Unity.exe` overrides it.
 
-The initial Windows ZIPs are portable but not Authenticode-signed, so Windows
+The Windows ZIPs and portable EXEs are not Authenticode-signed, so Windows
 SmartScreen may show an unknown-publisher warning. Code signing can be added
 later through a protected certificate/CI secret without changing the versioning
 or package layout; private keys must never enter the repository.
@@ -162,10 +181,12 @@ scripts/windows/build-unity-stage-windows.ps1
 ```
 
 The native Windows and macOS build scripts always run their matching prepare
-step first. The macOS prepare checks the host, prefers the Unity project version
+step first. The macOS prepare installs missing .NET 10, FFmpeg, dylibbundler and
+VLC dependencies, restores all .NET projects, prefers the Unity project version
 and otherwise accepts the newest installed Unity `6000.x` editor. It also checks
-the Mac Build Support module, then resolves Unity packages and compiles the Stage
-scripts. The standalone Windows Stage builder does the equivalent for Windows.
+Mac Build Support and both LiveKit macOS architectures, then resolves Unity
+packages and compiles the Stage scripts. The standalone Windows Stage builder
+does the equivalent for Windows.
 The full Windows release build additionally installs missing .NET/FFmpeg
 dependencies and restores the Server and Editor projects. Pass
 `-NoAutoInstall` to `prepare-build.ps1` for a read-only dependency check.
@@ -192,10 +213,15 @@ server image.
 - `stage-android-armv7`: Android package for 32-bit devices such as the tested Ikarao hardware
 - `stage-android-arm64`: Android package for modern 64-bit devices
 - `NeonStage-Stage-macOS-arm64.zip`: native Apple-Silicon application bundle
+- `NeonStage-Server-…-macOS-arm64.zip`: self-contained Apple-Silicon server with portable FFmpeg and launcher
+- `NeonStage-LyricsEditor-…-macOS-arm64.zip`: ad-hoc-signed Editor `.app` with .NET, FFmpeg, LibVLC and VLC plugins
 - `stage-windows-x64`: native Windows x64 Unity player directory
 - `NeonStage-Server-…-windows-x64.zip`: self-contained Windows x64 server with FFmpeg and launcher
 - `NeonStage-LyricsEditor-…-windows-x64.zip`: self-contained Windows x64 editor with LibVLC, FFmpeg, and launcher
 - `NeonStage-Stage-…-windows-x64.zip`: portable Windows x64 Unity Stage
+- `NeonStage-Server-…-windows-x64.exe`: local-only self-extracting Server launcher
+- `NeonStage-LyricsEditor-…-windows-x64.exe`: localhost self-extracting Editor launcher
+- `NeonStage-Stage-…-windows-x64.exe`: localhost self-extracting Unity Stage launcher
 
 Published packages must include `LICENSE`, `NOTICE`, and `THIRD_PARTY_NOTICES.md`. Android signing uses protected CI secrets or the local release environment variables documented above; signing material is never stored in the repository or artifact folder.
 

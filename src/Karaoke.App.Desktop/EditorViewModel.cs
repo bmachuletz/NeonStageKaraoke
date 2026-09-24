@@ -113,9 +113,7 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     {
         _audio = audio;
         _loadVisualAssets = loadVisualAssets;
-        var configured = (Environment.GetEnvironmentVariable("NEONSTAGE_SERVER_URL")
-                          ?? Environment.GetEnvironmentVariable("KARAOKE_SERVER"))?.Trim();
-        ServerAddress = new Uri(string.IsNullOrWhiteSpace(configured) ? "http://192.168.178.91:5274" : configured);
+        ServerAddress = EditorConnectionSettings.ResolveServerAddress();
         _http = new HttpClient { BaseAddress = ServerAddress, Timeout = TimeSpan.FromMinutes(5) };
         _audioCache = new EditorAudioCache(_http);
         _audio.PositionChanged += (_, position) => Dispatcher.UIThread.Post(() => ObserveDecoderPosition(position));

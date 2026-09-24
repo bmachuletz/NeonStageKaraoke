@@ -26,19 +26,13 @@ public sealed class UsdbProviderSettingsService(
         }
     }
 
-    private static bool ManagedByEnvironment => new[]
-    {
-        "Usdb__Enabled", "Usdb__BaseUrl", "Usdb__Animux__Enabled", "Usdb__Animux__BaseUrl",
-        "Usdb__Animux__Username", "Usdb__Animux__Password"
-    }.Any(name => Environment.GetEnvironmentVariable(name) is not null);
-
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             if (_initialized) return;
-            if (!ManagedByEnvironment && File.Exists(SettingsPath))
+            if (File.Exists(SettingsPath))
             {
                 await using var stream = File.OpenRead(SettingsPath);
                 var stored = await JsonSerializer.DeserializeAsync<StoredUsdbProviderSettings>(stream,
@@ -67,9 +61,6 @@ public sealed class UsdbProviderSettingsService(
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken);
-        if (ManagedByEnvironment)
-            throw new InvalidOperationException("Die USDB-Konfiguration wird durch Server-Umgebungsvariablen verwaltet.");
-
         await _gate.WaitAsync(cancellationToken);
         try
         {
@@ -97,17 +88,17 @@ public sealed class UsdbProviderSettingsService(
 
     private static StoredUsdbProviderSettings Normalize(StoredUsdbProviderSettings value) => value with
     {
-        BaseUrl = ValidateHttpsUrl(value.BaseUrl, "usdb.eu"),
-        AnimuxBaseUrl = ValidateHttpsUrl(value.AnimuxBaseUrl, "usdb.animux.de"),
+        BaseUrl = ValidateHttpUrl(value.BaseUrl, "usdb.eu"),
+        AnimuxBaseUrl = ValidateHttpUrl(value.AnimuxBaseUrl, "usdb.animux.de"),
         AnimuxUsername = value.AnimuxUsername?.Trim() ?? string.Empty,
         AnimuxPassword = value.AnimuxPassword ?? string.Empty
     };
 
-    private static string ValidateHttpsUrl(string value, string label)
+    private static string ValidateHttpUrl(string value, string label)
     {
         if (!Uri.TryCreate(value?.Trim().TrimEnd('/'), UriKind.Absolute, out var uri) ||
-            uri.Scheme != Uri.UriSchemeHttps)
-            throw new ArgumentException($"Die {label}-Basisadresse muss eine absolute HTTPS-Adresse sein.");
+            uri.Scheme is not ("http" or "https"))
+            throw new ArgumentException($"Die {label}-Basisadresse muss eine absolute HTTP- oder HTTPS-Adresse sein.");
         return uri.AbsoluteUri.TrimEnd('/');
     }
 
@@ -132,7 +123,7 @@ public sealed class UsdbProviderSettingsService(
                 : "usdb.animux.de ist nicht vollständig konfiguriert; usdb.eu bleibt aktiv.";
         return new(_options.Enabled, _options.BaseUrl, _options.Animux.Enabled,
             _options.Animux.BaseUrl, _options.Animux.Username, !string.IsNullOrWhiteSpace(_options.Animux.Password),
-            ManagedByEnvironment, status);
+            false, status);
     }
 
     private static void RestrictFilePermissions(string path)

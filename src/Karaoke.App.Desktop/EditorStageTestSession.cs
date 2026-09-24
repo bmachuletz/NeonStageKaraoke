@@ -74,7 +74,7 @@ internal sealed class EditorStageTestSession : IAsyncDisposable
         var executable = ResolveExecutable();
         if (executable is null)
             throw new FileNotFoundException(
-                "Keine Unity-Stage gefunden. NEONSTAGE_STAGE_EXECUTABLE auf NeonStage bzw. NeonStage.exe setzen.");
+                "Keine Unity-Stage gefunden. NEONSTAGE_STAGE_EXECUTABLE auf die Stage-Datei oder unter macOS auf NeonStage Karaoke.app setzen.");
 
         _state = state;
         _sessionId = Guid.NewGuid().ToString("N");
@@ -91,6 +91,14 @@ internal sealed class EditorStageTestSession : IAsyncDisposable
             UseShellExecute = false,
             WorkingDirectory = Path.GetDirectoryName(executable) ?? AppContext.BaseDirectory
         };
+        if (OperatingSystem.IsMacOS())
+        {
+            // Die Editor-.app setzt diese Variablen für ihr gebündeltes LibVLC.
+            // Der unabhängige Unity-Player darf die VLC-Dylibs nicht erben.
+            start.Environment.Remove("DYLD_LIBRARY_PATH");
+            start.Environment.Remove("VLC_PLUGIN_PATH");
+            start.Environment.Remove("NEONSTAGE_LIBVLC_PATH");
+        }
         start.ArgumentList.Add(exportMode ? "--editor-export" : "--editor-test");
         start.ArgumentList.Add("--editor-test-host");
         start.ArgumentList.Add(IPAddress.Loopback.ToString());
@@ -348,7 +356,26 @@ internal sealed class EditorStageTestSession : IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(configured))
         {
             var expanded = Path.GetFullPath(Environment.ExpandEnvironmentVariables(configured));
+            if (OperatingSystem.IsMacOS() && Directory.Exists(expanded))
+                return ResolveMacAppExecutable(expanded);
             return File.Exists(expanded) ? expanded : null;
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            var macRoots = ParentDirectories(AppContext.BaseDirectory)
+                .Concat(ParentDirectories(Environment.CurrentDirectory)).Distinct();
+            foreach (var root in macRoots)
+            foreach (var app in new[]
+                     {
+                         Path.Combine(root, "src", "Karaoke.Stage.Unity", "Builds", "macOS", "NeonStage Karaoke.app"),
+                         Path.Combine(root, "artifacts", "NeonStage Karaoke.app"),
+                         Path.Combine(root, "NeonStage Karaoke.app"),
+                         "/Applications/NeonStage Karaoke.app",
+                         "/Applications/Neon Stage Karaoke.app"
+                     })
+                if (ResolveMacAppExecutable(app) is { } executable) return executable;
+            return null;
         }
 
         var fileNames = OperatingSystem.IsWindows()
@@ -364,6 +391,16 @@ internal sealed class EditorStageTestSession : IAsyncDisposable
                      Path.Combine(root, fileNames[0])
                  })
             if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+        return null;
+    }
+
+    private static string? ResolveMacAppExecutable(string appPath)
+    {
+        foreach (var name in new[] { "Neon Stage Karaoke", "NeonStage Karaoke", "NeonStage", "Karaoke.Stage.Unity" })
+        {
+            var executable = Path.Combine(appPath, "Contents", "MacOS", name);
+            if (File.Exists(executable)) return Path.GetFullPath(executable);
+        }
         return null;
     }
 

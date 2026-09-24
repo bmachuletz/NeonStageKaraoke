@@ -5,8 +5,15 @@ using System.Runtime.InteropServices;
 
 namespace Karaoke.App.Desktop;
 
+internal sealed record EditorAudioOutputDevice(string? Id, string Label)
+{
+    public override string ToString() => Label;
+}
+
 public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
 {
+    internal static Action EnsurePlatformAudioSessionAudible { private get; set; } = static () => { };
+
     private readonly LibVLC _libVlc;
     private readonly MediaPlayer _player;
     private readonly MediaPlayer _vocalPlayer;
@@ -26,11 +33,14 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     private readonly SemaphoreSlim _seekLock = new(1, 1);
     private string _lastLibVlcMessage = "keine native Diagnose";
     private bool _sourcesAreLocal;
+#if !ANDROID
     private string? _configuredOutputDeviceId;
+#endif
 
     public LibVlcAudioPlaybackService()
     {
-        ConfigureLinuxLibraryResolver();
+        ConfigureNativeLibraryResolver();
+        ConfigureMacVlcPlugins();
         Core.Initialize();
         _libVlc = OperatingSystem.IsWindows()
             ? new LibVLC("--no-video", "--network-caching=750", "--aout=mmdevice")
@@ -44,6 +54,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _vocalPlayer = new MediaPlayer(_libVlc);
         _audioOutputStatus = ConfigureWindowsAudioOutput(_player, _vocalPlayer);
         ApplyConfiguredWindowsOutputDevice();
+        QueueWindowsAudioSessionUnmute();
         _vocalPlayer.Playing += (_, _) =>
         {
             _vocalPlayer.SetRate((float)_requestedPlaybackRate);
@@ -70,6 +81,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _player.Playing += (_, _) =>
         {
             _player.SetRate((float)_requestedPlaybackRate);
+            QueueWindowsAudioSessionUnmute();
             // Nie einen zweiten LibVLC-Player innerhalb eines LibVLC-Callbacks starten:
             // beide Player teilen interne Locks und der Master kann sonst im Buffering hängen.
             var generation = _playGeneration;
@@ -85,9 +97,9 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _player.EncounteredError += (_, _) => PlaybackFailed?.Invoke(this, "Der Audiostream konnte nicht wiedergegeben werden.");
     }
 
-    private static void ConfigureLinuxLibraryResolver()
+    private static void ConfigureNativeLibraryResolver()
     {
-        if (!OperatingSystem.IsLinux()) return;
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS()) return;
         try
         {
             NativeLibrary.SetDllImportResolver(typeof(LibVLC).Assembly, ResolveLibVlc);
@@ -99,9 +111,48 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     }
 
     private static IntPtr ResolveLibVlc(string libraryName, Assembly assembly, DllImportSearchPath? searchPath) =>
-        libraryName == "libvlc" && NativeLibrary.TryLoad("libvlc.so.5", assembly, searchPath, out var handle)
-            ? handle
-            : IntPtr.Zero;
+        libraryName != "libvlc"
+            ? IntPtr.Zero
+            : OperatingSystem.IsLinux() && NativeLibrary.TryLoad("libvlc.so.5", assembly, searchPath, out var linuxHandle)
+                ? linuxHandle
+                : OperatingSystem.IsMacOS() && TryLoadMacLibVlc(out var macHandle)
+                    ? macHandle
+                    : IntPtr.Zero;
+
+    private static bool TryLoadMacLibVlc(out IntPtr handle)
+    {
+        var configured = Environment.GetEnvironmentVariable("NEONSTAGE_LIBVLC_PATH")?.Trim();
+        var candidates = new[]
+        {
+            configured,
+            Path.Combine(AppContext.BaseDirectory, "vlc", "lib", "libvlc.dylib"),
+            "/Applications/VLC.app/Contents/MacOS/lib/libvlc.dylib"
+        };
+        foreach (var candidate in candidates)
+        {
+            if (string.IsNullOrWhiteSpace(candidate) || !File.Exists(candidate)) continue;
+            if (NativeLibrary.TryLoad(candidate, out handle)) return true;
+        }
+        handle = IntPtr.Zero;
+        return false;
+    }
+
+    private static void ConfigureMacVlcPlugins()
+    {
+        if (!OperatingSystem.IsMacOS() ||
+            !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("VLC_PLUGIN_PATH"))) return;
+        foreach (var candidate in new[]
+                 {
+                     Path.Combine(AppContext.BaseDirectory, "vlc", "plugins"),
+                     "/Applications/VLC.app/Contents/MacOS/plugins",
+                     "/Applications/VLC.app/Contents/MacOS/lib/vlc/plugins"
+                 })
+        {
+            if (!Directory.Exists(candidate)) continue;
+            Environment.SetEnvironmentVariable("VLC_PLUGIN_PATH", candidate);
+            return;
+        }
+    }
 
     private static string ConfigureWindowsAudioOutput(MediaPlayer player, MediaPlayer vocalPlayer)
     {
@@ -146,12 +197,16 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
     private void ApplyConfiguredWindowsOutputDevice()
     {
         if (!OperatingSystem.IsWindows()) return;
+#if ANDROID
+        return;
+#else
         var configured = EditorAudioSettings.Load().OutputDeviceId;
         if (configured == _configuredOutputDeviceId) return;
         _configuredOutputDeviceId = configured;
         if (string.IsNullOrWhiteSpace(configured)) return;
         _player.SetOutputDevice(configured, "mmdevice");
         _vocalPlayer.SetOutputDevice(configured, "mmdevice");
+#endif
     }
 
     public TimeSpan Position => TimeSpan.FromMilliseconds(Math.Max(_player.Time, 0));
@@ -163,6 +218,8 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         {
             _requestedMasterVolume = Math.Clamp(value, 0, 100);
             if (!_vocalAwaitingAlignment) _player.Volume = _requestedMasterVolume;
+            if (_requestedMasterVolume > 0 && _player.IsPlaying)
+                QueueWindowsAudioSessionUnmute();
         }
     }
     public int VocalVolume
@@ -249,7 +306,16 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         // Sicherheitsnetz für Windows-Audiotreiber: ein abgebrochener initialer
         // Seek darf den Master nicht dauerhaft stumm lassen. Bei einem bewusst
         // stummen Stage-Test ist _requestedMasterVolume bereits 0 und bleibt 0.
-        await Task.Delay(TimeSpan.FromSeconds(3));
+        // Die CoreAudio-Sitzung entsteht bei einigen Treibern erst etwas nach
+        // dem Playing-Event. Zweimaliges Prüfen deckt sowohl schnelle interne
+        // Geräte als auch USB-/Bluetooth-Ausgänge ab.
+        await Task.Delay(250);
+        if (generation == _playGeneration && _player.IsPlaying && _requestedMasterVolume > 0)
+            QueueWindowsAudioSessionUnmute();
+        await Task.Delay(TimeSpan.FromMilliseconds(750));
+        if (generation == _playGeneration && _player.IsPlaying && _requestedMasterVolume > 0)
+            QueueWindowsAudioSessionUnmute();
+        await Task.Delay(TimeSpan.FromSeconds(2));
         if (generation != _playGeneration || !_player.IsPlaying || _requestedMasterVolume <= 0 ||
             _userSeekInProgress || _player.Volume > 0) return;
         _vocalAwaitingAlignment = false;
@@ -257,6 +323,25 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _player.Volume = _requestedMasterVolume;
         StateChanged?.Invoke(this,
             $"Windows-Audio reaktiviert · {_audioOutputStatus} · Pegel {_player.Volume}%");
+    }
+
+    private void QueueWindowsAudioSessionUnmute()
+    {
+        // Ein bewusst stummer Stage-Test setzt den angeforderten Pegel auf 0.
+        // In diesem Zustand darf die Windows-Sitzung nicht verändert werden.
+        if (!OperatingSystem.IsWindows() || _requestedMasterVolume <= 0) return;
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                EnsurePlatformAudioSessionAudible();
+            }
+            catch
+            {
+                // Die Wiedergabe darf nicht an einer optionalen CoreAudio-
+                // Reparatur scheitern; VLCs normaler Ausgabepfad bleibt aktiv.
+            }
+        });
     }
 
     private async void WatchPlaybackStart(int generation)

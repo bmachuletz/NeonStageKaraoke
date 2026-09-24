@@ -9,6 +9,7 @@
     <Project Path="src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj" />
     <Project Path="src/Karaoke.App.Android/Karaoke.App.Android.csproj" />
     <Project Path="src/Karaoke.Editor.Core/Karaoke.Editor.Core.csproj" />
+    <Project Path="src/NeonStage.PortableLauncher/NeonStage.PortableLauncher.csproj" />
   </Folder>
   <Folder Name="/Tests/">
     <Project Path="tests/Karaoke.Server.PlaybackTests/Karaoke.Server.PlaybackTests.csproj" />

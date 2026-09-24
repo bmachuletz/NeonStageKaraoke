@@ -25,19 +25,13 @@ public sealed class QobuzPluginSettingsService(IOptions<KaraokeOptions> karaokeO
         }
     }
 
-    private static bool ManagedByEnvironment =>
-        string.Equals(Environment.GetEnvironmentVariable("Qobuz__Enabled"), "true",
-            StringComparison.OrdinalIgnoreCase) ||
-        new[] { "Qobuz__AppId", "Qobuz__AppSecret", "Qobuz__UserAuthToken" }
-            .Any(name => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)));
-
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             if (_initialized) return;
-            if (!ManagedByEnvironment && File.Exists(SettingsPath))
+            if (File.Exists(SettingsPath))
             {
                 await using var stream = File.OpenRead(SettingsPath);
                 var stored = await JsonSerializer.DeserializeAsync<QobuzWorkerSettings>(stream,
@@ -59,7 +53,7 @@ public sealed class QobuzPluginSettingsService(IOptions<KaraokeOptions> karaokeO
     {
         await InitializeAsync(cancellationToken);
         await _gate.WaitAsync(cancellationToken);
-        try { return ToDto(_settings, ManagedByEnvironment); }
+        try { return ToDto(_settings, false); }
         finally { _gate.Release(); }
     }
 
@@ -75,8 +69,6 @@ public sealed class QobuzPluginSettingsService(IOptions<KaraokeOptions> karaokeO
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken);
-        if (ManagedByEnvironment)
-            throw new InvalidOperationException("Die Qobuz-Konfiguration wird durch Server-Umgebungsvariablen verwaltet.");
         if (!Enum.IsDefined(request.Quality)) throw new ArgumentException("Unbekannte Qobuz-Audioqualität.");
 
         var apiBaseUrl = string.IsNullOrWhiteSpace(request.ApiBaseUrl)
@@ -109,8 +101,9 @@ public sealed class QobuzPluginSettingsService(IOptions<KaraokeOptions> karaokeO
 
     private static string ValidateApiUrl(string value)
     {
-        if (!Uri.TryCreate(value.Trim().TrimEnd('/'), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
-            throw new ArgumentException("Die Qobuz-API-Basisadresse muss eine absolute HTTPS-Adresse sein.");
+        if (!Uri.TryCreate(value.Trim().TrimEnd('/'), UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https"))
+            throw new ArgumentException("Die Qobuz-API-Basisadresse muss eine absolute HTTP- oder HTTPS-Adresse sein.");
         return uri.AbsoluteUri.TrimEnd('/');
     }
 

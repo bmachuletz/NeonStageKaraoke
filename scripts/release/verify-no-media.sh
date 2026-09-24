@@ -6,7 +6,7 @@ root=${1:-.}
 root_absolute=$(cd "$root" && pwd -P)
 
 forbidden='\.(mp3|wav|flac|ogg|m4a|aac|wma|lrc|elrc|alignment\.json|stems\.json|lyrics\.json|png|jpg|jpeg|webp|bmp|gif|db|sqlite|sqlite3|ckpt|pt|onnx|safetensors)$'
-allow='(^|/)(site/assets/|src/Karaoke\.App/Assets/|src/Karaoke\.App\.Android/Resources/drawable/app_icon\.png|src/Karaoke\.Stage\.Unity/Assets/(TextMesh Pro/|NeonStage/Branding/|Resources/(NeonStageIcon|OnlineBroadcastIcon|OnlineBroadcastIconOffline)\.png))'
+allow='(^|/)(site/assets/|src/Karaoke\.App/Assets/|src/Karaoke\.App\.Android/Resources/drawable/app_icon\.png|src/Karaoke\.Stage\.Unity/Assets/(TextMesh Pro/|NeonStage/Branding/|Resources/(NeonStageIcon|NeonStageWordmark|OnlineBroadcastIcon|OnlineBroadcastIconOffline|StageSelectionBackIcon)\.png))'
 
 repository_root=$(git -C "$root_absolute" rev-parse --show-toplevel 2>/dev/null || true)
 if [[ -n "$repository_root" && "$root_absolute" == "$(cd "$repository_root" && pwd -P)" ]]; then

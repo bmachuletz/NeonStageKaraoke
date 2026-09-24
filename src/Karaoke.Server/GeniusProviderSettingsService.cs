@@ -10,8 +10,6 @@ public sealed class GeniusProviderSettingsService(IOptions<KaraokeOptions> karao
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly GeniusOptions _options = geniusOptions.Value;
     private bool _loaded;
-    private bool ManagedByEnvironment => !string.IsNullOrWhiteSpace(
-        Environment.GetEnvironmentVariable("Genius__AccessToken"));
     private string SettingsPath
     {
         get
@@ -27,7 +25,7 @@ public sealed class GeniusProviderSettingsService(IOptions<KaraokeOptions> karao
         await EnsureLoadedAsync(ct);
         var configured = _options.Enabled && !string.IsNullOrWhiteSpace(_options.AccessToken);
         return new(_options.Enabled, _options.BaseUrl, !string.IsNullOrWhiteSpace(_options.AccessToken),
-            ManagedByEnvironment, configured
+            false, configured
                 ? "Genius-Discovery ist aktiv. Die offizielle API liefert Links, aber keinen Lyrics-Text."
                 : "Genius-Discovery ist nicht vollständig konfiguriert.");
     }
@@ -42,9 +40,9 @@ public sealed class GeniusProviderSettingsService(IOptions<KaraokeOptions> karao
         CancellationToken ct)
     {
         await EnsureLoadedAsync(ct);
-        if (ManagedByEnvironment) throw new InvalidOperationException("Genius wird über Umgebungsvariablen verwaltet.");
-        if (!Uri.TryCreate(request.BaseUrl, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps)
-            throw new ArgumentException("Die Genius-API-Adresse muss eine absolute HTTPS-Adresse sein.");
+        if (!Uri.TryCreate(request.BaseUrl, UriKind.Absolute, out var uri) ||
+            uri.Scheme is not ("http" or "https"))
+            throw new ArgumentException("Die Genius-API-Adresse muss eine absolute HTTP- oder HTTPS-Adresse sein.");
         _options.Enabled = request.Enabled;
         _options.BaseUrl = uri.AbsoluteUri.TrimEnd('/') + "/";
         if (request.ClearAccessToken) _options.AccessToken = string.Empty;
@@ -58,7 +56,7 @@ public sealed class GeniusProviderSettingsService(IOptions<KaraokeOptions> karao
 
     private async Task EnsureLoadedAsync(CancellationToken ct)
     {
-        if (_loaded || ManagedByEnvironment) { _loaded = true; return; }
+        if (_loaded) return;
         await _gate.WaitAsync(ct);
         try
         {

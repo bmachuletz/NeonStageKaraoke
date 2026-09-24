@@ -85,6 +85,7 @@ public static class EditorLocale
         ["Eine Pfadänderung startet die Neuindizierung auf dem Server. Audiodateien werden dabei nicht verschoben."]="Changing the path starts server reindexing. Audio files are not moved.",
         ["VERBUNDENER SERVER"]="CONNECTED SERVER",
         ["Die Editor-Adresse wird beim Start über NEONSTAGE_SERVER_URL bzw. KARAOKE_SERVER festgelegt. Anbieter-URLs können unten geändert werden."]="The editor address is selected at startup through NEONSTAGE_SERVER_URL or KARAOKE_SERVER. Provider URLs can be changed below.",
+        ["Die Serveradresse wird lokal für den Editor gespeichert und nach einem Editor-Neustart verwendet. HTTP und HTTPS sind zulässig."]="The server address is stored locally for the editor and used after restarting it. HTTP and HTTPS are supported.",
         ["Zugangsdaten können über eine entfernte Serveradresse nur per HTTPS gespeichert werden. Nutze auf demselben Rechner eine Loopback-Adresse."]="Credentials can only be saved to a remote server over HTTPS. Use a loopback address when both run on the same machine.",
         ["USDB als Lyrics-Quelle aktivieren"]="Enable USDB as a lyrics source",
         ["GENIUS · OFFIZIELLE DISCOVERY"]="GENIUS · OFFICIAL DISCOVERY",

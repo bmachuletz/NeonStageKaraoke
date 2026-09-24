@@ -8,6 +8,13 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Windows merkt sich den Mute-Zustand einer Anwendungssitzung über
+        // Neustarts hinweg. LibVLCs MediaPlayer.Mute bildet diesen Zustand nicht
+        // zuverlässig ab, deshalb wird die Sitzung des Editor-Prozesses separat
+        // reaktiviert, sobald LibVLC sie angelegt hat.
+        LibVlcAudioPlaybackService.EnsurePlatformAudioSessionAudible =
+            WindowsAudioSessionService.UnmuteCurrentProcess;
+
         if (args is ["--audio-test", var source])
         {
             RunAudioTest(new Uri(source), null);

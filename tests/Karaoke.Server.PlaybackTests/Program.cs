@@ -124,10 +124,10 @@ try
 
     var qobuzSettings = new QobuzPluginSettingsService(options, Options.Create(new QobuzOptions()));
     var savedQobuz = await qobuzSettings.UpdateAsync(new(false, "partner-app", "secret-value", "user-token",
-        QobuzDownloadQuality.FlacCd), default);
+        QobuzDownloadQuality.FlacCd, ApiBaseUrl: "http://qobuz-proxy.example/api"), default);
     Assert(savedQobuz.Configured && savedQobuz.HasAppSecret && savedQobuz.HasUserAuthToken &&
-           !savedQobuz.Enabled,
-        "Qobuz-Credentials werden nur als Vorhanden-Flags an den Editor zurückgegeben.");
+           !savedQobuz.Enabled && savedQobuz.ApiBaseUrl.StartsWith("http://", StringComparison.Ordinal),
+        "Qobuz-Credentials werden nur als Vorhanden-Flags zurückgegeben; eine bewusst gewählte HTTP-URL bleibt zulässig.");
     var restartedQobuz = new QobuzPluginSettingsService(restartedOptions, Options.Create(new QobuzOptions()));
     var workerQobuz = await restartedQobuz.GetWorkerSettingsAsync(default);
     Assert(workerQobuz.AppId == "partner-app" && workerQobuz.AppSecret == "secret-value" &&

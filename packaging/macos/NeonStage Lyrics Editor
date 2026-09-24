@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+contents=$(cd "$(dirname "$0")/.." && pwd)
+runtime="$contents/Resources/app"
+export PATH="$runtime:$PATH"
+export KARAOKE_SERVER=${KARAOKE_SERVER:-http://127.0.0.1:5274}
+export FFMPEG_EXE="$runtime/ffmpeg"
+export VLC_PLUGIN_PATH="$runtime/vlc/plugins"
+export DYLD_LIBRARY_PATH="$runtime/vlc/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+exec "$runtime/Karaoke.App.Desktop" "$@"

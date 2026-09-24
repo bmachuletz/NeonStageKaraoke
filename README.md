@@ -461,14 +461,32 @@ Create the first local release as product version `0.1.0`, build `1`:
 # Linux plus signed Android/ARMv7 in one numbered release
 ./scripts/release/build-release.sh --platform linux,android
 
-# On Windows: self-contained Server, Editor and Unity Stage ZIPs
+# On Windows: portable ZIPs plus single-EXE launchers for Server, Editor and Stage
 ./scripts/release/build-release.sh --platform windows --reuse-build
+
+# On macOS: self-contained ARM64 Server, Editor.app and Unity Stage ZIPs
+./scripts/release/build-release.sh --platform macos --reuse-build
 ```
 
 On Windows, `scripts/windows/prepare-build.ps1` automatically installs a
 missing .NET 10 SDK and FFmpeg. It prefers WinGet and falls back to local tools
 under the ignored `.tools/windows/` directory. Unity and its platform modules
 remain the only deliberately manual dependency.
+
+Every Windows component is emitted both as a conventional portable ZIP and as
+an AppImage-like single EXE which self-extracts its versioned payload below
+`%LOCALAPPDATA%\NeonStage\portable`. The standalone Server, Editor and Stage are
+preconfigured for `http://127.0.0.1:5274`; the Server binds only to localhost,
+uses `%LOCALAPPDATA%\NeonStage\standalone-server` for state, and starts with
+LiveKit disabled. Unity and VLC still require their native companion files at
+runtime, which is why the EXE performs a managed extraction instead of pretending
+those applications are physically one file.
+
+On macOS, `scripts/macos/prepare-build.sh` installs missing .NET 10, FFmpeg,
+dylibbundler and VLC dependencies through Homebrew and restores all projects.
+Unity 6, its activated license and Mac Build Support remain manual. The release
+packages a native ARM64 Server, a self-contained Lyrics Editor `.app`, and the
+Unity Stage; use `--skip-unity` when only Server and Editor are needed.
 
 The product version follows Semantic Versioning, while the monotonically
 increasing build number distinguishes rebuilt artifacts without pretending that

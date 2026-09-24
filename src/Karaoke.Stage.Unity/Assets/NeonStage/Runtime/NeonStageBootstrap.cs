@@ -14,7 +14,7 @@ namespace NeonStage.Stage
 
 public sealed class NeonStageBootstrap : MonoBehaviour
 {
-    private const string DefaultServer = "http://cloud.hdvtec.de:5274";
+    private const string DefaultServer = "http://127.0.0.1:5274";
     // Der Server bevorzugt Unity-kompatible Ogg/Vorbis-Stems. Der Client fällt
     // bei älteren Bibliothekseinträgen sicher auf die MP3-Masterspur zurück.
     private const bool PreparedStemsAreUnityCompatible = true;

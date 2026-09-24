@@ -32,8 +32,3 @@ internal sealed record EditorAudioSettings(string? OutputDeviceId = null, string
         File.Move(temporary, SettingsPath, true);
     }
 }
-
-internal sealed record EditorAudioOutputDevice(string? Id, string Label)
-{
-    public override string ToString() => Label;
-}

@@ -9,10 +9,7 @@ public partial class EventManagementWindow : Window
 {
     private readonly EventManagementViewModel _viewModel;
 
-    public EventManagementWindow() : this(new Uri(
-        (Environment.GetEnvironmentVariable("NEONSTAGE_SERVER_URL")
-         ?? Environment.GetEnvironmentVariable("KARAOKE_SERVER"))?.Trim()
-        ?? "http://192.168.178.91:5274")) { }
+    public EventManagementWindow() : this(EditorConnectionSettings.ResolveServerAddress()) { }
 
     public EventManagementWindow(Uri serverAddress)
     {

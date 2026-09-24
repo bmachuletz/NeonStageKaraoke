@@ -167,6 +167,12 @@ cleanup() { rm -rf -- "$staging_dir"; }
 trap cleanup EXIT
 
 "$repo_root/scripts/release/verify-no-media.sh" "$repo_root"
+if [[ " ${platforms[*]} " == *" macos "* ]]; then
+  export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
+  macos_prepare_arguments=()
+  (( skip_unity )) && macos_prepare_arguments+=(--skip-unity)
+  "$repo_root/scripts/macos/prepare-build.sh" "${macos_prepare_arguments[@]}"
+fi
 if (( ! skip_tests )); then
   dotnet build "$repo_root/src/Karaoke.Server/Karaoke.Server.csproj" -c Release --maxcpucount:1
   dotnet build "$repo_root/src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj" -c Release --maxcpucount:1
@@ -206,12 +212,9 @@ if [[ " ${platforms[*]} " == *" android "* ]]; then
 fi
 
 if [[ " ${platforms[*]} " == *" macos "* ]]; then
-  "$repo_root/scripts/macos/build-unity-stage-macos.sh"
-  mac_arch=arm64
-  [[ ${NEONSTAGE_MACOS_UNIVERSAL:-0} == 1 ]] && mac_arch=universal
-  ditto -c -k --sequesterRsrc --keepParent \
-    "$repo_root/src/Karaoke.Stage.Unity/Builds/macOS/NeonStage Karaoke.app" \
-    "$staging_dir/NeonStage-Stage-$suffix-macOS-$mac_arch.zip"
+  macos_build_arguments=(--output "$staging_dir" --version "$version" --build "$build" --skip-prepare)
+  (( skip_unity )) && macos_build_arguments+=(--skip-unity)
+  "$repo_root/scripts/macos/build-release.sh" "${macos_build_arguments[@]}"
 fi
 
 if [[ " ${platforms[*]} " == *" windows "* ]]; then

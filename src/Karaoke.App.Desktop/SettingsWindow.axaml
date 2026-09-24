@@ -25,14 +25,9 @@
       <TabItem Header="Verbindung &amp; URLs">
         <ScrollViewer><StackPanel Margin="18" Spacing="14">
           <TextBlock Text="VERBUNDENER SERVER" Foreground="#FF3CBD" FontSize="11" FontWeight="Bold" />
-          <TextBox x:Name="ServerUrlBox" IsReadOnly="True" />
-          <TextBlock Text="Die Editor-Adresse wird beim Start über NEONSTAGE_SERVER_URL bzw. KARAOKE_SERVER festgelegt. Anbieter-URLs können unten geändert werden."
+          <TextBox x:Name="ServerUrlBox" Watermark="http://server:5274" />
+          <TextBlock Text="Die Serveradresse wird lokal für den Editor gespeichert und nach einem Editor-Neustart verwendet. HTTP und HTTPS sind zulässig."
                      Foreground="#AAB2C1" TextWrapping="Wrap" />
-          <Border x:Name="TransportWarning" Padding="12" CornerRadius="7" Background="#2A1F12"
-                  BorderBrush="#735025" BorderThickness="1" IsVisible="False">
-            <TextBlock Text="Zugangsdaten können über eine entfernte Serveradresse nur per HTTPS gespeichert werden. Nutze auf demselben Rechner eine Loopback-Adresse."
-                       Foreground="#FFB45E" TextWrapping="Wrap" />
-          </Border>
         </StackPanel></ScrollViewer>
       </TabItem>
 

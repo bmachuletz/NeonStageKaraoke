@@ -881,8 +881,6 @@ app.MapGet("/api/admin/settings/usdb", async (UsdbProviderSettingsService settin
 app.MapPut("/api/admin/settings/usdb", async (HttpContext context,
     UpdateUsdbProviderSettingsRequest request, UsdbProviderSettingsService settings, CancellationToken ct) =>
 {
-    if (!CanTransmitAdminSecrets(context))
-        return Results.BadRequest("USDB-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
     try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
     catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
                                       IOException or UnauthorizedAccessException)
@@ -897,8 +895,6 @@ app.MapPut("/api/admin/settings/genius", async (HttpContext context,
     UpdateGeniusProviderSettingsRequest request, GeniusProviderSettingsService settings,
     CancellationToken ct) =>
 {
-    if (!CanTransmitAdminSecrets(context))
-        return Results.BadRequest("Genius-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
     try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
     catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
                                       IOException or UnauthorizedAccessException)
@@ -912,8 +908,6 @@ app.MapGet("/api/admin/settings/online", async (
 app.MapPut("/api/admin/settings/online", async (HttpContext context,
     UpdateOnlineServerSettingsRequest request, OnlineSettingsService settings, CancellationToken ct) =>
 {
-    if (!CanTransmitAdminSecrets(context))
-        return Results.BadRequest("LiveKit-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
     try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
     catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or
                                       IOException or UnauthorizedAccessException)
@@ -924,10 +918,6 @@ app.MapPut("/api/admin/settings/online", async (HttpContext context,
 app.MapPost("/api/admin/settings/online/test", async (HttpContext context,
     UpdateOnlineServerSettingsRequest request, OnlineSettingsService settings, CancellationToken ct) =>
 {
-    // Testing an already stored/environment-managed secret does not transmit it
-    // over the request. Keep the transport guard when the user enters a new one.
-    if (!string.IsNullOrWhiteSpace(request.ApiSecret) && !CanTransmitAdminSecrets(context))
-        return Results.BadRequest("LiveKit-Zugangsdaten dürfen nur lokal oder über HTTPS getestet werden.");
     try { return Results.Ok(await settings.TestAsync(request with { Enabled = true }, ct)); }
     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
     {
@@ -960,8 +950,6 @@ app.MapGet("/api/admin/download-providers/qobuz", async (QobuzPluginSettingsServ
 app.MapPut("/api/admin/download-providers/qobuz", async (HttpContext context,
     UpdateQobuzPluginSettingsRequest request, QobuzPluginSettingsService settings, CancellationToken ct) =>
 {
-    if (!CanTransmitAdminSecrets(context))
-        return Results.BadRequest("Qobuz-Zugangsdaten dürfen nur lokal oder über HTTPS gespeichert werden.");
     try { return Results.Ok(await settings.UpdateAsync(request, ct)); }
     catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or IOException or UnauthorizedAccessException)
     {

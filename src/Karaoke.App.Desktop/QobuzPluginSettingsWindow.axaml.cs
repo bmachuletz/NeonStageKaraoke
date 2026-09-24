@@ -17,19 +17,12 @@ public partial class QobuzPluginSettingsWindow : Window
         new(QobuzDownloadQuality.Mp3_320, "MP3 · 320 kbit/s")
     ];
 
-    public QobuzPluginSettingsWindow() : this(new Uri(
-        (Environment.GetEnvironmentVariable("NEONSTAGE_SERVER_URL")
-         ?? Environment.GetEnvironmentVariable("KARAOKE_SERVER"))?.Trim()
-        ?? "http://192.168.178.91:5274")) { }
+    public QobuzPluginSettingsWindow() : this(EditorConnectionSettings.ResolveServerAddress()) { }
 
     public QobuzPluginSettingsWindow(Uri serverAddress)
     {
         InitializeComponent();
         _http = new HttpClient { BaseAddress = serverAddress, Timeout = TimeSpan.FromSeconds(30) };
-        TransportWarningText.IsVisible = serverAddress.Scheme != Uri.UriSchemeHttps && !serverAddress.IsLoopback;
-        TransportWarningText.Text = Text(
-            "Sicherheit: Zugangsdaten können über diese Serveradresse nur gespeichert werden, wenn Editor und Server auf demselben Rechner laufen. Für entfernte Server ist HTTPS erforderlich.",
-            "Security: Credentials can be saved through this server address only when editor and server run on the same machine. HTTPS is required for remote servers.");
         QualityBox.ItemsSource = _qualities;
         QualityBox.SelectedIndex = 0;
         Opened += async (_, _) =>
@@ -106,12 +99,9 @@ public partial class QobuzPluginSettingsWindow : Window
 
     private void SetManagedState(bool managed)
     {
-        _managedByEnvironment = managed;
-        if (!managed) return;
+        _managedByEnvironment = false;
         EnabledBox.IsEnabled = AppIdBox.IsEnabled = AppSecretBox.IsEnabled = UserTokenBox.IsEnabled =
-            QualityBox.IsEnabled = ApiBaseUrlBox.IsEnabled = ClearCredentialsBox.IsEnabled = SaveButton.IsEnabled = false;
-        StatusText.Text = Text("Diese Konfiguration wird durch Umgebungsvariablen des Servers verwaltet.",
-            "This configuration is managed by server environment variables.");
+            QualityBox.IsEnabled = ApiBaseUrlBox.IsEnabled = ClearCredentialsBox.IsEnabled = SaveButton.IsEnabled = true;
     }
 
     private void SetBusy(bool busy)

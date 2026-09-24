@@ -3,9 +3,13 @@
 ## Voraussetzungen
 
 - Apple-Silicon-Mac (M1 oder neuer)
+- Internetzugang und ein Benutzerkonto, das Homebrew-Pakete installieren darf
 - Unity Hub mit Unity 6 (`6000.x`); die in `ProjectSettings/ProjectVersion.txt`
   festgelegte Version wird bevorzugt, eine andere installierte 6000.x-Version ist zulässig
 - Modul **Mac Build Support (Mono)**
+- aktivierte Unity-Lizenz
+- Xcode Command Line Tools (`xcode-select --install`) für Signatur- und
+  Architekturprüfung
 - Internetzugang beim ersten Öffnen, damit Unity das LiveKit-Paket von OpenUPM auflöst
 
 ## Build
@@ -15,10 +19,13 @@ scripts/macos/build-unity-stage-macos.sh
 ```
 
 Der Builder führt automatisch zuerst `scripts/macos/prepare-build.sh` aus. Das
-Prepare prüft macOS, eine installierte Unity-6000.x-Version sowie **Mac Build
-Support (Mono)** und lässt Unity Pakete auflösen und die Stage-Skripte
-kompilieren. Für die isolierte Prüfung eines Build-Macs kann das Prepare-Skript
-auch direkt gestartet werden.
+Prepare installiert bei Bedarf Homebrew, .NET SDK 10, FFmpeg, `dylibbundler`
+und VLC, stellt die .NET-Pakete wieder her und prüft anschließend eine
+installierte Unity-6000.x-Version sowie **Mac Build Support (Mono)**. Unity
+selbst bleibt wegen Lizenz und Hub-Modulen eine bewusste manuelle Installation.
+Danach löst Unity seine Pakete auf und kompiliert die Stage-Skripte. Für die
+isolierte Vorbereitung eines Build-Macs kann das Prepare-Skript direkt
+gestartet werden.
 
 Alternativ in Unity: **Neon Stage → Build macOS Stage (Apple Silicon)**. Das Ergebnis liegt unter `src/Karaoke.Stage.Unity/Builds/macOS/NeonStage Karaoke.app`.
 
@@ -29,6 +36,24 @@ NEONSTAGE_MACOS_UNIVERSAL=1 scripts/macos/build-unity-stage-macos.sh
 ```
 
 Das LiveKit-Unity-Paket enthält native Bibliotheken für macOS ARM64 und x86_64. NeonStage verwendet bewusst den Unity-Audiopfad statt LiveKits Platform-Audio-Pfad.
+
+Nach dem Build werden App-Bundle, Player- und LiveKit-Architektur,
+Mikrofonbeschreibung und ad-hoc-Signatur automatisch geprüft. Ein scheinbar
+erfolgreicher, aber unvollständiger Build wird dadurch nicht ausgeliefert.
+
+## Release-Paket
+
+Für das versionierte ZIP wird auf dem Mac ausgeführt:
+
+```bash
+scripts/release/build-release.sh --platform macos
+```
+
+Das Prepare läuft automatisch vor den Tests und Builds. Anschließend entstehen
+drei ZIP-Dateien: ein selbstenthaltener ARM64-Server mit portablem FFmpeg, eine
+native `Neon Stage Lyrics Editor.app` inklusive FFmpeg, LibVLC und Plugins sowie
+die Unity-Stage. Mit `--skip-tests` lassen sich die Tests bewusst auslassen; mit
+`--skip-unity` werden nur Server und Editor vorbereitet und gebaut.
 
 ## Start und Mikrofon
 
@@ -61,4 +86,7 @@ Alle Ziele verwenden denselben Unity-Stage-Code und dasselbe `IOnlineAudioTransp
 
 Für den Offline-Smoke-Test auf dem Mac: Stage starten, Song laden und Wiedergabe, Lyrics, Pause, Seek und Stop prüfen. Der Online-Modus ist bei `Online.Enabled=false` vollständig inaktiv.
 
-FFmpeg und LibVLC werden vom normalen Unity-Stage-Player nicht gestartet. Sie bleiben Werkzeuge des Editors/Exports und sind deshalb keine native Laufzeitvoraussetzung des macOS-Stage-Builds.
+FFmpeg und LibVLC werden vom normalen Unity-Stage-Player nicht gestartet. Die
+macOS-Editor-App bringt beide Laufzeiten selbst mit; sie bleiben Werkzeuge des
+Editors und Exports und sind deshalb keine native Laufzeitvoraussetzung der
+Stage.

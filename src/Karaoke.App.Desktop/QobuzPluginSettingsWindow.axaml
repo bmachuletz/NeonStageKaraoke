@@ -54,7 +54,6 @@
           <TextBlock Text="Nur von Qobuz für den angemeldeten Account autorisierte Kaufdownloads werden akzeptiert. Der angezeigte Preis ist reine Kataloginformation; Neon Stage kauft niemals automatisch. Streaming-URLs oder Schutzumgehungen verwendet das Plugin nicht. FLAC kann direkt durch Matcher, Aligner und Stage verarbeitet werden."
                      Foreground="#C4B9CF" TextWrapping="Wrap" />
         </Border>
-        <TextBlock x:Name="TransportWarningText" Foreground="#FFB45E" TextWrapping="Wrap" IsVisible="False" />
         <TextBlock x:Name="StatusText" Foreground="#45E6D0" FontFamily="monospace" TextWrapping="Wrap" />
       </StackPanel>
     </ScrollViewer>

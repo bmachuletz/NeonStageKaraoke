@@ -50,6 +50,33 @@ function Compress-Package {
         -DestinationPath $DestinationArchive -CompressionLevel Optimal
 }
 
+function New-PortableExecutable {
+    param(
+        [string]$PayloadArchive,
+        [string]$Profile,
+        [string]$EntryPoint,
+        [string]$ArtifactName,
+        [ValidateSet('Exe', 'WinExe')][string]$LauncherOutputType = 'WinExe'
+    )
+    $launcherName = [IO.Path]::GetFileNameWithoutExtension($ArtifactName)
+    $launcherOutput = Join-Path $workRoot ("launcher-" + $Profile)
+    Invoke-Checked 'dotnet' @(
+        'publish', "$repoRoot\src\NeonStage.PortableLauncher\NeonStage.PortableLauncher.csproj",
+        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
+        '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
+        '-p:EnableCompressionInSingleFile=true', '-p:DebugType=None', '-p:DebugSymbols=false',
+        "-p:Version=$Version", "-p:InformationalVersion=$Version+build.$BuildNumber",
+        "-p:AssemblyName=$launcherName", "-p:OutputType=$LauncherOutputType",
+        "-p:LauncherProfile=$Profile", "-p:LauncherEntryPoint=$EntryPoint",
+        "-p:PayloadArchive=$PayloadArchive", '-o', $launcherOutput
+    )
+    $launcher = Join-Path $launcherOutput ($launcherName + '.exe')
+    if (-not (Test-Path $launcher -PathType Leaf)) {
+        throw "Portable launcher was not generated: $launcher"
+    }
+    Copy-Item $launcher -Destination (Join-Path $outputRoot $ArtifactName)
+}
+
 $isWindowsHost = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows)
 if (-not $isWindowsHost) {
@@ -72,6 +99,7 @@ try {
     $editorPublish = Join-Path $workRoot 'editor'
     $commonPublishArguments = @(
         '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
+        '-p:PublishSingleFile=true',
         '-p:DebugType=None', '-p:DebugSymbols=false',
         "-p:Version=$Version", "-p:InformationalVersion=$Version+build.$BuildNumber"
     )
@@ -99,8 +127,16 @@ try {
         throw 'The Windows editor package does not contain the expected LibVLC runtime and plugins.'
     }
 
-    Compress-Package $serverPublish (Join-Path $outputRoot "NeonStage-Server-$suffix-windows-x64.zip")
-    Compress-Package $editorPublish (Join-Path $outputRoot "NeonStage-LyricsEditor-$suffix-windows-x64.zip")
+    $serverArchive = Join-Path $outputRoot "NeonStage-Server-$suffix-windows-x64.zip"
+    $editorArchive = Join-Path $outputRoot "NeonStage-LyricsEditor-$suffix-windows-x64.zip"
+    Compress-Package $serverPublish $serverArchive
+    Compress-Package $editorPublish $editorArchive
+    New-PortableExecutable -PayloadArchive $serverArchive -Profile 'server' `
+        -EntryPoint 'Karaoke.Server.exe' -ArtifactName "NeonStage-Server-$suffix-windows-x64.exe" `
+        -LauncherOutputType 'Exe'
+    New-PortableExecutable -PayloadArchive $editorArchive -Profile 'editor' `
+        -EntryPoint 'Karaoke.App.Desktop.exe' `
+        -ArtifactName "NeonStage-LyricsEditor-$suffix-windows-x64.exe"
 
     if (-not $SkipUnity) {
         $env:NEONSTAGE_VERSION = $Version
@@ -108,7 +144,10 @@ try {
         $env:NEONSTAGE_RELEASE_BUILD = '1'
         try {
             & "$repoRoot\scripts\windows\build-unity-stage-windows.ps1" -SkipPrepare
-            if (-not $?) { throw 'Das Unity-Buildskript wurde ohne Erfolg beendet.' }
+            # Das Unter-Skript prüft Unitys nativen Exitcode und die erzeugte
+            # NeonStage.exe selbst. $? ist hier unzuverlässig, weil ein intern
+            # aufgerufener nativer Prozess den Wert trotz erfolgreichem Skript
+            # auf false belassen kann.
         }
         catch {
             $unityLog = Join-Path $repoRoot 'Builds\windows-unity.log'
@@ -127,7 +166,11 @@ try {
         New-Item -ItemType Directory -Force -Path $stagePackage | Out-Null
         Copy-Item "$stageSource\*" -Destination $stagePackage -Recurse
         Copy-ReleaseNotices $stagePackage
-        Compress-Package $stagePackage (Join-Path $outputRoot "NeonStage-Stage-$suffix-windows-x64.zip")
+        Copy-Item "$repoRoot\packaging\windows\Start-NeonStage-Stage.cmd" -Destination $stagePackage
+        $stageArchive = Join-Path $outputRoot "NeonStage-Stage-$suffix-windows-x64.zip"
+        Compress-Package $stagePackage $stageArchive
+        New-PortableExecutable -PayloadArchive $stageArchive -Profile 'stage' `
+            -EntryPoint 'NeonStage.exe' -ArtifactName "NeonStage-Stage-$suffix-windows-x64.exe"
     }
 }
 finally {

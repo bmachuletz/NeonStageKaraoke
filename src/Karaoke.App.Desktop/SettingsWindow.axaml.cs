@@ -13,10 +13,7 @@ public partial class SettingsWindow : Window
     private bool _onlineManagedByEnvironment;
     private IReadOnlyList<EditorAudioOutputDevice> _audioOutputDevices = [];
 
-    public SettingsWindow() : this(new Uri(
-        (Environment.GetEnvironmentVariable("NEONSTAGE_SERVER_URL") ??
-         Environment.GetEnvironmentVariable("KARAOKE_SERVER"))?.Trim()
-        ?? "http://192.168.178.91:5274")) { }
+    public SettingsWindow() : this(EditorConnectionSettings.ResolveServerAddress()) { }
 
     public SettingsWindow(Uri serverAddress)
     {
@@ -24,7 +21,6 @@ public partial class SettingsWindow : Window
         _serverAddress = serverAddress;
         _http = new HttpClient { BaseAddress = serverAddress, Timeout = TimeSpan.FromSeconds(30) };
         ServerUrlBox.Text = serverAddress.AbsoluteUri.TrimEnd('/');
-        TransportWarning.IsVisible = serverAddress.Scheme != Uri.UriSchemeHttps && !serverAddress.IsLoopback;
         AudioTab.IsVisible = OperatingSystem.IsWindows();
         Opened += async (_, _) =>
         {
@@ -111,8 +107,21 @@ public partial class SettingsWindow : Window
     {
         SetBusy(true);
         var audioSaved = false;
+        var connectionSaved = false;
+        var connectionChanged = false;
         try
         {
+            if (!Uri.TryCreate(ServerUrlBox.Text?.Trim(), UriKind.Absolute, out var editorServer) ||
+                editorServer.Scheme is not ("http" or "https"))
+                throw new ArgumentException(Text(
+                    "Die Serveradresse muss eine vollständige HTTP- oder HTTPS-Adresse sein.",
+                    "The server address must be a complete HTTP or HTTPS URL."));
+            var normalizedEditorServer = editorServer.AbsoluteUri.TrimEnd('/');
+            connectionChanged = !string.Equals(normalizedEditorServer,
+                _serverAddress.AbsoluteUri.TrimEnd('/'), StringComparison.OrdinalIgnoreCase);
+            new EditorConnectionSettings(normalizedEditorServer).Save();
+            connectionSaved = true;
+
             if (OperatingSystem.IsWindows() && AudioOutputDeviceBox.SelectedItem is EditorAudioOutputDevice device)
             {
                 new EditorAudioSettings(device.Id, device.Label).Save();
@@ -161,14 +170,20 @@ public partial class SettingsWindow : Window
             ClearGeniusAccessTokenBox.IsChecked = false;
             ClearLiveKitApiSecretBox.IsChecked = false;
             await LoadAsync();
-            StatusText.Text = Text("Einstellungen gespeichert. Eine geänderte Audioausgabe gilt nach einem Editor-Neustart.",
-                "Settings saved. A changed audio output takes effect after restarting the editor.");
+            StatusText.Text = connectionChanged
+                ? Text("Einstellungen gespeichert. Die neue Serveradresse gilt nach einem Editor-Neustart.",
+                    "Settings saved. The new server address applies after restarting the editor.")
+                : Text("Einstellungen gespeichert. Eine geänderte Audioausgabe gilt nach einem Editor-Neustart.",
+                    "Settings saved. A changed audio output takes effect after restarting the editor.");
         }
         catch (Exception exception)
         {
-            StatusText.Text = (audioSaved
-                ? Text("Audioausgabe wurde lokal gespeichert; Server-Einstellungen fehlgeschlagen: ",
-                    "Audio output was saved locally; server settings failed: ")
+            StatusText.Text = (connectionSaved
+                ? Text("Serveradresse wurde lokal gespeichert und gilt nach einem Neustart; weitere Einstellungen fehlgeschlagen: ",
+                    "Server address was saved locally and applies after restart; other settings failed: ")
+                : audioSaved
+                    ? Text("Audioausgabe wurde lokal gespeichert; Server-Einstellungen fehlgeschlagen: ",
+                        "Audio output was saved locally; server settings failed: ")
                 : Text("Speichern fehlgeschlagen: ", "Save failed: ")) + exception.Message;
         }
         finally { SetBusy(false); }
@@ -260,34 +275,25 @@ public partial class SettingsWindow : Window
 
     private void SetManagedState(bool managed)
     {
-        _managedByEnvironment = managed;
+        _managedByEnvironment = false;
         UsdbEnabledBox.IsEnabled = UsdbBaseUrlBox.IsEnabled = AnimuxEnabledBox.IsEnabled =
             AnimuxBaseUrlBox.IsEnabled = AnimuxUsernameBox.IsEnabled = AnimuxPasswordBox.IsEnabled =
-                ClearAnimuxCredentialsBox.IsEnabled = !managed;
-        if (managed)
-            UsdbStatusText.Text = Text("USDB wird durch Server-Umgebungsvariablen verwaltet.",
-                "USDB is managed by server environment variables.");
+                ClearAnimuxCredentialsBox.IsEnabled = true;
     }
 
     private void SetGeniusManagedState(bool managed)
     {
-        _geniusManagedByEnvironment = managed;
+        _geniusManagedByEnvironment = false;
         GeniusEnabledBox.IsEnabled = GeniusBaseUrlBox.IsEnabled = GeniusAccessTokenBox.IsEnabled =
-            ClearGeniusAccessTokenBox.IsEnabled = !managed;
-        if (managed)
-            GeniusStatusText.Text = Text("Genius wird durch Server-Umgebungsvariablen verwaltet.",
-                "Genius is managed by server environment variables.");
+            ClearGeniusAccessTokenBox.IsEnabled = true;
     }
 
     private void SetOnlineManagedState(bool managed)
     {
-        _onlineManagedByEnvironment = managed;
+        _onlineManagedByEnvironment = false;
         OnlineEnabledBox.IsEnabled = LiveKitServerUrlBox.IsEnabled = LiveKitApiKeyBox.IsEnabled =
             LiveKitApiSecretBox.IsEnabled = LiveKitRoomPrefixBox.IsEnabled =
-                ClearLiveKitApiSecretBox.IsEnabled = !managed;
-        if (managed)
-            LiveKitStatusText.Text = Text("LiveKit wird durch Server-Umgebungsvariablen verwaltet. Die Verbindung kann hier getestet werden.",
-                "LiveKit is managed by server environment variables. You can test the connection here.");
+                ClearLiveKitApiSecretBox.IsEnabled = true;
     }
 
     private void SetBusy(bool busy)

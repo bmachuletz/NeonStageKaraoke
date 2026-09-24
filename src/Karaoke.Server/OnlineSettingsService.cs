@@ -38,22 +38,13 @@ public sealed class OnlineSettingsService(IOptions<KaraokeOptions> karaokeOption
         }
     }
 
-    private static bool ManagedByEnvironment =>
-        string.Equals(Environment.GetEnvironmentVariable("Online__Enabled"), "true",
-            StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(Environment.GetEnvironmentVariable("ONLINE_ENABLED"), "true",
-            StringComparison.OrdinalIgnoreCase) ||
-        new[] { "Online__ServerUrl", "Online__ApiKey", "Online__ApiSecret", "LIVEKIT_URL",
-                "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET" }
-            .Any(name => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)));
-
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
         await _gate.WaitAsync(cancellationToken);
         try
         {
             if (_initialized) return;
-            if (!ManagedByEnvironment && File.Exists(SettingsPath))
+            if (File.Exists(SettingsPath))
             {
                 await using var stream = File.OpenRead(SettingsPath);
                 var stored = await JsonSerializer.DeserializeAsync<OnlineRuntimeSettings>(stream,
@@ -74,7 +65,7 @@ public sealed class OnlineSettingsService(IOptions<KaraokeOptions> karaokeOption
     {
         await InitializeAsync(cancellationToken);
         await _gate.WaitAsync(cancellationToken);
-        try { return ToDto(_settings, ManagedByEnvironment); }
+        try { return ToDto(_settings, false); }
         finally { _gate.Release(); }
     }
 
@@ -82,9 +73,6 @@ public sealed class OnlineSettingsService(IOptions<KaraokeOptions> karaokeOption
         CancellationToken cancellationToken)
     {
         await InitializeAsync(cancellationToken);
-        if (ManagedByEnvironment)
-            throw new InvalidOperationException("LiveKit wird durch Server-Umgebungsvariablen verwaltet.");
-
         await _gate.WaitAsync(cancellationToken);
         try
         {

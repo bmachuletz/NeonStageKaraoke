@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName Condition="'$(AssemblyName)' == ''">NeonStage.PortableLauncher</AssemblyName>
+    <LauncherProfile Condition="'$(LauncherProfile)' == ''">development</LauncherProfile>
+    <LauncherEntryPoint Condition="'$(LauncherEntryPoint)' == ''">missing.exe</LauncherEntryPoint>
+    <ApplicationIcon>../Karaoke.App.Desktop/Assets/neon-stage.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(PayloadArchive)"
+                      LogicalName="NeonStage.Payload.zip"
+                      Condition="'$(PayloadArchive)' != '' and Exists('$(PayloadArchive)')" />
+    <AssemblyMetadata Include="NeonStage.Launcher.Profile" Value="$(LauncherProfile)" />
+    <AssemblyMetadata Include="NeonStage.Launcher.EntryPoint" Value="$(LauncherEntryPoint)" />
+  </ItemGroup>
+</Project>

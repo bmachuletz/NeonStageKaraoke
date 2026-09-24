@@ -297,8 +297,8 @@ public sealed partial class AnimuxUsdbClient
     private Uri BaseUri()
     {
         var uri = new Uri(_options.Animux.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute);
-        if (uri.Scheme != Uri.UriSchemeHttps)
-            throw new InvalidOperationException("USDB Animux requires an HTTPS base URL.");
+        if (uri.Scheme is not ("http" or "https"))
+            throw new InvalidOperationException("USDB Animux requires an HTTP or HTTPS base URL.");
         return uri;
     }
 
