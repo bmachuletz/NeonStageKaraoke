@@ -33,13 +33,21 @@ if (-not $unity -or -not (Test-Path $unity -PathType Leaf)) {
   throw "Keine Unity-6000.x-Version wurde gefunden. Installiere Unity 6 mit Windows Build Support oder setze UNITY_EDITOR."
 }
 New-Item -ItemType Directory -Force -Path "$repoRoot\Builds" | Out-Null
-$global:LASTEXITCODE = 0
-& $unity -batchmode -quit -projectPath "$repoRoot\src\Karaoke.Stage.Unity" `
-  -executeMethod NeonStage.Stage.Editor.NeonStageAndroidBuild.BuildWindows `
-  -logFile "$repoRoot\Builds\windows-unity.log"
-$exitCode = [int]$global:LASTEXITCODE
+$projectPath = "$repoRoot\src\Karaoke.Stage.Unity"
+$logPath = "$repoRoot\Builds\windows-unity.log"
+# Unity.exe is a Windows GUI executable. PowerShell can return immediately when
+# invoking it with &, which made the wrapper check for NeonStage.exe while the
+# editor was still importing/compiling in the background. Start-Process -Wait
+# reliably observes the real Unity process on local and OpenSSH build sessions.
+$unityProcess = Start-Process -FilePath $unity -Wait -PassThru -ArgumentList @(
+  '-batchmode', '-quit',
+  '-projectPath', ('"' + $projectPath + '"'),
+  '-executeMethod', 'NeonStage.Stage.Editor.NeonStageAndroidBuild.BuildWindows',
+  '-logFile', ('"' + $logPath + '"')
+)
+$exitCode = [int]$unityProcess.ExitCode
 if ($exitCode -ne 0) { throw "Unity-Build fehlgeschlagen ($exitCode)." }
-if (-not (Test-Path "$repoRoot\src\Karaoke.Stage.Unity\Builds\Windows\NeonStage.exe" -PathType Leaf)) {
-  throw "Unity meldete Erfolg, hat aber keine NeonStage.exe erzeugt. Siehe $repoRoot\Builds\windows-unity.log"
+if (-not (Test-Path "$projectPath\Builds\Windows\NeonStage.exe" -PathType Leaf)) {
+  throw "Unity meldete Erfolg, hat aber keine NeonStage.exe erzeugt. Siehe $logPath"
 }
-Write-Host "Build: $repoRoot\src\Karaoke.Stage.Unity\Builds\Windows\NeonStage.exe"
+Write-Host "Build: $projectPath\Builds\Windows\NeonStage.exe"
