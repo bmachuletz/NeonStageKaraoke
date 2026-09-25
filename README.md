@@ -441,6 +441,7 @@ the result only when the operator creates a new version.
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |
 | Verify release contents | `./scripts/release/verify-no-media.sh` |
 | Build a versioned release | `./scripts/release/build-release.sh --platform linux` |
+| Build one release on Linux, macOS and Windows | `./scripts/release/build-all-hosts.sh` |
 | Review, commit, and optionally push changes | `./scripts/git/commit-and-push.sh` |
 
 More examples: [`scripts/linux/README.md`](scripts/linux/README.md), the [Online-Karaoke MVP](docs/online-karaoke.md), the [self-hosted LiveKit stack](deploy/livekit/README.md), the [macOS/Apple-Silicon build guide](docs/macos-build.md), [`docs/wishlist-worker.md`](docs/wishlist-worker.md), [`docs/lyrics-editor-integration.md`](docs/lyrics-editor-integration.md), and the detailed [music-reactive background shader guide](docs/background-shaders.md).
@@ -468,6 +469,22 @@ Create the first local release as product version `0.1.0`, build `1`:
 # On macOS: self-contained ARM64 Server, Editor.app and Unity Stage ZIPs
 ./scripts/release/build-release.sh --platform macos --reuse-build
 ```
+
+For a complete native release from the Linux workstation, configure key-based
+SSH access to the Mac and Windows build computers and run:
+
+```bash
+export NEONSTAGE_MAC_HOST=benjamin@192.168.178.48
+export NEONSTAGE_WINDOWS_HOST=benni@192.168.178.189
+export NEONSTAGE_SSH_IDENTITY="$HOME/.ssh/id_ed25519"
+./scripts/release/build-all-hosts.sh --commit --publish
+```
+
+The coordinator reserves and commits one version/build number, pushes that
+source revision, distributes a `git archive` of exactly that commit, invokes
+the native Linux, macOS and Windows component builders, and collects every
+artifact under `artifacts/releases/` on Linux. Release binaries are attached
+to the GitHub Release; they are deliberately not added to Git history.
 
 On Windows, `scripts/windows/prepare-build.ps1` automatically installs a
 missing .NET 10 SDK and FFmpeg. It prefers WinGet and falls back to local tools

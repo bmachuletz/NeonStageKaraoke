@@ -23,6 +23,66 @@ The separate manually dispatched `unity-stage-release.yml` workflow always build
 ./scripts/release/build-release.sh --platform linux
 ```
 
+## Distributed three-host release
+
+`scripts/release/build-all-hosts.sh` is the preferred entry point when native
+Linux, macOS and Windows packages should form one release. It runs on Linux and
+coordinates these component builders:
+
+- `scripts/linux/build-release.sh` locally for Linux AppImages and Android;
+- `scripts/macos/build-release.sh` through SSH for Apple-Silicon packages;
+- `scripts/windows/build-release.ps1` through SSH for Windows x64 packages.
+
+All hosts receive a `git archive` of the same pushed commit. Local databases,
+ignored branding, build caches and uncommitted files are therefore never copied
+to a remote builder. The resulting packages return to
+`artifacts/releases/vX.Y.Z-build.N/`; the Linux coordinator validates expected
+artifacts, runs the media guard and creates one combined `SHA256SUMS` and
+`RELEASE-METADATA.txt`.
+
+```bash
+export NEONSTAGE_MAC_HOST=benjamin@192.168.178.48
+export NEONSTAGE_WINDOWS_HOST=benni@192.168.178.189
+export NEONSTAGE_SSH_IDENTITY="$HOME/.ssh/id_ed25519"
+
+# Inspect version, destinations and selected hosts without changing anything.
+./scripts/release/build-all-hosts.sh --dry-run
+
+# Reserve the next build, commit and push the reviewed tree, build everywhere,
+# collect the files, and publish one GitHub prerelease.
+./scripts/release/build-all-hosts.sh --commit --publish
+
+# Retry an already committed build number without creating another commit.
+./scripts/release/build-all-hosts.sh --reuse-build --no-commit --no-publish
+```
+
+The Windows computer must run Microsoft's OpenSSH Server and accept the same
+public key without a password. In an elevated PowerShell session:
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Set-Service -Name sshd -StartupType Automatic
+Start-Service sshd
+if (-not (Get-NetFirewallRule -Name OpenSSH-Server-In-TCP -ErrorAction SilentlyContinue)) {
+    New-NetFirewallRule -Name OpenSSH-Server-In-TCP -DisplayName 'OpenSSH Server (sshd)' `
+        -Enabled True -Direction Inbound -Protocol TCP -Action Allow -LocalPort 22
+}
+```
+
+Place the Linux build user's public key in the Windows account's OpenSSH
+`authorized_keys` file and verify that `ssh USER@HOST` works without a password.
+For administrator accounts Windows OpenSSH commonly uses
+`C:\ProgramData\ssh\administrators_authorized_keys`; ordinary accounts use
+`%USERPROFILE%\.ssh\authorized_keys`. Keep SSH keys and all signing secrets
+outside the repository.
+
+The coordinator can ask before reserving/committing and before GitHub upload,
+or it can be made non-interactive with `--commit --publish`. A new distributed
+build always commits and pushes `release-version.env` before compilation so all
+package metadata and the GitHub tag refer to the exact source. `--reuse-build`
+requires a clean tree and reuses that already committed identity. Binaries are
+GitHub Release assets, not Git-tracked files.
+
 This is the preferred release entry point. It performs the source media guard,
 Release build and both executable test suites; embeds one version/build identity
 in .NET and Unity; builds the selected platforms; adds license and notice files;

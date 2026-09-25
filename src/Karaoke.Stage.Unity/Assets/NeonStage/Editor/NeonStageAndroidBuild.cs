@@ -77,6 +77,7 @@ public static class NeonStageAndroidBuild
         ConfigureCommonPlayerSettings();
         PlayerSettings.productName = "Neon Stage Karaoke";
         PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.Standalone, "de.neonstage.stage");
+        ApplyStandaloneIcon();
         var universal = Environment.GetEnvironmentVariable("NEONSTAGE_MACOS_UNIVERSAL") == "1";
         PlayerSettings.SetArchitecture(NamedBuildTarget.Standalone, universal ? 2 : 1);
         Directory.CreateDirectory("Builds/macOS");
@@ -89,6 +90,7 @@ public static class NeonStageAndroidBuild
         });
         if (report.summary.result != BuildResult.Succeeded)
             throw new BuildFailedException($"macOS-Build fehlgeschlagen: {report.summary.result}");
+        ApplyMacIcon("Builds/macOS/NeonStage Karaoke.app");
         ApplyMacMicrophoneUsageDescription("Builds/macOS/NeonStage Karaoke.app");
         Debug.Log($"NeonStage macOS Stage: {Path.GetFullPath("Builds/macOS/NeonStage Karaoke.app")}");
     }
@@ -255,6 +257,44 @@ public static class NeonStageAndroidBuild
         if (process?.ExitCode != 0) throw new BuildFailedException("Der lokale macOS-Build konnte nicht ad-hoc signiert werden.");
     }
 
+    private static void ApplyMacIcon(string appPath)
+    {
+        if (Application.platform != RuntimePlatform.OSXEditor) return;
+        var source = Path.GetFullPath("Assets/Resources/NeonStageIcon.png");
+        var resources = Path.GetFullPath(Path.Combine(appPath, "Contents", "Resources"));
+        var iconset = Path.Combine(Path.GetTempPath(), $"NeonStage-{Guid.NewGuid():N}.iconset");
+        var output = Path.Combine(resources, "PlayerIcon.icns");
+        Directory.CreateDirectory(iconset);
+        try
+        {
+            foreach (var (pixels, name) in new (int Pixels, string Name)[]
+                     {
+                         (16, "icon_16x16"), (32, "icon_16x16@2x"),
+                         (32, "icon_32x32"), (64, "icon_32x32@2x"),
+                         (128, "icon_128x128"), (256, "icon_128x128@2x"),
+                         (256, "icon_256x256"), (512, "icon_256x256@2x"),
+                         (512, "icon_512x512"), (1024, "icon_512x512@2x")
+                     })
+                RunMacTool("/usr/bin/sips", "-z", pixels.ToString(), pixels.ToString(), source,
+                    "--out", Path.Combine(iconset, name + ".png"));
+            RunMacTool("/usr/bin/iconutil", "-c", "icns", iconset, "-o", output);
+        }
+        finally
+        {
+            if (Directory.Exists(iconset)) Directory.Delete(iconset, true);
+        }
+    }
+
+    private static void RunMacTool(string fileName, params string[] arguments)
+    {
+        var start = new System.Diagnostics.ProcessStartInfo { FileName = fileName, UseShellExecute = false };
+        foreach (var argument in arguments) start.ArgumentList.Add(argument);
+        using var process = System.Diagnostics.Process.Start(start);
+        process?.WaitForExit();
+        if (process?.ExitCode != 0)
+            throw new BuildFailedException($"macOS-Werkzeug fehlgeschlagen: {fileName}");
+    }
+
     private static void EnsureBrandingAssets()
     {
         const string destination = "Assets/Resources/NeonStageIcon.png";
@@ -279,6 +319,13 @@ public static class NeonStageAndroidBuild
         var icon = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/Resources/NeonStageIcon.png");
         if (icon == null) throw new BuildFailedException("Android-App-Icon konnte nicht importiert werden.");
         PlayerSettings.SetIcons(NamedBuildTarget.Android, new[] { icon }, IconKind.Application);
+    }
+
+    private static void ApplyStandaloneIcon()
+    {
+        var icon = AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/Resources/NeonStageIcon.png");
+        if (icon == null) throw new BuildFailedException("Standalone-App-Icon konnte nicht importiert werden.");
+        PlayerSettings.SetIcons(NamedBuildTarget.Standalone, new[] { icon }, IconKind.Application);
     }
 
     private static void EnsureScene()

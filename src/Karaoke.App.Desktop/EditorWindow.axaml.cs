@@ -39,7 +39,7 @@ public partial class EditorWindow : Window
     public EditorWindow()
     {
         InitializeComponent();
-        Core.Initialize();
+        LibVlcAudioPlaybackService.InitializeLibVlcRuntime();
         // The preview is copied into an ordinary CPU-backed Avalonia bitmap.
         // Hardware decoder surfaces would need a fragile GPU -> RV32 converter
         // and produce misleading "Failed to create video converter" errors on

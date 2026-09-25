@@ -28,7 +28,7 @@ done
   echo "Ungültige Version: $version" >&2; exit 2;
 }
 
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
+export PATH="$HOME/.dotnet:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
 if (( ! skip_prepare )); then
   prepare_args=()
   (( skip_unity )) && prepare_args+=(--skip-unity)
@@ -91,7 +91,9 @@ if [[ -n $ffmpeg_prefix ]]; then
   done
 fi
 
-vlc_root=/Applications/VLC.app/Contents/MacOS
+vlc_app=/Applications/VLC.app
+[[ -d $vlc_app ]] || vlc_app="$HOME/Applications/VLC.app"
+vlc_root="$vlc_app/Contents/MacOS"
 vlc_plugins=""
 for candidate in "$vlc_root/plugins" "$vlc_root/lib/vlc/plugins"; do
   [[ -d $candidate ]] && { vlc_plugins=$candidate; break; }
@@ -102,8 +104,8 @@ done
 mkdir -p "$editor_runtime/vlc"
 ditto "$vlc_root/lib" "$editor_runtime/vlc/lib"
 ditto "$vlc_plugins" "$editor_runtime/vlc/plugins"
-for license in /Applications/VLC.app/Contents/MacOS/COPYING \
-  /Applications/VLC.app/Contents/Resources/COPYING; do
+for license in "$vlc_app/Contents/MacOS/COPYING" \
+  "$vlc_app/Contents/Resources/COPYING"; do
   [[ -f $license ]] && { cp "$license" "$editor_runtime/VLC-COPYING"; break; }
 done
 

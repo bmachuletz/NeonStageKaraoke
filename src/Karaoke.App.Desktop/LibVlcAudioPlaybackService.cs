@@ -39,9 +39,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
 
     public LibVlcAudioPlaybackService()
     {
-        ConfigureNativeLibraryResolver();
-        ConfigureMacVlcPlugins();
-        Core.Initialize();
+        InitializeLibVlcRuntime();
         _libVlc = OperatingSystem.IsWindows()
             ? new LibVLC("--no-video", "--network-caching=750", "--aout=mmdevice")
             : new LibVLC("--no-video", "--network-caching=750");
@@ -95,6 +93,22 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
         _player.Stopped += (_, _) => StateChanged?.Invoke(this, "Wiedergabe gestoppt");
         _player.EndReached += (_, _) => PlaybackEnded?.Invoke(this, EventArgs.Empty);
         _player.EncounteredError += (_, _) => PlaybackFailed?.Invoke(this, "Der Audiostream konnte nicht wiedergegeben werden.");
+    }
+
+    internal static void InitializeLibVlcRuntime()
+    {
+        ConfigureNativeLibraryResolver();
+        ConfigureMacVlcPlugins();
+        if (OperatingSystem.IsMacOS())
+        {
+            var bundledDirectory = Path.Combine(AppContext.BaseDirectory, "vlc", "lib");
+            if (File.Exists(Path.Combine(bundledDirectory, "libvlc.dylib")))
+            {
+                Core.Initialize(bundledDirectory);
+                return;
+            }
+        }
+        Core.Initialize();
     }
 
     private static void ConfigureNativeLibraryResolver()
@@ -182,7 +196,7 @@ public sealed class LibVlcAudioPlaybackService : IAudioPlaybackService
             new(null, "Windows-Standardgerät (empfohlen)")
         };
         if (!OperatingSystem.IsWindows()) return result;
-        Core.Initialize();
+        InitializeLibVlcRuntime();
         using var libVlc = new LibVLC("--no-video", "--aout=mmdevice");
         foreach (var device in libVlc.AudioOutputDevices("mmdevice") ?? [])
         {

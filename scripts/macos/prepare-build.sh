@@ -33,7 +33,7 @@ done
 # Homebrew verwendet auf Apple Silicon und Intel unterschiedliche Präfixe.
 # Beide werden explizit aufgenommen, damit ein nicht-interaktiver Build dieselben
 # Werkzeuge sieht wie ein interaktives Terminal.
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
+export PATH="$HOME/.dotnet:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
 
 find_brew() {
   if command -v brew >/dev/null 2>&1; then command -v brew; return; fi
@@ -60,16 +60,27 @@ has_dotnet_10() {
     dotnet --list-sdks 2>/dev/null | awk '$1 ~ /^10\./ { found=1 } END { exit !found }'
 }
 
+find_vlc_app() {
+  for candidate in /Applications/VLC.app "$HOME/Applications/VLC.app"; do
+    [[ -d $candidate ]] && { echo "$candidate"; return; }
+  done
+  return 1
+}
+
 missing_packages=()
 has_dotnet_10 || missing_packages+=(dotnet)
 command -v ffmpeg >/dev/null 2>&1 || missing_packages+=(ffmpeg)
 command -v dylibbundler >/dev/null 2>&1 || missing_packages+=(dylibbundler)
-[[ -d /Applications/VLC.app ]] || missing_packages+=(vlc)
+vlc_app=$(find_vlc_app || true)
+[[ -n $vlc_app ]] || missing_packages+=(vlc)
 if ((${#missing_packages[@]})); then ensure_homebrew; fi
 
 if ! has_dotnet_10; then
-  echo "Installiere .NET SDK 10 …"
-  "$BREW" install --cask dotnet-sdk
+  echo "Installiere .NET SDK 10 benutzerlokal …"
+  dotnet_installer=$(mktemp "${TMPDIR:-/tmp}/dotnet-install.XXXXXXXX.sh")
+  curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$dotnet_installer"
+  bash "$dotnet_installer" --channel 10.0 --install-dir "$HOME/.dotnet"
+  rm -f -- "$dotnet_installer"
   hash -r
 fi
 has_dotnet_10 || { echo ".NET SDK 10 ist auch nach der Installation nicht verfügbar." >&2; exit 2; }
@@ -88,13 +99,16 @@ if ! command -v dylibbundler >/dev/null 2>&1; then
 fi
 command -v dylibbundler >/dev/null 2>&1 || { echo "dylibbundler ist nicht verfügbar." >&2; exit 2; }
 
-if [[ ! -d /Applications/VLC.app ]]; then
-  echo "Installiere VLC/LibVLC …"
-  "$BREW" install --cask vlc
+if [[ -z $vlc_app ]]; then
+  echo "Installiere VLC/LibVLC benutzerlokal …"
+  mkdir -p "$HOME/Applications"
+  "$BREW" install --cask --appdir="$HOME/Applications" vlc
+  vlc_app=$(find_vlc_app || true)
 fi
-vlc_root=/Applications/VLC.app/Contents/MacOS
+[[ -n $vlc_app ]] || { echo "VLC wurde nicht gefunden." >&2; exit 2; }
+vlc_root="$vlc_app/Contents/MacOS"
 [[ -f "$vlc_root/lib/libvlc.dylib" ]] || {
-  echo "VLC wurde gefunden, enthält aber kein lib/libvlc.dylib: /Applications/VLC.app" >&2
+  echo "VLC wurde gefunden, enthält aber kein lib/libvlc.dylib: $vlc_app" >&2
   exit 2
 }
 vlc_architectures=$(/usr/bin/lipo -archs "$vlc_root/lib/libvlc.dylib")
@@ -152,8 +166,8 @@ fi
   exit 2
 }
 
-unity_contents=$(cd "$(dirname "$unity_editor")/.." && pwd)
-[[ -d "$unity_contents/PlaybackEngines/MacStandaloneSupport" ]] || {
+unity_installation=$(cd "$(dirname "$unity_editor")/../../.." && pwd)
+[[ -d "$unity_installation/PlaybackEngines/MacStandaloneSupport" ]] || {
   echo "Unity-Modul 'Mac Build Support (Mono)' fehlt für $unity_editor." >&2
   exit 2
 }
