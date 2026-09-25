@@ -18,10 +18,15 @@ if ! command -v vlc >/dev/null 2>&1; then
   exit 1
 fi
 
-# Priorität: erstes Argument, KARAOKE_SERVER, danach http://localhost:5274.
-export KARAOKE_SERVER="${1:-${KARAOKE_SERVER:-http://localhost:5274}}"
+# Ein explizites Argument bleibt eine verbindliche Vorgabe. Ohne Argument ist
+# localhost nur der Erstwert; danach gewinnt die im Editor gespeicherte URL.
+if [[ -n ${1:-} ]]; then
+  export NEONSTAGE_SERVER_URL=$1
+else
+  export NEONSTAGE_DEFAULT_SERVER_URL="${NEONSTAGE_DEFAULT_SERVER_URL:-http://localhost:5274}"
+fi
 
 echo "Neon Stage Karaoke Desktop wird gestartet …"
-echo "Serveradresse: ${KARAOKE_SERVER}"
+echo "Serveradresse: ${NEONSTAGE_SERVER_URL:-${KARAOKE_SERVER:-gespeicherte Einstellung oder $NEONSTAGE_DEFAULT_SERVER_URL}}"
 
 exec dotnet run --project "${DESKTOP_PROJECT}" --no-build

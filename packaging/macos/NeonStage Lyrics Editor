@@ -4,7 +4,9 @@ set -euo pipefail
 contents=$(cd "$(dirname "$0")/.." && pwd)
 runtime="$contents/Resources/app"
 export PATH="$runtime:$PATH"
-export KARAOKE_SERVER=${KARAOKE_SERVER:-http://127.0.0.1:5274}
+# Nur Erstwert, kein Zwang: explizite Umgebungsvariablen bleiben vorrangig,
+# ansonsten gewinnt die im Editor gespeicherte Adresse.
+export NEONSTAGE_DEFAULT_SERVER_URL=${NEONSTAGE_DEFAULT_SERVER_URL:-http://127.0.0.1:5274}
 export FFMPEG_EXE="$runtime/ffmpeg"
 export VLC_PLUGIN_PATH="$runtime/vlc/plugins"
 export DYLD_LIBRARY_PATH="$runtime/vlc/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
