@@ -30,9 +30,11 @@ done
 
 export PATH="$HOME/.dotnet:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
 if (( ! skip_prepare )); then
-  prepare_args=()
-  (( skip_unity )) && prepare_args+=(--skip-unity)
-  "$repo_root/scripts/macos/prepare-build.sh" "${prepare_args[@]}"
+  if (( skip_unity )); then
+    "$repo_root/scripts/macos/prepare-build.sh" --skip-unity
+  else
+    "$repo_root/scripts/macos/prepare-build.sh"
+  fi
 fi
 
 for command in dotnet ffmpeg dylibbundler ditto codesign sips iconutil; do
