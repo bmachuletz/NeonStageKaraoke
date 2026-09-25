@@ -102,6 +102,7 @@ New-Item -ItemType Directory -Force -Path $workRoot | Out-Null
 try {
     $serverPublish = Join-Path $workRoot 'server'
     $editorPublish = Join-Path $workRoot 'editor'
+    $matcherPublish = Join-Path $workRoot 'lrcmatcher'
     $commonPublishArguments = @(
         '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
         '-p:PublishSingleFile=true',
@@ -113,9 +114,20 @@ try {
         $commonPublishArguments + @('-o', $serverPublish))
     Invoke-Checked 'dotnet' (@('publish', "$repoRoot\src\Karaoke.App.Desktop\Karaoke.App.Desktop.csproj") +
         $commonPublishArguments + @('-o', $editorPublish))
+    Invoke-Checked 'dotnet' @('publish', "$repoRoot\LrcMatcher\LrcMatcher.csproj",
+        '-c', 'Release', '-r', 'win-x64', '--self-contained', 'true',
+        '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
+        '-p:DebugType=None', '-p:DebugSymbols=false', '-o', $matcherPublish)
 
     Copy-Item $FfmpegExe -Destination (Join-Path $serverPublish 'ffmpeg.exe')
     Copy-Item $FfmpegExe -Destination (Join-Path $editorPublish 'ffmpeg.exe')
+    $runtimeTools = Join-Path $repoRoot '.tools\windows-runtime'
+    foreach ($tool in @('yt-dlp.exe', 'deno.exe', 'yt-dlp-LICENSE', 'deno-LICENSE.md')) {
+        $source = Join-Path $runtimeTools $tool
+        if (-not (Test-Path $source -PathType Leaf)) { throw "Portables Serverwerkzeug fehlt: $source" }
+        Copy-Item $source -Destination $serverPublish
+    }
+    Copy-Item (Join-Path $matcherPublish 'LrcMatcher.exe') -Destination $serverPublish
     & $FfmpegExe -version | Set-Content -Encoding utf8 (Join-Path $serverPublish 'FFmpeg-build.txt')
     Copy-Item (Join-Path $serverPublish 'FFmpeg-build.txt') -Destination $editorPublish
     Copy-ReleaseNotices $serverPublish

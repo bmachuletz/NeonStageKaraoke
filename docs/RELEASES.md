@@ -270,27 +270,26 @@ Run the media guard against `src/Karaoke.Stage.Unity/Builds` before packaging it
 
 - `server-linux`: ASP.NET Core server and web portals; no database and no library
 - `editor-linux-x64`: Avalonia editor; no cached audio and no recovery drafts
-- `NeonStage-Server-x86_64.AppImage`: self-contained ASP.NET Core server, web portals, and FFmpeg; configuration and persistent data remain outside the image
+- `NeonStage-Server-x86_64.AppImage`: self-contained ASP.NET Core server, web portals, FFmpeg, yt-dlp, Deno, and self-contained LRC matcher; configuration and persistent data remain outside the image
 - `NeonStage-LyricsEditor-x86_64.AppImage`: self-contained editor including FFmpeg, LibVLC, and VLC plugins; server URL is supplied through `KARAOKE_SERVER`
 
-The Docker Compose image is the server/API deployment and includes the small
-HTTP client workers for re-alignment and full transcription. The separately
-managed CUDA aligner still owns the GPU models and inference runtime. Local
-folder ingestion and wishlist download processing remain host/worker processes;
-models, downloader environments, and karaoke media are never bundled into the
-server image.
+The Docker Compose image is the server/API deployment and includes the
+cross-platform request worker plus FFmpeg, yt-dlp, and the self-contained LRC
+matcher. The separately managed CUDA aligner still owns the GPU models and
+inference runtime. Models and karaoke media are never bundled into the server
+image.
 - `NeonStage-Stage-x86_64.AppImage`: Unity Linux player; no songs or server state; server URL is supplied through `KARAOKE_SERVER`, `NEONSTAGE_SERVER_URL`, or `--server`
 - `stage-linux-x64`: unpacked Unity player; no songs or server state
 - `stage-android-armv7`: Android package for 32-bit devices such as the tested Ikarao hardware
 - `stage-android-arm64`: Android package for modern 64-bit devices
 - `NeonStage-Stage-macOS-arm64.zip`: native Apple-Silicon application bundle
-- `NeonStage-Server-…-macOS-arm64.zip`: self-contained Apple-Silicon server with portable FFmpeg and launcher
+- `NeonStage-Server-…-macOS-arm64.zip`: self-contained Apple-Silicon server with FFmpeg, yt-dlp, Deno, LRC matcher, and launcher
 - `NeonStage-LyricsEditor-…-macOS-arm64.zip`: ad-hoc-signed Editor `.app` with .NET, FFmpeg, LibVLC and VLC plugins
 - `stage-windows-x64`: native Windows x64 Unity player directory
-- `NeonStage-Server-…-windows-x64.zip`: self-contained Windows x64 server with FFmpeg and launcher
+- `NeonStage-Server-…-windows-x64.zip`: self-contained Windows x64 server with FFmpeg, yt-dlp, Deno, LRC matcher, and launcher
 - `NeonStage-LyricsEditor-…-windows-x64.zip`: self-contained Windows x64 editor with LibVLC, FFmpeg, and launcher
 - `NeonStage-Stage-…-windows-x64.zip`: portable Windows x64 Unity Stage
-- `NeonStage-Server-…-windows-x64.exe`: local-only self-extracting Server launcher
+- `NeonStage-Server-…-windows-x64.exe`: local-only self-extracting Server launcher whose embedded payload includes the download/matching tools above
 - `NeonStage-LyricsEditor-…-windows-x64.exe`: localhost self-extracting Editor launcher
 - `NeonStage-Stage-…-windows-x64.exe`: localhost self-extracting Unity Stage launcher
 
@@ -304,7 +303,11 @@ The Server listens on all interfaces at port 5274 by default so phones on the lo
 - database and persistent state: `${XDG_DATA_HOME:-~/.local/share}/neon-stage/server`
 - optional configuration: `~/.local/share/neon-stage/server/server.env`
 
-`packaging/linux/server.env.example` documents the supported path and Spotify settings. Override the file location with `NEONSTAGE_SERVER_ENV`. A complete imported song package does not require the downloader or aligner; only creating or realigning material does.
+`packaging/linux/server.env.example` documents the supported path and optional
+Spotify settings. Override the file location with `NEONSTAGE_SERVER_ENV`.
+Spotify credentials are not required for requests because search falls back to
+YouTube. A complete imported song package does not require the downloader or
+aligner; only creating or realigning material does.
 
 ```bash
 chmod +x artifacts/NeonStage-*.AppImage

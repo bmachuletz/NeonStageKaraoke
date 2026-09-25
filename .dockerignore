@@ -19,10 +19,15 @@
 !src/Karaoke.Stage.Unity/Assets/NeonStage/
 !src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/
 !src/Karaoke.Stage.Unity/Assets/NeonStage/Shared/*.cs
+!LrcMatcher/
+!LrcMatcher/**
 !scripts/
 !scripts/linux/
 !scripts/linux/align-library.sh
 !scripts/linux/recognize-song-lyrics.sh
+!scripts/linux/process-wishlist.sh
+!scripts/linux/install-yt-dlp.sh
+!scripts/linux/install-deno.sh
 !lyrics-word-aligner/
 !lyrics-word-aligner/scripts/
 !lyrics-word-aligner/scripts/verify_audio_encoding.py

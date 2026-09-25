@@ -5,7 +5,7 @@ nav{grid-template-columns:1fr 1fr 1fr}
 .lyrics{color:#e9ff39!important}.no-lyrics{color:#ff7897!important}
 h3{margin-top:28px;color:#ff49d7}
 .track-link{color:#1ed760;font-size:.78rem;font-weight:800;text-decoration:none;margin-top:2px}.track-link:hover{text-decoration:underline}
-.source-badge{align-self:center;border-radius:9px;padding:5px 7px;font-size:.58rem;font-weight:950;letter-spacing:.07em;background:#183926;color:#64f394}.source-badge.source-qobuz{background:#3a2049;color:#ff72db}.track-link.source-qobuz{color:#ff72db}.catalog-price{color:#e9ff39!important;font-weight:900}.catalog-quality{color:#6dc7ff!important;font-size:.72rem}
+.source-badge{align-self:center;border-radius:9px;padding:5px 7px;font-size:.58rem;font-weight:950;letter-spacing:.07em;background:#183926;color:#64f394}.source-badge.source-qobuz{background:#3a2049;color:#ff72db}.source-badge.source-youtube{background:#481819;color:#ff7272}.track-link.source-qobuz{color:#ff72db}.track-link.source-youtube{color:#ff7272}.catalog-price{color:#e9ff39!important;font-weight:900}.catalog-quality{color:#6dc7ff!important;font-size:.72rem}
 .wish-remove{flex:0 0 42px;align-self:center}
 .now{flex-wrap:wrap}.now>.now-meta{display:grid;gap:2px;flex:1;min-width:170px}
 .reactions{display:flex!important;gap:6px;margin-left:auto}.reactions button{width:42px;height:42px;border:1px solid #5a3a70;border-radius:50%;background:#241531;color:#fff;font-size:1.35rem;box-shadow:0 0 18px #ff49d733;transition:transform .14s,background .14s}.reactions button:first-child{color:#ff5ca8}.reactions button:nth-child(2){color:#e9ff39}

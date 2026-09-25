@@ -210,10 +210,40 @@ if (-not $UnityOnly) {
     }
     $env:FFMPEG_EXE = (Resolve-Path $FfmpegExe).Path
 
+    $runtimeTools = Join-Path $repoRoot '.tools\windows-runtime'
+    New-Item -ItemType Directory -Force -Path $runtimeTools | Out-Null
+    $ytDlpExe = Join-Path $runtimeTools 'yt-dlp.exe'
+    $ytChecksums = Join-Path $runtimeTools 'yt-dlp-SHA2-256SUMS'
+    Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe' -OutFile $ytDlpExe
+    Invoke-WebRequest 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/SHA2-256SUMS' -OutFile $ytChecksums
+    $ytLine = Get-Content $ytChecksums | Where-Object { $_ -match '\syt-dlp\.exe$' } | Select-Object -First 1
+    if (-not $ytLine) { throw 'Offizielle yt-dlp-Prüfsumme für yt-dlp.exe fehlt.' }
+    $ytExpected = ($ytLine -split '\s+')[0].ToUpperInvariant()
+    $ytActual = (Get-FileHash $ytDlpExe -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($ytActual -ne $ytExpected) { throw 'Die yt-dlp-Prüfsumme stimmt nicht überein.' }
+    Invoke-WebRequest 'https://raw.githubusercontent.com/yt-dlp/yt-dlp/master/LICENSE' `
+        -OutFile (Join-Path $runtimeTools 'yt-dlp-LICENSE')
+
+    $denoAsset = 'deno-x86_64-pc-windows-msvc.zip'
+    $denoArchive = Join-Path $runtimeTools $denoAsset
+    $denoChecksum = Join-Path $runtimeTools ($denoAsset + '.sha256sum')
+    Invoke-WebRequest "https://github.com/denoland/deno/releases/latest/download/$denoAsset" -OutFile $denoArchive
+    Invoke-WebRequest "https://github.com/denoland/deno/releases/latest/download/$denoAsset.sha256sum" -OutFile $denoChecksum
+    $denoExpected = ((Get-Content $denoChecksum -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
+    $denoActual = (Get-FileHash $denoArchive -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($denoActual -ne $denoExpected) { throw 'Die Deno-Prüfsumme stimmt nicht überein.' }
+    Expand-Archive -Path $denoArchive -DestinationPath $runtimeTools -Force
+    Invoke-WebRequest 'https://raw.githubusercontent.com/denoland/deno/main/LICENSE.md' `
+        -OutFile (Join-Path $runtimeTools 'deno-LICENSE.md')
+    $env:NEONSTAGE_YT_DLP_PATH = $ytDlpExe
+    $env:NEONSTAGE_DENO_PATH = Join-Path $runtimeTools 'deno.exe'
+
     Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore von Karaoke.Server' `
         -ArgumentList @('restore', "$repoRoot\src\Karaoke.Server\Karaoke.Server.csproj")
     Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore von Karaoke.App.Desktop' `
         -ArgumentList @('restore', "$repoRoot\src\Karaoke.App.Desktop\Karaoke.App.Desktop.csproj")
+    Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore des LRC-Matchers' `
+        -ArgumentList @('restore', "$repoRoot\LrcMatcher\LrcMatcher.csproj")
     Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore des portablen Windows-Launchers' `
         -ArgumentList @('restore', "$repoRoot\src\NeonStage.PortableLauncher\NeonStage.PortableLauncher.csproj")
     Invoke-NativeChecked -FilePath $dotnetExe -Description 'Restore der Editor-Core-Tests' `

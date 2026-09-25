@@ -188,7 +188,7 @@ public sealed record UpdateQobuzPluginSettingsRequest(
     QobuzDownloadQuality Quality = QobuzDownloadQuality.FlacCd,
     string? ApiBaseUrl = null,
     bool ClearStoredCredentials = false);
-public enum AudioCatalogSource { Spotify, Qobuz }
+public enum AudioCatalogSource { Spotify, Qobuz, YouTube }
 public enum AudioDownloadSource { YouTube, Qobuz }
 public sealed record SpotifyStatusDto(bool Configured, bool Connected, string? PlaylistUrl = null, string? Message = null);
 public sealed record SpotifyTrackDto(
@@ -210,8 +210,13 @@ public sealed record SpotifyTrackDto(
     AudioDownloadSource DownloadSource = AudioDownloadSource.YouTube,
     string? PreviewUrl = null)
 {
-    public string SourceLabel => Source == AudioCatalogSource.Qobuz ? "QOBUZ" : "SPOTIFY";
-    public string DownloadSourceLabel => DownloadSource == AudioDownloadSource.Qobuz ? "QOBUZ" : "YOUTUBE / SUNNIFY";
+    public string SourceLabel => Source switch
+    {
+        AudioCatalogSource.Qobuz => "QOBUZ",
+        AudioCatalogSource.YouTube => "YOUTUBE",
+        _ => "SPOTIFY"
+    };
+    public string DownloadSourceLabel => DownloadSource == AudioDownloadSource.Qobuz ? "QOBUZ" : "YOUTUBE";
     public string DurationLabel
     {
         get

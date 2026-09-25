@@ -49,8 +49,10 @@ Special thanks go to:
   separation available to the community.
 - [LRCLIB](https://lrclib.net/) and its community for an open lyrics service.
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) and its contributors for the
-  optional, separately installed media acquisition tool used for
-  operator-authorized song videos.
+  bundled, separately executed media acquisition tool used for
+  operator-authorized audio and song videos.
+- [Deno](https://deno.com/) and its contributors for the bundled JavaScript
+  runtime used by yt-dlp for provider challenges.
 - [UltraStar Deluxe](https://github.com/UltraStar-Deluxe/USDX) and its
   community for documenting and maintaining a widely used timed karaoke text
   format. Neon Stage implements compatible TXT import independently and does

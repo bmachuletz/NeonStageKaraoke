@@ -233,8 +233,10 @@ for ports, audio routing, security, logs, and current MVP limits.
 
 ### Configure Spotify Web API access
 
-Spotify integration is optional, but it is not anonymous. Search uses Spotify's
-official Web API with an application access token, while connecting the
+Spotify integration is optional. If it is not configured, unavailable, or
+returns no matching tracks, the request search automatically shows YouTube
+results instead. When configured, Spotify search uses its official Web API
+with an application access token, while connecting the
 operator's account uses Authorization Code flow with the
 `playlist-modify-private` scope to maintain the private Neon Stage request
 playlist. You must supply a Client ID, Client Secret, and registered Redirect
@@ -277,7 +279,7 @@ documentation.
 
 ### Optional Qobuz purchase-download provider
 
-Qobuz can replace the YouTube/Sunnify download step when an official Qobuz
+Qobuz can replace the YouTube download step when an official Qobuz
 integration is configured. The combined request search marks every result as
 Spotify or Qobuz; Qobuz results also show the catalog price and maximum audio
 quality when those fields are returned by the account's API response. Directly
@@ -407,11 +409,13 @@ require an explicit rights confirmation. Neon Stage transcodes the selected asse
 to a silent H.264/MP4 sidecar (`*.video.mp4`), stores its adjustable sync offset in
 `*.video.json`, previews it behind the lyrics in the editor, streams it behind all
 Stage UI, and includes both files in song-package export/import. Positive video
-offsets delay the video relative to the audio. `ffmpeg` and Node.js 22 or newer
-must be available on the server for online video selection; local uploads require
-only `ffmpeg`. Install or refresh the project-local, checksum-verified `yt-dlp`
-runtime with `./scripts/linux/install-yt-dlp.sh`. The server prefers it over a
-possibly outdated system package. `NEONSTAGE_YT_DLP_PATH` can override its path.
+offsets delay the video relative to the audio. Official Server release packages
+contain FFmpeg, `yt-dlp`, and Deno. A source checkout can install or refresh the
+project-local, checksum-verified runtimes with
+`./scripts/linux/install-yt-dlp.sh` and `./scripts/linux/install-deno.sh`;
+Node.js remains a development fallback when Deno is absent.
+`NEONSTAGE_YT_DLP_PATH` and `NEONSTAGE_DENO_PATH` can override the detected
+paths.
 
 Use **Alignment → Apply global lyrics shift…** for a uniform timing correction. Positive milliseconds move every line, word, and syllable later; negative values move all of them earlier. Neon Stage changes the actual segment coordinates rather than writing an LRC offset tag. The operation is one atomic undo step and is rejected if any segment would move before the audio start or beyond its end.
 
@@ -436,7 +440,7 @@ the result only when the operator creates a new version.
 | Match library lyrics | `./scripts/linux/match-library-lrc.sh` |
 | Align library | `./scripts/linux/align-library.sh --force` |
 | Recognize complete lyrics | `./scripts/linux/recognize-song-lyrics.sh --audio '/library/Artist - Title.mp3'` (retains matching LRCLIB/editor spelling on the acoustic timing scaffold) |
-| Process requests | `./scripts/linux/process-wishlist.sh` |
+| Process requests | Start processing in the Editor; `./scripts/linux/process-wishlist.sh` remains a legacy Linux administration helper |
 | Import a local MP3/FLAC folder | `./scripts/linux/process-audio-folder.sh /path/to/audio` |
 | Analyze stage timing | `./scripts/linux/analyze-stage-timing.sh` |
 | Verify release contents | `./scripts/release/verify-no-media.sh` |

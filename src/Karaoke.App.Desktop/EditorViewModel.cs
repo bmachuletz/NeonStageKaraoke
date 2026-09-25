@@ -79,6 +79,9 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     private Guid? _handledLyricsRecognitionJob;
     private readonly HashSet<Guid> _realignedSongsPendingReview = [];
     private bool _wishWorkerRunning;
+    private bool _wishProgressIndeterminate;
+    private int _lastWishProgress = -1;
+    private DateTimeOffset _wishProgressChangedAt = DateTimeOffset.MinValue;
     private string _adminWishQuery = string.Empty;
     private string _adminWishSearchStatus = "Spotify oder Qobuz durchsuchen und einen Treffer direkt importieren.";
     private bool _adminWishSearching;
@@ -279,6 +282,11 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
     }
     public string JobState { get => _jobState; private set => Set(ref _jobState, value); }
     public int WishProgress { get => _wishProgress; private set => Set(ref _wishProgress, value); }
+    public bool WishProgressIndeterminate
+    {
+        get => _wishProgressIndeterminate;
+        private set => Set(ref _wishProgressIndeterminate, value);
+    }
     public string WishProgressLabel { get => _wishProgressLabel; private set => Set(ref _wishProgressLabel, value); }
     public string AdminWishQuery { get => _adminWishQuery; set => Set(ref _adminWishQuery, value); }
     public string AdminWishSearchStatus { get => _adminWishSearchStatus; private set => Set(ref _adminWishSearchStatus, value); }
@@ -890,8 +898,8 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         var query = AdminWishQuery.Trim();
         if (query.Length < 2) { AdminWishSearchStatus = Localized("Bitte mindestens zwei Zeichen eingeben.", "Enter at least two characters."); return; }
         AdminWishSearching = true;
-        AdminWishSearchStatus = Localized("Spotify, Qobuz und LRCLIB werden durchsucht …",
-            "Searching Spotify, Qobuz, and LRCLIB …");
+        AdminWishSearchStatus = Localized("Katalogsuche läuft; falls nötig mit Nur-YouTube-Fallback …",
+            "Searching catalogs, with YouTube-only fallback when needed …");
         try
         {
             var results = await _http.GetFromJsonAsync<IReadOnlyList<SpotifyTrackDto>>(
@@ -1357,11 +1365,33 @@ public sealed class EditorViewModel : INotifyPropertyChanged, IDisposable
         {
             var status = await _http.GetFromJsonAsync<EditorJobStatus>("/api/admin/wishlist-processing", cancellationToken);
             if (status is null) return;
+            var now = DateTimeOffset.UtcNow;
+            if (!status.IsRunning)
+            {
+                _lastWishProgress = -1;
+                _wishProgressChangedAt = DateTimeOffset.MinValue;
+                WishProgressIndeterminate = false;
+            }
+            else if (!_wishWorkerRunning || status.Percent != _lastWishProgress)
+            {
+                _lastWishProgress = status.Percent;
+                _wishProgressChangedAt = now;
+                WishProgressIndeterminate = false;
+            }
+            else
+            {
+                // GPU-Phasen wie BS-Roformer liefern minutenlang nur einen
+                // Phasenwert. Eine animierte Anzeige zeigt weiterhin Aktivität,
+                // ohne einen erfundenen Prozentwert vorzutäuschen.
+                WishProgressIndeterminate = now - _wishProgressChangedAt >= TimeSpan.FromSeconds(8);
+            }
             _wishWorkerRunning = status.IsRunning;
             JobState = status.IsRunning ? $"GPU-WORKER · {status.Message}" : status.Message;
             WishProgress = status.Percent;
-            WishProgressLabel = status.Total == 0 ? status.Message :
-                $"{status.Percent}% · Wunsch {Math.Min(status.Current, status.Total)} von {status.Total}";
+            var activity = WishProgressIndeterminate
+                ? Localized(" · aktive GPU-Phase …", " · active GPU phase …") : string.Empty;
+            WishProgressLabel = (status.Total == 0 ? status.Message :
+                $"{status.Percent}% · Wunsch {Math.Min(status.Current, status.Total)} von {status.Total}") + activity;
             foreach (var line in status.RecentOutput)
                 if (_seenConsoleOutput.Add("wish:" + line)) AppendConsole(line);
             // Wunsch- und Bibliotheksänderungen kommen über den Change-Stream.

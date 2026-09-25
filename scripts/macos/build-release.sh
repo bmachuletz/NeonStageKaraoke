@@ -67,6 +67,16 @@ dotnet publish "$repo_root/src/Karaoke.Server/Karaoke.Server.csproj" \
   "${common_publish[@]}" -o "$server_dir"
 dotnet publish "$repo_root/src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj" \
   "${common_publish[@]}" -o "$editor_runtime"
+matcher_publish="$work_root/lrcmatcher"
+dotnet publish "$repo_root/LrcMatcher/LrcMatcher.csproj" "${common_publish[@]}" \
+  -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o "$matcher_publish"
+cp "$repo_root/.tools/yt-dlp" "$server_dir/yt-dlp"
+cp "$repo_root/.tools/deno" "$server_dir/deno"
+cp "$matcher_publish/LrcMatcher" "$server_dir/LrcMatcher"
+chmod +x "$server_dir/yt-dlp" "$server_dir/deno" "$server_dir/LrcMatcher"
+codesign --force --sign - "$server_dir/yt-dlp"
+codesign --force --sign - "$server_dir/deno"
+codesign --force --sign - "$server_dir/LrcMatcher"
 
 # Homebrews FFmpeg ist dynamisch gelinkt. dylibbundler kopiert alle nicht zum
 # Betriebssystem gehörenden Bibliotheken und schreibt portable @executable_path-Routen.
@@ -136,6 +146,7 @@ for notice in LICENSE NOTICE THIRD_PARTY_NOTICES.md ACKNOWLEDGEMENTS.md; do
   cp "$repo_root/$notice" "$server_dir/"
   cp "$repo_root/$notice" "$editor_app/Contents/Resources/"
 done
+cp "$repo_root/.tools/yt-dlp-LICENSE" "$repo_root/.tools/deno-LICENSE.md" "$server_dir/"
 
 codesign --force --deep --sign - "$editor_app"
 codesign --verify --deep --strict "$editor_app"

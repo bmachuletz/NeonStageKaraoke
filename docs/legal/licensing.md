@@ -25,7 +25,12 @@ Third-party licenses are independent of that choice. `THIRD_PARTY_NOTICES.md` is
 
 `lyrics-word-aligner/requirements.txt` currently installs Transformers from a moving Git branch. Pin it to an immutable reviewed commit or released version. Model files are intentionally ignored; provide a downloader that verifies checksums and shows the applicable model terms instead of committing weights.
 
-The Sunnify integration downloads and executes a separate GPL-3.0 project. Keep that boundary explicit. Spotify API access does not grant rights to download or redistribute music. Operators must comply with service terms and local copyright law.
+The portable request worker uses separately executed yt-dlp and Deno binaries;
+their licenses and notices accompany server packages. The historical Sunnify
+Linux helper, when installed manually, remains a separate GPL-3.0 process and
+is not part of release packages. Spotify API access does not grant rights to
+download or redistribute music. Operators must comply with service terms and
+local copyright law.
 
 The product alignment path uses EasyAligner with German or English Wav2Vec2 CTC
 models and optionally downloads Qwen, Whisper/stable-ts, phoneme, and

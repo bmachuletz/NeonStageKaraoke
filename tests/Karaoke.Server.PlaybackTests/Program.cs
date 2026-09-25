@@ -151,6 +151,7 @@ try
       "price": 1.49,
       "currency": "EUR"
     }
+
     """))
     {
         var mappedQobuz = QobuzCatalogService.Map(qobuzTrackJson.RootElement);
@@ -161,6 +162,61 @@ try
                mappedQobuz.DurationLabel == "3:07",
             "Qobuz-Suchergebnisse behalten Katalog, Downloadquelle, Dauer, Vorschau, Preis, Qualität und ID.");
     }
+
+    using (var youtubeSearchJson = JsonDocument.Parse("""
+    {
+      "entries": [
+        {
+          "id": "abcdefghijk",
+          "title": "Example Song (Official Audio)",
+          "channel": "Example Artist",
+          "duration": 187,
+          "thumbnail": "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg"
+        }
+      ]
+    }
+    """))
+    {
+        var mappedYouTube = YouTubeCatalogService.ParseSearch(youtubeSearchJson.RootElement).Single();
+        Assert(mappedYouTube is { Source: AudioCatalogSource.YouTube,
+                   DownloadSource: AudioDownloadSource.YouTube, DurationMilliseconds: 187000 } &&
+               mappedYouTube.Id == "youtube:abcdefghijk" &&
+               mappedYouTube.Uri == "youtube:abcdefghijk" &&
+               mappedYouTube.SourceLabel == "YOUTUBE" &&
+               mappedYouTube.DownloadSourceLabel == "YOUTUBE" &&
+               mappedYouTube.SourceUrl == "https://www.youtube.com/watch?v=abcdefghijk",
+            "YouTube-Fallbacktreffer benötigen weder Spotify-ID noch Spotify-Zugangsdaten.");
+        Assert(WishlistProcessingService.YouTubeQuery(mappedYouTube) ==
+               "https://www.youtube.com/watch?v=abcdefghijk",
+            "Der plattformneutrale Wunsch-Worker übernimmt nur validierte YouTube-IDs.");
+        var spotifyFallback = mappedYouTube with
+        {
+            Id = "spotify-id", Uri = "spotify:track:spotify-id", Source = AudioCatalogSource.Spotify,
+            Title = "Rare Song", Artist = "Rare Artist"
+        };
+        Assert(WishlistProcessingService.YouTubeQuery(spotifyFallback) ==
+               "ytsearch1:Rare Artist - Rare Song audio",
+            "Spotify-Wünsche benötigen im portablen Worker keine Spotify-URL mehr.");
+    }
+
+    var spotifyDuplicates = AudioCatalogSearchService.Deduplicate(
+    [
+        new SpotifyTrackDto("one", "spotify:track:one", "Same Song", "Same Artist", "Album A", null,
+            180000, false, Source: AudioCatalogSource.Spotify),
+        new SpotifyTrackDto("two", "spotify:track:two", "Same-Song", "same artist", "Album B", null,
+            181000, false, Source: AudioCatalogSource.Spotify),
+        new SpotifyTrackDto("qobuz", "qobuz:track:qobuz", "Same Song", "Same Artist", "Album Q", null,
+            180000, false, Source: AudioCatalogSource.Qobuz)
+    ]).ToArray();
+    Assert(spotifyDuplicates.Length == 2 &&
+           spotifyDuplicates.Count(track => track.Source == AudioCatalogSource.Spotify) == 1 &&
+           spotifyDuplicates.Count(track => track.Source == AudioCatalogSource.Qobuz) == 1,
+        "Katalogtreffer sind je Anbieter nach Titel und Interpret distinct, ohne Anbieter-Alternativen zu verschlucken.");
+    Assert(AudioCatalogSearchService.NeedsYouTubeFallback(false, null, false) &&
+           AudioCatalogSearchService.NeedsYouTubeFallback(true, 0, false) &&
+           AudioCatalogSearchService.NeedsYouTubeFallback(true, null, true) &&
+           !AudioCatalogSearchService.NeedsYouTubeFallback(true, 1, false),
+        "Nur-YouTube greift exakt bei fehlender Spotify-Konfiguration, Fehlern oder null Spotify-Treffern.");
 
     Assert(FolderImportService.IsSupportedAudioFile("Demo.MP3") &&
            FolderImportService.IsSupportedAudioFile("Demo.FlAc") &&

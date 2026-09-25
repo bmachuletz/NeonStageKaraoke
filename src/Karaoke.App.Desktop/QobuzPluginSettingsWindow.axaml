@@ -15,7 +15,7 @@
           <StackPanel Spacing="8">
             <CheckBox x:Name="EnabledBox" Content="Qobuz für die Wunschlisten-Pipeline aktivieren"
                       FontWeight="SemiBold" />
-            <TextBlock Text="Ist das Plugin deaktiviert oder unvollständig konfiguriert, verwendet Neon Stage weiterhin YouTube/Sunnify. Bei aktiviertem Qobuz gibt es keinen stillen YouTube-Fallback."
+            <TextBlock Text="Ist das Plugin deaktiviert oder unvollständig konfiguriert, verwendet Neon Stage weiterhin YouTube. Bei aktiviertem Qobuz gibt es keinen stillen YouTube-Fallback."
                        Foreground="#AAB2C1" TextWrapping="Wrap" />
           </StackPanel>
         </Border>

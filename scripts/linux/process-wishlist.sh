@@ -7,6 +7,7 @@ aligner_url="${LRC_ALIGNER_URL:-http://127.0.0.1:8081}"
 library="${KARAOKE_LIBRARY_PATH:-/home/benjamin/Karaoke/Sunnify}"
 sunnify_dir="${SUNNIFY_SOURCE:-$repo_root/.tools/sunnify-spotify-downloader}"
 python_bin="${SUNNIFY_PYTHON:-$repo_root/.tools/sunnify-venv/bin/python}"
+ytdlp_bin="${NEONSTAGE_YT_DLP_PATH:-$repo_root/.tools/yt-dlp}"
 qobuz_python="${QOBUZ_PYTHON:-python3}"
 download_provider="${NEONSTAGE_DOWNLOAD_PROVIDER:-youtube}"
 max_wishes=0
@@ -40,13 +41,6 @@ done
 [[ "$download_provider" == youtube || "$download_provider" == qobuz ]] || {
   echo "Unbekannter Download-Provider: $download_provider" >&2; exit 2;
 }
-if ((dry_run == 0)) && [[ "$download_provider" == youtube ]]; then
-  [[ -x "$python_bin" && -f "$sunnify_dir/Spotify_Downloader.py" ]] || {
-    echo "Sunnify Headless ist noch nicht eingerichtet." >&2
-    echo "Zuerst ausführen: $repo_root/scripts/linux/setup-sunnify-headless.sh" >&2
-    exit 1
-  }
-fi
 if ((dry_run == 0)) && [[ "$download_provider" == qobuz ]]; then
   command -v "$qobuz_python" >/dev/null || { echo "Python für das Qobuz-Plugin fehlt: $qobuz_python" >&2; exit 1; }
   [[ -f "$repo_root/scripts/python/qobuz_headless.py" ]] || { echo "Qobuz-Plugin fehlt." >&2; exit 1; }
@@ -93,7 +87,7 @@ while IFS= read -r wish; do
   [[ -z "$wish_event_token" ]] || wish_event_query="?eventToken=$(printf '%s' "$wish_event_token" | jq -sRr @uri)"
   spotify_id=$(jq -r '.track.id' <<<"$wish")
   spotify_url=$(jq -r '.track.spotifyUrl // empty' <<<"$wish")
-  catalog_source=$(jq -r '.track.sourceLabel // (if .track.source == 1 then "qobuz" else "spotify" end)' <<<"$wish" | tr '[:upper:]' '[:lower:]')
+  catalog_source=$(jq -r '.track.sourceLabel // (if .track.source == 1 then "qobuz" elif .track.source == 2 then "youtube" else "spotify" end)' <<<"$wish" | tr '[:upper:]' '[:lower:]')
   qobuz_id=$(jq -r '.track.qobuzId // empty' <<<"$wish")
   title=$(jq -r '.track.title' <<<"$wish")
   artist=$(jq -r '.track.artist' <<<"$wish")
@@ -137,20 +131,64 @@ while IFS= read -r wish; do
       ((failed+=1))
       continue
     fi
-    echo "Download-Provider: YouTube / Sunnify"
-    download_command=("$python_bin" "$repo_root/scripts/python/sunnify_headless.py"
-      --sunnify-source "$sunnify_dir" --format mp3 --quality 320
-      "$spotify_url" "$staging")
+    if [[ "$catalog_source" == youtube ]]; then
+      [[ -x "$ytdlp_bin" ]] || {
+        echo "Der direkte YouTube-Downloader fehlt: $ytdlp_bin" >&2
+        rm -rf -- "$staging"
+        ((failed+=1))
+        continue
+      }
+      youtube_id=${spotify_id#youtube:}
+      [[ "$youtube_id" =~ ^[A-Za-z0-9_-]{11}$ ]] || {
+        echo "Ungültige YouTube-ID im Wunsch: $spotify_id" >&2
+        rm -rf -- "$staging"
+        ((failed+=1))
+        continue
+      }
+      source_url="https://www.youtube.com/watch?v=$youtube_id"
+      echo "Download-Provider: Nur YouTube"
+      if ! "$ytdlp_bin" --no-update --js-runtimes node --remote-components ejs:github \
+          --no-playlist --extract-audio --audio-format mp3 --audio-quality 0 \
+          --output "$staging/%(title)s.%(ext)s" --print after_move:filepath \
+          "$source_url" >"$result_file"; then
+        echo "YouTube-Download fehlgeschlagen." >&2
+        rm -rf -- "$staging"
+        ((failed+=1))
+        continue
+      fi
+      downloaded=$(tail -n 1 "$result_file")
+      [[ -f "$downloaded" ]] || {
+        echo "YouTube meldete keine Audiodatei." >&2
+        rm -rf -- "$staging"
+        ((failed+=1))
+        continue
+      }
+      download_command=()
+    else
+      [[ -x "$python_bin" && -f "$sunnify_dir/Spotify_Downloader.py" ]] || {
+        echo "Sunnify Headless ist noch nicht eingerichtet." >&2
+        echo "Zuerst ausführen: $repo_root/scripts/linux/setup-sunnify-headless.sh" >&2
+        rm -rf -- "$staging"
+        ((failed+=1))
+        continue
+      }
+      echo "Download-Provider: YouTube / Sunnify"
+      download_command=("$python_bin" "$repo_root/scripts/python/sunnify_headless.py"
+        --sunnify-source "$sunnify_dir" --format mp3 --quality 320
+        "$spotify_url" "$staging")
+    fi
   fi
-  if ! "${download_command[@]}" >"$result_file" ||
-      ! jq -e '.ok == true and (.track.file | type == "string") and (.track.file | length > 0)' \
-        "$result_file" >/dev/null 2>&1; then
-    echo "Download fehlgeschlagen: $(jq -r '.errors // .messages // [] | join("; ")' "$result_file" 2>/dev/null || true)" >&2
-    rm -rf -- "$staging"
-    ((failed+=1))
-    continue
+  if ((${#download_command[@]} > 0)); then
+    if ! "${download_command[@]}" >"$result_file" ||
+        ! jq -e '.ok == true and (.track.file | type == "string") and (.track.file | length > 0)' \
+          "$result_file" >/dev/null 2>&1; then
+      echo "Download fehlgeschlagen: $(jq -r '.errors // .messages // [] | join("; ")' "$result_file" 2>/dev/null || true)" >&2
+      rm -rf -- "$staging"
+      ((failed+=1))
+      continue
+    fi
+    downloaded=$(jq -er '.track.file' "$result_file")
   fi
-  downloaded=$(jq -er '.track.file' "$result_file")
   [[ -f "$downloaded" ]] || { echo "Der Download-Provider meldete keine Audiodatei." >&2; rm -rf -- "$staging"; ((failed+=1)); continue; }
 
   # Keep artist folders readable while excluding path separators/control chars.
@@ -194,8 +232,13 @@ while IFS= read -r wish; do
   matcher_ok=1
   if [[ ! -s "$lrc" ]]; then
     echo "LRCLIB-Matching: $destination"
-    if ! dotnet run --project "$repo_root/LrcMatcher/LrcMatcher.csproj" --no-build -- \
-        "$destination" --plain-fallback --max-duration-difference 5 --aligner-url "$aligner_url"; then
+    if [[ -n "${LRC_MATCHER_DLL:-}" ]]; then
+      matcher_command=(dotnet "$LRC_MATCHER_DLL")
+    else
+      matcher_command=(dotnet run --project "$repo_root/LrcMatcher/LrcMatcher.csproj" --no-build --)
+    fi
+    if ! "${matcher_command[@]}" "$destination" --plain-fallback \
+        --max-duration-difference 5 --aligner-url "$aligner_url"; then
       matcher_ok=0
     fi
   fi

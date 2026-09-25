@@ -92,6 +92,9 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 command -v ffmpeg >/dev/null 2>&1 || { echo "FFmpeg ist nicht verfügbar." >&2; exit 2; }
 
+"$repo_root/scripts/linux/install-yt-dlp.sh"
+"$repo_root/scripts/linux/install-deno.sh"
+
 if ! command -v dylibbundler >/dev/null 2>&1; then
   echo "Installiere dylibbundler für das portable FFmpeg-Paket …"
   "$BREW" install dylibbundler
@@ -125,6 +128,7 @@ done
 echo "Stelle .NET-Pakete wieder her …"
 dotnet restore "$repo_root/src/Karaoke.Server/Karaoke.Server.csproj" --runtime osx-arm64
 dotnet restore "$repo_root/src/Karaoke.App.Desktop/Karaoke.App.Desktop.csproj" --runtime osx-arm64
+dotnet restore "$repo_root/LrcMatcher/LrcMatcher.csproj" --runtime osx-arm64
 dotnet restore "$repo_root/tests/Karaoke.Editor.Core.Tests/Karaoke.Editor.Core.Tests.csproj"
 dotnet restore "$repo_root/tests/Karaoke.Server.PlaybackTests/Karaoke.Server.PlaybackTests.csproj"
 

@@ -324,7 +324,7 @@
 
         <Grid Grid.Row="2" IsVisible="{Binding WishlistConsoleVisible}" RowDefinitions="Auto,42,*,Auto">
           <Grid ColumnDefinitions="*,Auto,Auto" Margin="0,4,0,4">
-            <TextBox Watermark="Spotify oder Qobuz: Titel oder Interpret suchen …" Text="{Binding AdminWishQuery}"
+            <TextBox Watermark="Spotify, Qobuz oder YouTube: Titel oder Interpret suchen …" Text="{Binding AdminWishQuery}"
                      KeyDown="AdminWishQueryKeyDown" />
             <Button Grid.Column="1" Content="⌕ SUCHEN" Click="SearchAdminWishesClick" Margin="8,0,0,0" />
             <Button Grid.Column="2" Content="▶ ALLE EVENTS ABARBEITEN" Click="StartWishProcessingClick" Margin="8,0,0,0" />
@@ -356,7 +356,9 @@
             </ListBox.ItemTemplate>
           </ListBox>
           <Grid Grid.Row="1" ColumnDefinitions="*,Auto" Margin="0,2,0,8">
-            <ProgressBar Minimum="0" Maximum="100" Value="{Binding WishProgress}" Height="12" Foreground="#DFFF28" Background="#202717" />
+            <ProgressBar Minimum="0" Maximum="100" Value="{Binding WishProgress}"
+                         IsIndeterminate="{Binding WishProgressIndeterminate}"
+                         Height="12" Foreground="#DFFF28" Background="#202717" />
             <StackPanel Grid.Column="1" Margin="12,0,0,0"><TextBlock Text="{Binding WishProgressLabel}" Foreground="#DFFF28" FontFamily="monospace"/><TextBlock Text="{Binding AdminWishSearchStatus}" Foreground="#8993A6" FontSize="10"/></StackPanel>
           </Grid>
           <ListBox Grid.Row="3" ItemsSource="{Binding Wishes}" Background="#10151D" BorderThickness="0" MaxHeight="145">
