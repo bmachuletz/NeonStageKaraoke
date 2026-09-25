@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Set-StrictMode -Version Latest
 $repoRoot = (Resolve-Path "$PSScriptRoot\..\..").Path
 $unityProject = Join-Path $repoRoot 'src\Karaoke.Stage.Unity'
@@ -229,7 +230,20 @@ if (-not $UnityOnly) {
     $denoChecksum = Join-Path $runtimeTools ($denoAsset + '.sha256sum')
     Invoke-WebRequest "https://github.com/denoland/deno/releases/latest/download/$denoAsset" -OutFile $denoArchive
     Invoke-WebRequest "https://github.com/denoland/deno/releases/latest/download/$denoAsset.sha256sum" -OutFile $denoChecksum
-    $denoExpected = ((Get-Content $denoChecksum -Raw).Trim() -split '\s+')[0].ToUpperInvariant()
+    $denoChecksumText = Get-Content $denoChecksum -Raw
+    # Deno publishes the Windows checksum as PowerShell Format-List output
+    # ("Hash : <SHA256>"); Unix assets currently use sha256sum-style text.
+    # Accept both official formats, but never accept an arbitrary short token.
+    $denoMatch = [regex]::Match($denoChecksumText,
+        '(?im)^\s*Hash\s*:\s*([0-9a-f]{64})\s*$')
+    if (-not $denoMatch.Success) {
+        $denoMatch = [regex]::Match($denoChecksumText,
+            '(?im)^\s*([0-9a-f]{64})(?:\s+.+)?\s*$')
+    }
+    if (-not $denoMatch.Success) {
+        throw 'Die offizielle Deno-Prüfsummendatei enthält keinen gültigen SHA-256-Wert.'
+    }
+    $denoExpected = $denoMatch.Groups[1].Value.ToUpperInvariant()
     $denoActual = (Get-FileHash $denoArchive -Algorithm SHA256).Hash.ToUpperInvariant()
     if ($denoActual -ne $denoExpected) { throw 'Die Deno-Prüfsumme stimmt nicht überein.' }
     Expand-Archive -Path $denoArchive -DestinationPath $runtimeTools -Force
