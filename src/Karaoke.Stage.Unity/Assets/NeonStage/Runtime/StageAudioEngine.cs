@@ -70,8 +70,14 @@ public sealed class StageAudioEngine : MonoBehaviour
         get
         {
             AudioSettings.GetDSPBufferSize(out var bufferLength, out var bufferCount);
+            // CoreAudio's DSP clock already advances with the mixer ring. Treating
+            // every queued block as additional presentation latency makes lyrics
+            // visibly trail the built-in Mac output (1024 x 4 was 85 ms). One
+            // mixer block matches the observable device granularity (~21 ms).
+            var isMacOs = Application.platform == RuntimePlatform.OSXPlayer ||
+                          Application.platform == RuntimePlatform.OSXEditor;
             return StageTimingCompensation.EstimateOutputLatencySeconds(
-                bufferLength, bufferCount, AudioSettings.outputSampleRate);
+                bufferLength, bufferCount, AudioSettings.outputSampleRate, !isMacOs);
         }
     }
     public double AppliedOutputLatencySeconds =>

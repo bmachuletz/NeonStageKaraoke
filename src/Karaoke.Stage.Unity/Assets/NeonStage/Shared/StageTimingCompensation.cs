@@ -11,11 +11,13 @@ public static class StageTimingCompensation
 {
     public const double MaximumOutputLatencySeconds = 0.5;
 
-    public static double EstimateOutputLatencySeconds(int bufferLength, int bufferCount, int sampleRate)
+    public static double EstimateOutputLatencySeconds(int bufferLength, int bufferCount, int sampleRate,
+        bool useWholeRingBuffer = true)
     {
         if (bufferLength <= 0 || bufferCount <= 0 || sampleRate <= 0) return 0;
+        var effectiveBufferCount = useWholeRingBuffer ? bufferCount : 1;
         return Math.Min(MaximumOutputLatencySeconds,
-            (double)bufferLength * bufferCount / sampleRate);
+            (double)bufferLength * effectiveBufferCount / sampleRate);
     }
 
     public static double LyricsPositionSeconds(double rawPositionSeconds, double durationSeconds,

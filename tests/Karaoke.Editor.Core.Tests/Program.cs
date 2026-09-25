@@ -609,6 +609,7 @@ Assert(exactPresentation.Evaluate(.86).Lines[0].Progress == 0 &&
        karaokePresentation.Evaluate(.86).ShowEntryCue == exactPresentation.Evaluate(.86).ShowEntryCue,
     "Das adaptive Karaoke-Timing bereitet einen Phraseneinsatz früher vor, ohne Einsatzsignal oder kanonische Zeit zu verschieben.");
 Assert(Math.Abs(StageTimingCompensation.EstimateOutputLatencySeconds(1024, 4, 48000) - 0.0853333333) < .000001 &&
+       Math.Abs(StageTimingCompensation.EstimateOutputLatencySeconds(1024, 4, 48000, false) - 0.0213333333) < .000001 &&
        StageTimingCompensation.LyricsPositionSeconds(10, 200, .0853333333) < 9.915 &&
        StageTimingCompensation.LyricsPositionSeconds(.04, 200, .0853333333) == 0,
     "Die Stage verzögert nur ihre Lyrics-Uhr um den Audiopuffer und klemmt den Songanfang sicher auf null.");

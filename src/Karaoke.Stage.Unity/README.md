@@ -36,6 +36,8 @@ Die Stage korrigiert die Lyrics-Zeit automatisch um die von Unity gemeldete
 DSP-Pufferdauer. Dadurch bleiben die kanonischen Wortzeiten unverändert und die
 Anzeige folgt auf Geräten mit größerem Audioausgabepuffer dem tatsächlich
 hörbaren Signal. Der aktive Wert steht unten in der Stage als `Lyrics-Sync`.
+Unter macOS wird nur ein CoreAudio-DSP-Block berücksichtigt, da der DSP-Takt den
+Mixer-Ring bereits abbildet; das verhindert eine zu spät laufende Markierung.
 
 Für eine gemessene gerätespezifische Kalibrierung kann die Automatik mit
 `--stage-audio-latency-ms=85`, `NEONSTAGE_AUDIO_LATENCY_MS=85` oder dem
